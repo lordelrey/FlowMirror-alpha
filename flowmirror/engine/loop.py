@@ -28,6 +28,9 @@ prompt:  agent_view keys persona_card_zh_rich, memory, last_reflection,
          fam_phrase}], climate_label, n_comments_prev (full t-1 count);
          TC-only ocr_text and image_caption_frozen (str or list[str]).  TV
          attaches image_path as data-URI; T and TC never attach pixels.
+         build_decision_messages(view, cards, cfg) -> (messages, prompt_sha,
+         image_shas, prompt_notes) is PURE, so the loop can re-render the very
+         same bytes for --dump-prompt (E1) without touching any state.
 feed:    rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg["feed"],
          rng, mode); climate_for(post_id, comments_prev, min_n=4, weights) ->
          (label, counts); top_comments(post_id, comments_prev, k=3, weights);
@@ -44,13 +47,25 @@ Loop A2: modality_level {agent, run, exposure} (legacy arm_level alias) picks
          cash-side fees, logged as act.fee on every act row.
 Card L:  redeem checkouts emit NO click row (a redeem is not a feed click);
          their co rows carry p=None/ig=None with oc=oc_cf="match" (invariant
-         i, no CxR gate on redeem -- the counterfactual obeys it too; only the
-         engine refusal no_holdings can still override oc), their act rows
+         i, no CxR gate on redeem -- the counterfactual obeys it too; only
+         the engine refusal no_holdings can still override oc), their act rows
          keep p=None, and QDII purchase_blocked stays subscribe-only.
+E1:     --dump-prompt <agent_id>@<day> | first (cfg key dump_prompt) writes
+         <out_dir>/prompts/<agent>_d<day>.txt -- the exact rendered system+user
+         text with image parts replaced by "[image: <sha256 prefix>, <bytes>
+         bytes]" placeholders (never base64) -- plus a .json sidecar with
+         prompt_sha, arm, the card ids shown and the channel shas.  It is a
+         side artifact ONLY: no event-log row, no RNG draw, no hash change, so
+         --replay-check stays byte-identical with or without the flag.  The
+         live branch of _make_llm forwards the caller's model kwarg and only
+         falls back to cfg["llm"]["model"] (decide passes the vision model,
+         reflect the text model); tests/unit/test_live_path.py pins that.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import random
@@ -66,6 +81,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from flowmirror.agents.null_policy import NullPolicyLLM
+from flowmirror.agents.prompt import build_decision_messages
 from flowmirror.agents.runtime import (BudgetGovernor, CapStop, LLMCache, MockLLM,
                                        call_glm, decide, reflect, run_parallel)
 from flowmirror.channels.feed import (assign_arms, check_arm_balance, climate_for,
@@ -255,9 +271,115 @@ def _make_llm(cfg):
     llm_cfg = cfg["llm"]
 
     def _call(messages, max_tokens, **kw):
-        return call_glm(messages, int(max_tokens), model=llm_cfg.get("model"), **kw)
+        # Task E1-1 (permanent): runtime.decide() passes the vision model and runtime.reflect()
+        # the text model as model=, so the CALLER's choice must win; cfg["llm"]["model"] is only
+        # a fallback. The old one-liner passed model=llm_cfg.get("model") explicitly AND
+        # forwarded **kw, so every live run died with "TypeError: call_glm() got multiple
+        # values for keyword argument 'model'". tests/unit/test_live_path.py pins this.
+        kw.setdefault("model", llm_cfg.get("model"))
+        return call_glm(messages, int(max_tokens), **kw)
 
     return _call
+
+
+# ---------------------------------------------------------------------------
+# --dump-prompt (task E1-3): side artifacts for the paper appendix.
+# Pure post-hoc rendering from the frozen job; never touches the event log,
+# the RNG or any hash, so replays stay byte-identical with or without it.
+# ---------------------------------------------------------------------------
+def _dump_target(spec):
+    """'first' -> (None, None); '<agent_id>@<day>' -> (agent_id, int day).
+
+    rpartition('@') so an agent id that itself contains '@' still parses; the
+    day must be the 0-based trading-day index in digits."""
+    if spec == "first":
+        return None, None
+    aid, sep, day = str(spec).rpartition("@")
+    if not sep or not aid or not day.isdigit():
+        raise ValueError(f"bad dump-prompt spec {spec!r} "
+                         f"(want <agent_id>@<day> or 'first')")
+    return aid, int(day)
+
+
+def _dump_matches(target, inv_id, t):
+    aid, day = target
+    if aid is None:
+        return True                       # 'first': the first prompt assembled
+    return str(inv_id) == aid and int(t) == day
+
+
+def _image_part_placeholder(part):
+    """Never let base64 pixels into a dump: decode just enough to report sha+size."""
+    iu = part.get("image_url")
+    url = iu.get("url") if isinstance(iu, dict) else iu
+    if isinstance(url, str) and url.startswith("data:") and "," in url:
+        try:
+            data = base64.b64decode(url.split(",", 1)[1])
+            return f"[image: {hashlib.sha256(data).hexdigest()[:12]}, {len(data)} bytes]"
+        except Exception:
+            pass
+    return "[image: <payload withheld>]"
+
+
+def _render_prompt_text(messages):
+    """Exact system+user text; image parts become [image: <sha prefix>, <bytes> bytes]."""
+    out = []
+    for msg in messages or ():
+        role = msg.get("role") if isinstance(msg, dict) else None
+        out.append(f"===== {role or 'message'} =====")
+        content = msg.get("content") if isinstance(msg, dict) else msg
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    out.append(str(part.get("text") or ""))
+                elif isinstance(part, dict) and part.get("type") == "image_url":
+                    out.append(_image_part_placeholder(part))
+                else:
+                    out.append(str(part))
+        else:
+            out.append(str(content or ""))
+    return "\n".join(out) + "\n"
+
+
+def _channel_shas(notes):
+    """channel_sha notes -> {channel: sha}; unparsable bodies map to None."""
+    out = {}
+    for n in notes or ():
+        if isinstance(n, str) and n.startswith("channel_sha:"):
+            body = n[len("channel_sha:"):]
+            k, _, v = body.partition("=")
+            out[k or body] = v or None
+    return out
+
+
+def _write_prompt_dump(out_dir, cfg, job, inv, rec, t, dstr):
+    """Write <out_dir>/prompts/<agent>_d<day>.txt (+ .json sidecar); return the txt path.
+
+    build_decision_messages is pure, so re-rendering the frozen view/cards here
+    reproduces byte-for-byte the messages decide() hashed (the sidecar records
+    whether prompt_sha matches the dec row as a built-in self-verification)."""
+    messages, psha, img_shas, notes = build_decision_messages(job["view"], job["cards"], cfg)
+    pdir = os.path.join(out_dir, "prompts")
+    os.makedirs(pdir, exist_ok=True)
+    safe = "".join(c if (c.isascii() and (c.isalnum() or c in "-_.")) else "_"
+                   for c in str(inv.id))
+    base = f"{safe}_d{int(t)}"
+    txt_path = os.path.join(pdir, base + ".txt")
+    with open(txt_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(_render_prompt_text(messages))
+    side = {"agent": inv.id, "day": int(t), "date": dstr, "arm": inv.arm,
+            "card_ids": sorted(job["shown"]),
+            "prompt_sha": psha,
+            "prompt_sha_matches_dec_row": bool(psha == rec.get("prompt_sha")),
+            "image_shas": list(img_shas or []),
+            "channel_shas": _channel_shas(notes),
+            "prompt_notes": [str(n) for n in (notes or ()) if isinstance(n, str)],
+            "file": base + ".txt"}
+    with open(os.path.join(pdir, base + ".json"), "w", encoding="utf-8",
+              newline="\n") as fh:
+        json.dump(side, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    return txt_path
 
 
 def _qdii_blocked_set(cfg, dstr):
@@ -580,6 +702,10 @@ def run_simulation(cfg):
     n_days = len(W.nav_days)
     inv_a_ok = True
     last_d = W.nav_days[0] if W.nav_days else W.start
+    # E1-3: --dump-prompt spec (cfg key injected by main()); side artifact only.
+    dump_spec = cfg.get("dump_prompt") or None
+    dump_target = _dump_target(dump_spec) if dump_spec else None
+    dump_done = False
 
     def snapshot(tag, dstr):
         rows = [{"i": inv.id, "arm": inv.arm, "cash": round(inv.cash, 2),
@@ -598,6 +724,8 @@ def run_simulation(cfg):
                                                            separators=(",", ":")))}
 
     def _finish(extra_checks, rc, days):
+        if dump_target is not None and not dump_done:
+            print("prompt dump: no prompt matched the requested agent/day; nothing written")
         elog.close()
         state = {"agents": invs, "funds": W.funds, "end": last_d.isoformat(),
                  "signal_audit": signal_audit, "agent_arms": {i.id: i.arm for i in invs},
@@ -738,6 +866,11 @@ def run_simulation(cfg):
                 inv = job["inv"]
                 rec = rec if isinstance(rec, dict) else {}
                 row = rec.get("parsed") if isinstance(rec.get("parsed"), dict) else None
+                if dump_target is not None and not dump_done \
+                        and _dump_matches(dump_target, inv.id, t):
+                    dump_done = True
+                    print("prompt dump written: "
+                          + _write_prompt_dump(out_dir, cfg, job, inv, rec, t, dstr))
                 S["decisions"] += 1
                 S["attempts"] += int(rec.get("attempts") or 0)
                 if rec.get("cache_hit"):
@@ -1037,6 +1170,26 @@ def _self_test():
         and _trend_position([3.0, 2.0, 1.0]).endswith("低位")
         and _trend_position([1.0, 3.0, 2.0]).endswith("中位"))
     chk("week_key_format", _week_key(date(2024, 1, 1)) == "2024-W01")
+    # --- E1-3 unit checks for the prompt-dump renderer (pure, offline) -------
+    img_data = b"\x00\x01\x02" * 20
+    img_url = "data:image/jpeg;base64," + base64.b64encode(img_data).decode("ascii")
+    ph = _image_part_placeholder({"type": "image_url", "image_url": {"url": img_url}})
+    chk("dump_placeholder_sha_and_bytes",
+        ph == f"[image: {hashlib.sha256(img_data).hexdigest()[:12]}, {len(img_data)} bytes]")
+    rtxt = _render_prompt_text([{"role": "system", "content": "SYS"},
+                                {"role": "user", "content": [
+                                    {"type": "text", "text": "USER"},
+                                    {"type": "image_url", "image_url": {"url": img_url}}]}])
+    chk("dump_renderer_strips_base64",
+        "SYS" in rtxt and "USER" in rtxt and "base64," not in rtxt and rtxt.endswith("\n"))
+    chk("dump_target_spec_parsing",
+        _dump_target("first") == (None, None) and _dump_target("A3@7") == ("A3", 7))
+    try:
+        _dump_target("no-at-sign")
+        bad_spec = False
+    except ValueError:
+        bad_spec = True
+    chk("dump_target_rejects_bad_spec", bad_spec)
     root = os.environ.get("FLOWMIRROR_DATA_ROOT") or os.path.join(ROOT, "data")
     alt = os.environ.get("FLOWMIRROR_RESEARCH_ROOT") or "D:/Desktop/ABM paper/fundmarket-sim"
     cfg_path = next((os.path.join(b_, "runs", "mock_10x3.json") for b_ in (root, alt, ROOT)
@@ -1064,6 +1217,35 @@ def _self_test():
     sha1 = event_log_sha(logp)
     chk("replay_sha_identical", run_simulation(cfg) == 0 and sha1 is not None
         and sha1 == event_log_sha(logp))
+    # --- E1-3: --dump-prompt side artifact must not touch the log ------------
+    cfgd = _load_cfg(cfg_path)
+    cfgd.update({"mock_llm": True, "n_agents": 8, "dump_prompt": "first",
+                 "out_dir": tempfile.mkdtemp(prefix="fm_loop_dmp_")})
+    cfgd["window"]["max_trading_days"] = 2
+    rcd = run_simulation(cfgd)
+    pdir = os.path.join(cfgd["out_dir"], "prompts")
+    txts = sorted(f for f in os.listdir(pdir) if f.endswith(".txt")) \
+        if os.path.isdir(pdir) else []
+    side_path = os.path.join(pdir, txts[0][:-4] + ".json") if txts else None
+    chk("dump_prompt_writes_txt_and_sidecar",
+        rcd == 0 and len(txts) == 1 and side_path is not None
+        and os.path.exists(side_path))
+    if side_path is not None and os.path.exists(side_path):
+        with open(os.path.join(pdir, txts[0]), encoding="utf-8") as fh:
+            blob = fh.read()
+        with open(side_path, encoding="utf-8") as fh:
+            side = json.load(fh)
+        dec_rows = [r for r in iter_jsonl(os.path.join(cfgd["out_dir"], "event_log.jsonl"))
+                    if r.get("ev") == "dec" and r.get("i") == side.get("agent")
+                    and r.get("t") == side.get("day")]
+        chk("dump_prompt_txt_has_no_base64_payloads", "base64," not in blob)
+        chk("dump_prompt_sidecar_prompt_sha_matches_dec_row",
+            bool(dec_rows) and dec_rows[0].get("prompt_sha") == side.get("prompt_sha"))
+        chk("dump_prompt_sidecar_arm_and_card_ids",
+            side.get("arm") in ("T", "TC", "TV") and isinstance(side.get("card_ids"), list)
+            and len(side.get("card_ids") or []) > 0)
+        chk("dump_prompt_leaves_event_log_byte_identical",
+            event_log_sha(os.path.join(cfgd["out_dir"], "event_log.jsonl")) == sha1)
     cfg3_path = next((os.path.join(b_, "runs", "mock_10x3_3arm.json") for b_ in (root, alt, ROOT)
                       if os.path.exists(os.path.join(b_, "runs", "mock_10x3_3arm.json"))), None)
     if cfg3_path is None:
@@ -1106,6 +1288,10 @@ def main(argv=None):
     ap.add_argument("--seed", type=int)
     ap.add_argument("--out")
     ap.add_argument("--replay-check", action="store_true")
+    ap.add_argument("--dump-prompt", metavar="SPEC", default=None,
+                    help="write the exact prompt for <agent_id>@<day> (0-based trading-day "
+                         "index) or 'first' to <out_dir>/prompts/<agent>_d<day>.txt plus a "
+                         ".json sidecar; side artifact only, the event log is unaffected")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
     if args.self_test:
@@ -1130,6 +1316,13 @@ def main(argv=None):
         # A run's cache lives with its outputs unless the config points elsewhere on purpose; otherwise an
         # --out override would silently replay another run's cached responses.
         cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")
+    if args.dump_prompt:
+        try:
+            _dump_target(args.dump_prompt)
+        except ValueError as exc:
+            print(f"dump-prompt error: {exc}")
+            return 1
+        cfg["dump_prompt"] = args.dump_prompt
     if args.replay_check:
         logp = os.path.join(cfg["out_dir"], "event_log.jsonl")
         if run_simulation(cfg) != 0:

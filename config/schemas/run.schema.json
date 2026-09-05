@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/run.schema.json",
   "title": "FlowMirror run configuration (M0+)",
-  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml; arm_level is accepted as a legacy alias mapped to modality_level when modality_level is absent), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from).",
+  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from).",
   "type": "object",
   "properties": {
     "run_tag": {
@@ -13,6 +13,7 @@
       "type": "integer"
     },
     "mock_llm": {
+      "description": "When true, mock_options becomes required (see allOf).",
       "type": "boolean"
     },
     "agent_policy": {
@@ -211,6 +212,7 @@
       ]
     },
     "arm_level": {
+      "description": "LEGACY, optional: alias for modality_level from the pre-modality-arm era (world.py maps it when modality_level is absent). No longer required.",
       "type": "string",
       "enum": [
         "agent",
@@ -273,6 +275,7 @@
       "additionalProperties": false
     },
     "p_image": {
+      "description": "LEGACY, optional: image probability superseded by modality_arms (the TV arm); kept for backward compatibility. No longer required.",
       "type": "number",
       "minimum": 0,
       "maximum": 1
@@ -399,6 +402,7 @@
       "additionalProperties": false
     },
     "mock_options": {
+      "description": "MockLLM options; REQUIRED iff mock_llm is true (enforced by allOf below). A live (non-mock) run must not carry these mock-only fields.",
       "type": "object",
       "properties": {
         "force_c2_r4_click": {
@@ -499,8 +503,6 @@
     "suitability",
     "strategy_mix",
     "ranking",
-    "arm_level",
-    "p_image",
     "climate_weighting",
     "memory",
     "social",
@@ -509,7 +511,6 @@
     "memory_days",
     "reflection_every_days",
     "llm",
-    "mock_options",
     "out_dir"
   ],
   "additionalProperties": false,
@@ -517,6 +518,23 @@
     "^_": {}
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mock_llm": {
+            "const": true
+          }
+        },
+        "required": [
+          "mock_llm"
+        ]
+      },
+      "then": {
+        "required": [
+          "mock_options"
+        ]
+      }
+    },
     {
       "if": {
         "properties": {

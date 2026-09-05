@@ -1,80 +1,140 @@
 # FlowMirror
 
 **An open, config-driven sandbox of a fund market living inside a social feed.**
-A few thousand investor agents -- each a live, vision-LLM persona -- browse the
-same real marketing creatives (text *and* images) that retail investors saw on
-the platform, post and comment, and make subscribe/hold/redeem decisions priced
-at real fund NAVs. A CSRC-style suitability checkout can be switched on and off
-as a randomized experimental factor, and the simulated market is disciplined
-externally against real fund-flow panels. FlowMirror is a research instrument
-for studying how distribution shapes retail fund flows; it is not a forecast of
-any real market, and this pre-alpha contains no results.
+
+Hundreds of investor agents -- each a live LLM persona drawn from a survey-anchored
+population -- browse the same real marketing creatives that retail investors saw on a
+content platform, like and comment on them, and subscribe to or redeem funds priced at
+real net asset values. A CSRC-style suitability checkout sits inside the action space and
+can be switched on and off as a randomized experimental factor. Every displayed social
+signal is lagged by one day, every run replays byte-identically from its own cache, and a
+rule-based null simulator ships alongside the LLM agents as a control.
+
+FlowMirror is a research instrument for studying how distribution shapes retail fund
+flows. It is not a forecast of any real market, and **this pre-alpha contains no results**.
+
+## What is different about it
+
+| | |
+|---|---|
+| **Image-grounded input** | Agents read real marketing posts, not synthetic prompts. Three modality arms -- `T` text only, `TC` the image rendered as text (OCR plus a frozen neutral caption), `TV` the real image -- are randomized at agent, run or exposure level. |
+| **Regulation in the action space** | A suitability checkout compares the investor's assessed class against the product's risk level and returns `match`, `confirm_signed`, `confirm_declined` or `purchase_blocked`. Subscriptions are gated; redemptions never are. The counterfactual outcome is logged next to the real one on every checkout. |
+| **Fund mechanics** | Real NAVs, cost basis and reference points, unrealized profit and loss, optional subscription and redemption fees, and a wealth identity checked every day. |
+| **Auditability first** | Named invariants checked every run, a frozen event schema, content-addressed prompt caching, and a `--replay-check` that reruns the whole simulation from cache and compares hashes. |
 
 ## Status
 
-Scaffold (M0): schemas, configs, scenarios and the CLI are in place. The
-engine lands in milestone P3 (`bash script/run.sh ...` currently validates the
-inputs and reports `engine not wired yet (P3)`).
-
-## Layout
-
-```
-config/          api_example.yaml, engine_defaults.yaml, schemas/
-scenarios/       cn_xhs_2025q4 (live values), us_2025 (roadmap skeleton)
-data/            L1 derived tables + DATA.md + MANIFEST.sha256
-data_pipeline/   cn/, us/ -- L0 -> L1/L2 build scripts (P2)
-flowmirror/      package: config + io live; population..engine..analysis planned
-script/          run.sh, fetch_data.sh
-tests/           unit tests (schemas, io) + fixtures
-docs/            PERSONA.md, SCENARIOS.md, RUNBOOK.md
-runs/            simulation outputs (git-ignored)
-legacy/          frozen pre-v7 artifacts, reference only
-```
+The engine is complete and its dry-run milestone passes: invariants hold, replays are
+byte-identical, and the shipped demos run offline with zero API calls. A live smoke run
+against a real provider has been executed. No experimental results exist yet, and none
+are claimed anywhere in this repository.
 
 ## Install
 
 Python 3.10+:
 
 ```bash
-pip install -e .            # runtime (jsonschema, PyYAML)
+pip install -e .            # runtime (jsonschema, PyYAML, requests)
 pip install -e ".[dev]"     # + pytest
-pip install -e ".[images]"  # optional image handling (Pillow)
 ```
+
+Everything also works without installing, from the repository root, by substituting
+`python -m flowmirror.cli ...` for `flowmirror ...`.
 
 ## Quick start
 
+Two commands, fully offline, no API key:
+
 ```bash
-cp config/api_example.yaml config/api.yaml   # fill in your own key; git-ignored
-flowmirror tree
-flowmirror schemas
-flowmirror validate tests/fixtures/run_mock_10x3.json --schema run
-flowmirror validate scenarios/cn_xhs_2025q4/scenario.yaml   # schema auto-detected
-bash script/run.sh scenarios/cn_xhs_2025q4 tests/fixtures/run_mock_10x3.json
+python data_pipeline/cn/make_demo_nav.py --pool data/creatives/cn/content_pool_v1_masked.jsonl --out data/funds/nav_demo_2025q4.json
+flowmirror demo two-arm
 ```
 
-The bundled fixture runs with `mock_llm: true`, fully offline; no API key is
-needed for validation or for the tests.
+The first writes a deterministic **synthetic** NAV file, clearly marked as such, so that a
+fresh clone can run without third-party market data. The second runs 40 agents for five
+trading days with a mock model and prints where the outputs landed and what to read next.
 
-## Data policy (summary)
+```bash
+flowmirror demo three-arm   # three modality arms, fees on
+flowmirror demo null        # rule-based null policy: no LLM at all, by design
+```
 
-- **L0** raw captures (posts, screenshots, crawler dumps) never enter the repo or releases.
-- **L1** small derived tables live in `data/` and are committed.
-- **L2** larger artifacts live on Hugging Face / Zenodo; checksums in `data/MANIFEST.sha256`.
-- Creative **images are never redistributed**; only metadata and derived text.
+[docs/RUNBOOK.md](docs/RUNBOOK.md) is the full manual: running your own configs, live runs
+against a provider, exporting the exact prompt an agent saw, reading the outputs, and
+troubleshooting.
 
-Full inventory: [data/DATA.md](data/DATA.md).
+## What a run produces
+
+`runs/out/<tag>/event_log.jsonl` **is** the simulation -- one JSON object per row, every
+row validating against `config/schemas/event.schema.json`:
+
+| row | meaning |
+|---|---|
+| `post` | an institution published a creative that day |
+| `imp` | a card was shown to an agent, with its modality arm and feed slot |
+| `dec` | one agent-day decision: prompt hash, engagement counts, mood, stated reason |
+| `click` | an agent opened a product from a card |
+| `co` | a suitability checkout, with the real and the counterfactual outcome |
+| `act` | an executed subscription, redemption or plan instalment |
+| `cmt` | a comment with its stance |
+| `clim` | the comment climate shown the following day |
+| `st` | a familiarity state transition |
+| `refl` | a periodic reflection |
+
+Alongside it: `llm_cache.jsonl` (content-addressed responses, which is what makes replay
+free), `invariants_report.json`, run metadata, and `prompts/` when `--dump-prompt` is used.
+
+`python -m flowmirror.analysis.modality <run_dir> [<run_dir> ...]` compares the modality
+arms, reporting agent-level bootstrap intervals within a run and seed-level intervals
+across runs. A single run is reported as descriptive only.
+
+## Layout
+
+```
+config/          schemas/ (run, scenario, persona, event, fund_meta), engine_defaults.yaml, api_example.yaml
+scenarios/       cn_xhs_2025q4 (live values), us_2025 (roadmap skeleton)
+data/            L1 derived tables + DATA.md + MANIFEST.sha256
+data_pipeline/   L0 -> L1 build scripts, the frozen captioner, the synthetic NAV generator
+flowmirror/      core/ agents/ channels/ platform/ society/ regulator/ engine/ analysis/ population/ io/
+script/          run.sh, fetch_data.sh
+tests/           unit tests + fixtures
+docs/            RUNBOOK, ARCHITECTURE, LAYERS, PERSONA, SCENARIOS, DECISIONS, research notes
+runs/            shipped demo and research configs; outputs under runs/out/ are git-ignored
+```
+
+`flowmirror tree` prints the real package map, generated from the installed code.
 
 ## Scenarios
 
 | scenario | status | platform | regulator |
 |---|---|---|---|
-| `cn_xhs_2025q4` | now | Xiaohongshu (zh), 4 fund companies | `cn_cxr` suitability checkout |
+| `cn_xhs_2025q4` | now | Xiaohongshu (zh), fund companies | `cn_cxr` suitability checkout |
 | `us_2025` | roadmap | web ads (en) | `us_regbi` (Reg BI) |
+
+## Data policy
+
+- **L0** raw captures (crawler dumps, screenshots, full images) never enter this
+  repository or any release.
+- **L1** derived tables ship here with hashes in `data/MANIFEST.sha256`. They carry no
+  author, account, location or device fields.
+- Creative **images are never redistributed**; only metadata and derived text.
+- Fund NAV history is third-party data and is not redistributed. The shipped
+  `nav_demo_2025q4.json` is synthetic and marked `_meta.synthetic: true`.
+- Credentials live in `config/api.yaml`, which is git-ignored. See `config/api_example.yaml`.
+
+Full inventory: [data/DATA.md](data/DATA.md).
+
+## Limits worth stating up front
+
+The population's joint distribution is synthetic and anchored on published marginals. The
+creative pool covers a small number of institutions over unequal time spans. Agent
+behaviour is a property of one model, one prompt and one population. Nothing here should
+be read as evidence about real investors, real marketing effectiveness, or the merits of
+any regulation.
 
 ## Citing
 
-TODO: a DOI and citation will be added with the first tagged release
-(see `CITATION.cff`).
+A DOI and citation entry will be added with the first tagged release (see `CITATION.cff`).
 
 ## License
 

@@ -2,10 +2,13 @@
 
 Content-addressed response cache (LLMCache), a pre-authorization budget governor
 (BudgetGovernor), the provider call reused verbatim from sim/elicit_base.py
-(call_glm, CapStop, iter_json_objects -- only the key/endpoint loading adapted),
-a deterministic MockLLM for zero-API dry runs, thin decide()/reflect() entry
-points for flowmirror.engine.loop, and an order-preserving run_parallel().
-Prompt assembly and parsing live in flowmirror.agents.prompt, never here.
+(call_glm, CapStop, iter_json_objects -- only the credential loading adapted:
+config/api.yaml, then env FLOWMIRROR_GLM_KEY, then the OPT-IN env-selected
+legacy key file FLOWMIRROR_LEGACY_KEY_FILE; never a hard-coded path, and a key
+is never printed or logged), a deterministic MockLLM for zero-API dry runs,
+thin decide()/reflect() entry points for flowmirror.engine.loop, and an
+order-preserving run_parallel().  Prompt assembly and parsing live in
+flowmirror.agents.prompt, never here.
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ except Exception:
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 API_YAML = os.path.join(REPO_ROOT, "config", "api.yaml")
-KEY_PATH = r"D:\Desktop\ABM paper\tools\.glm_key"
+LEGACY_KEY_FILE_ENV = "FLOWMIRROR_LEGACY_KEY_FILE"
 GLM_EP_DEFAULT = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 MODEL = "glm-4.6v"
 TEXT_MODEL = "glm-4.6"
@@ -46,27 +49,53 @@ SCHEMA_VERSION = "v7"
 
 
 def _load_glm_config():
-    """config/api.yaml -> env FLOWMIRROR_GLM_KEY -> the legacy one-key file (the ONLY adapted part)."""
+    """Credential resolution -- first non-empty key wins; nothing is ever printed:
+
+    1. config/api.yaml                 flat keys endpoint / api_key / vision_model / text_model
+                                       (template: config/api_example.yaml; config/api.yaml is
+                                       git-ignored; endpoint/model values apply even when the
+                                       key itself comes from a later source)
+    2. env FLOWMIRROR_GLM_KEY          key only; default endpoint and models apply
+    3. env FLOWMIRROR_LEGACY_KEY_FILE  OPT-IN legacy fallback: path to a one-line key file
+    4. none of the above               empty key; call_glm() then fails fast with an
+                                       actionable error naming all three ways above
+    """
     ep, key, vis, txt = GLM_EP_DEFAULT, "", MODEL, TEXT_MODEL
     if os.path.isfile(API_YAML):
         try:
             with open(API_YAML, "r", encoding="utf-8") as fh:
                 obj = yaml.safe_load(fh) or {}
-            return (str(obj.get("endpoint") or ep), str(obj.get("api_key") or key),
-                    str(obj.get("vision_model") or vis), str(obj.get("text_model") or txt))
+            if isinstance(obj, dict):
+                ep = str(obj.get("endpoint") or ep)
+                vis = str(obj.get("vision_model") or vis)
+                txt = str(obj.get("text_model") or txt)
+                key = str(obj.get("api_key") or "").strip()
         except Exception:
             pass
-    if os.environ.get("FLOWMIRROR_GLM_KEY", "").strip():
-        return ep, os.environ["FLOWMIRROR_GLM_KEY"].strip(), vis, txt
-    try:
-        if os.path.isfile(KEY_PATH):
-            with open(KEY_PATH, "r", encoding="utf-8") as fh:
-                legacy = fh.read().strip()
-            if legacy:
-                return ep, legacy, vis, txt
-    except Exception:
-        pass
+    if not key and os.environ.get("FLOWMIRROR_GLM_KEY", "").strip():
+        key = os.environ["FLOWMIRROR_GLM_KEY"].strip()
+    if not key:
+        legacy_path = os.environ.get(LEGACY_KEY_FILE_ENV, "").strip()
+        if legacy_path:
+            try:
+                if os.path.isfile(legacy_path):
+                    with open(legacy_path, "r", encoding="utf-8") as fh:
+                        key = fh.read().strip()
+            except Exception:
+                key = ""
     return ep, key, vis, txt
+
+
+def _no_credentials_error():
+    """Actionable RuntimeError for a live call with no configured credentials (echoes no key material)."""
+    return RuntimeError(
+        "FlowMirror live-LLM credentials not found. Supply a key in ONE of these three ways:\n"
+        "  1. create config/api.yaml (copy config/api_example.yaml) and set api_key there\n"
+        "     (config/api.yaml is git-ignored; never commit real keys);\n"
+        "  2. set the environment variable FLOWMIRROR_GLM_KEY to your key;\n"
+        "  3. set the environment variable FLOWMIRROR_LEGACY_KEY_FILE to the path of a one-line\n"
+        "     key file (opt-in legacy fallback).\n"
+        "Mock runs (mock_llm: true) and agent_policy 'null' need no key at all. No key is ever printed.")
 
 
 GLM_EP, GLM_KEY, MODEL, TEXT_MODEL = _load_glm_config()
@@ -214,9 +243,19 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
     `parser(text, channel)` must return (obj, matched_text); a call is a SUCCESS only when it returns a complete
     schema-valid object (R5.5 must-fix 4/5: nonempty raw text is NOT success and must consume a retry).
     Every attempt is classified independently — no sticky empty flag can leak the 15s path into a later HTTP
-    error (must-fix 7). Returns a provenance dict and never raises, EXCEPT CapStop: when a `governor` is supplied
-    every single attempt — initial, retry and repair — is authorized BEFORE it is made (B3/B4), and the attempt
-    that would breach the reserve or the absolute cap is refused instead of being spent."""
+    error (must-fix 7).  A failed attempt that produced NO channel text (transport exception, non-200) records
+    raw=None / raw_sha256=None and the ladder CONTINUES — one transient provider error must never kill a run
+    (E3 fix: the old post-attempt bookkeeping hashed the missing chan_text unconditionally and died with
+    AttributeError, leaving the whole retry ladder as dead code).  Returns a provenance dict and never raises,
+    EXCEPT CapStop (when a `governor` is supplied every single attempt — initial, retry and repair — is
+    authorized BEFORE it is made, B3/B4, and the breaching attempt is refused instead of spent) and
+    RuntimeError when no live credentials are configured (fail fast: a credential-less attempt must not be
+    spent, retried, or cached as a hole row)."""
+    if not GLM_KEY:
+        # Fail fast, BEFORE any attempt: without a key every request is a guaranteed 401, so running
+        # the ladder would only burn 5 attempts x backoff and then CACHE the terminal failure, which
+        # replays as a failure forever.  The message names every supported way to supply a key.
+        raise _no_credentials_error()
     headers = {"Authorization": f"Bearer {GLM_KEY}", "Content-Type": "application/json"}
     payload = {"model": model or MODEL, "messages": messages, "temperature": TEMP, "max_tokens": int(max_tokens)}
     prov = {"parsed": None, "raw": None, "response_source": None, "http_status": None, "attempts": 0,
@@ -267,7 +306,11 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
         if cls == "ok":
             prov.update(parsed=parsed, raw=raw_store, response_source=source, raw_sha256=sha256_text(chan_text))
             return prov
-        prov["raw"], prov["raw_sha256"], prov["response_source"] = raw_store, sha256_text(chan_text), None
+        # Failed attempt: keep whatever channel text existed (schema_invalid etc. still stores the raw text
+        # and its sha). An attempt with NO channel text (exception / http_error) records raw=None /
+        # raw_sha256=None instead of crashing, and the ladder proceeds to the next attempt (E3 fix).
+        prov["raw"], prov["response_source"] = raw_store, None
+        prov["raw_sha256"] = sha256_text(chan_text) if chan_text else None
         if empty or finish == "length":                       # budget exhaustion / truncation -> escalate tokens
             payload["max_tokens"] = escalate_tokens(payload["max_tokens"])
         if k < MAX_ATTEMPTS:                                  # no sleep after the 5th (terminal) failure

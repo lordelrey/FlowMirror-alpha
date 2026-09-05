@@ -1,16 +1,19 @@
-# FlowMirror LLM API example.
-# Copy to config/api.yaml and fill in your own credentials.
-# config/api.yaml is git-ignored; never commit real keys.
+# FlowMirror LLM provider template -- the FLAT shape that
+# flowmirror/agents/runtime.py::_load_glm_config() actually reads.
+# (Older templates with nested provider:/images:/cache: blocks were never read by the loader.)
+#
+# Copy this file to config/api.yaml (config/api.yaml is git-ignored) and fill in api_key.
+# Never commit real keys. The runtime never prints or logs a key or any part of one.
+#
+# Credential resolution order (first non-empty key wins; endpoint/model values from
+# config/api.yaml apply even when the key itself comes from a later source):
+#   1. config/api.yaml                 -> api_key (+ endpoint / vision_model / text_model)
+#   2. env FLOWMIRROR_GLM_KEY          -> key only; the defaults below apply
+#   3. env FLOWMIRROR_LEGACY_KEY_FILE  -> OPT-IN legacy fallback: path to a one-line key file
+#   4. none of the above               -> live calls fail fast with an actionable error
+# Mock runs (mock_llm: true) and agent_policy "null" need no credentials at all.
 
-provider:
-  base_url: https://open.bigmodel.cn/api/paas/v4
-  api_key: sk-REPLACE_ME
-  model: glm-4.6v              # vision model, reads creative cards (text+image)
-  text_model: glm-4.6v         # text-only fallback model
-
-images:
-  enabled: true                # requires: pip install -e ".[images]"
-  max_side: 768
-
-cache:
-  enabled: true
+endpoint: https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
+api_key: sk-REPLACE_ME
+vision_model: glm-4.6v      # decision calls (reads creative cards: text + image)
+text_model: glm-4.6         # reflection calls (text-only)

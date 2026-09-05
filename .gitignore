@@ -8,6 +8,11 @@ data/raw/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+# Real third-party NAV cache (4.4 MB) -- never commit; it never ships with the repo.
 data/funds/nav_cache.json
+# The SYNTHETIC demo NAV is deliberately TRACKED so a fresh clone can run the offline
+# demos (runs/demo_two_arm.json / demo_three_arm.json / demo_null.json). Keep real
+# market data out of data/funds/; the negation below guards against future broad ignores.
+!data/funds/nav_demo_2025q4.json
 *.bak_*
 runs/out/
