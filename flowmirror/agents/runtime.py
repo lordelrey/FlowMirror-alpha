@@ -9,7 +9,6 @@ Prompt assembly and parsing live in flowmirror.agents.prompt, never here.
 """
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import random
@@ -84,7 +83,7 @@ def iter_json_objects(text):
     """Every COMPLETE top-level {...} substring, via a string-aware balanced-brace scan.
 
     R5.5 R2A forbids greedy first-brace-to-last-brace matching: a truncated tail must not be glued onto an earlier
-    object, and a reasoning trace that merely contains `{` and `}` must not count as an answer. Unbalanced (i.e.
+    object, and a reasoning trace that merely contains `{` and `}` must not count as an answer. Unbalanced (i.e
     truncated) trailing objects are simply never emitted."""
     out, depth, start, in_str, esc = [], 0, None, False, False
     for i, ch in enumerate(text or ""):
@@ -301,79 +300,58 @@ def _image_shas(messages):
     return [sha256_text(u) for kind, u in _iter_message_parts(messages) if kind == "image"]
 
 
-_PARAM_CACHE = {}
+_SCHEMA_ECHO = json.dumps(
+    {"reads": ["p1"], "engage": {"p1": ["like"]},
+     "comments": [{"post_id": "p3", "stance": "bullish", "text": "..."}],
+     "trade": {"action": "buy", "fund": "000001", "amount_pct": 20, "sign_mismatch_confirm": False},
+     "org_affinity_delta": {"<org>": 1}, "mood": 4, "reason": "..."},
+    separators=(",", ":"))
 
 
-def _call_prompt(fn, kwargs):
-    """Call a flowmirror.agents.prompt builder with whichever of our kwargs its signature names."""
-    params = _PARAM_CACHE.get(fn)
-    if params is None:
-        try:
-            params = tuple(inspect.signature(fn).parameters)
-        except (TypeError, ValueError):
-            params = ()
-        _PARAM_CACHE[fn] = params
-    return fn(**{k: v for k, v in kwargs.items() if k in params}) if params else fn(**kwargs)
-
-
-def _parse_pair(fn, txt):
-    """Normalize a prompt-module parser to the (parsed, matched) pair call_glm's parser contract uses."""
-    if not txt:
-        return None, None
-    for args in ((txt,), (txt, "content")):
-        try:
-            res = fn(*args)
-        except TypeError:
-            continue
-        except Exception:
-            return None, None
-        if isinstance(res, tuple):
-            return res[0], (res[1] if len(res) > 1 else None)
-        return res, None
-    return None, None
-
-
-_VALID_ACTIONS = ("buy", "sell", "subscribe", "redeem", "hold", "ignore", "dca", "none")
-
-
-def _decision_violations(parsed, shown):
-    if parsed is None:
-        return ["parse_failure"]
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("trade"), dict):
-        return ["trade_missing"]
-    out, trade = [], parsed["trade"]
-    if trade.get("action") not in _VALID_ACTIONS:
-        out.append("bad_action")
-    code, amt = trade.get("code"), trade.get("amount_pct")
-    if trade.get("action") in ("buy", "sell", "subscribe", "redeem") and not code:
-        out.append("code_missing")
-    if not isinstance(amt, (int, float)) or isinstance(amt, bool):
-        out.append("amount_not_numeric")
-    if shown and code:
-        valid = set(shown.get("codes") or []) | set(shown.get("held") or [])
-        if valid and code not in valid:
-            out.append("code_not_shown")
-    return out
-
-
-_SCHEMA_ECHO = ('Output ONLY one JSON object: {"mood": "..", "reason": "..", "trade": {"action": '
-                '"buy|sell|hold", "code": "<6-digit code or null>", "amount_pct": 0-100, '
-                '"sign_mismatch_confirm": true|false}, "comment": {"stance": "positive|neutral|negative", '
-                '"text": ".."} or null}')
+def _decision_schema_text():
+    """Retry-suffix schema payload: prompt.DECISION_SCHEMA_TEXT when the module defines it (lazy import +
+    getattr fallback), else the local compact-JSON echo of the normalized decision schema."""
+    try:
+        import flowmirror.agents.prompt as _prompt
+    except Exception:
+        return _SCHEMA_ECHO
+    return getattr(_prompt, "DECISION_SCHEMA_TEXT", None) or _SCHEMA_ECHO
 
 
 def _append_retry_suffix(messages):
     out = [dict(m) if isinstance(m, dict) else m for m in messages]
-    extra = RETRY_SUFFIX + "\n" + _SCHEMA_ECHO
+    extra = RETRY_SUFFIX + "\n" + _decision_schema_text()
     for m in reversed(out):
         if isinstance(m, dict) and m.get("role") == "user":
             content = m.get("content")
             if isinstance(content, list):
-                m["content"] = list(content) + [{"type": "text", "text": extra}]
+                parts = [dict(p) if isinstance(p, dict) else p for p in content]
+                for p in reversed(parts):                    # append to the LAST text part
+                    if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str):
+                        p["text"] = p["text"] + "\n\n" + extra
+                        break
+                else:
+                    parts.append({"type": "text", "text": extra})
+                m["content"] = parts
             else:
                 m["content"] = (content or "") + "\n\n" + extra
             break
     return out
+
+
+def _reflection_pair(txt):
+    """First COMPLETE JSON object in txt through parse_reflection(obj), as call_glm's (parsed, matched) pair."""
+    objs = iter_json_objects(txt or "")
+    if not objs:
+        return None, None
+    try:
+        obj = json.loads(objs[0])
+    except Exception:
+        return None, None
+    if not isinstance(obj, dict):
+        return None, None
+    parsed, _violations = parse_reflection(obj)
+    return parsed, objs[0]
 
 
 def _llm_cfg(cfg):
@@ -382,35 +360,40 @@ def _llm_cfg(cfg):
             int(llm.get("max_tokens_start") or 6144), int(llm.get("max_attempts") or MAX_ATTEMPTS))
 
 
-def _record_from_row(row, prompt_sha, img_shas, violations):
+def _record_from_row(row, prompt_sha, img_shas, violations, parser_status=None):
     prov = row.get("provenance") or {}
     parsed = row.get("parsed")          # a cached FAILURE replays as a failure -- terminal
     return {"parsed": parsed, "violations": violations,
-            "parser_status": "ok" if parsed is not None else (prov.get("parser_status") or "unparsed"),
-            "prompt_sha": prompt_sha, "raw_sha": prov.get("raw_sha256"), "image_shas": img_shas,
+            "parser_status": ("ok" if parsed is not None
+                              else (parser_status or prov.get("parser_status") or "unparsed")),
+            "prompt_sha": prompt_sha, "raw_sha256": prov.get("raw_sha256"), "image_shas": img_shas,
             "cache_hit": True, "attempts": int(prov.get("attempts") or 0), "notes": {"replay": True}}
 
 
 def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
     """One agent decision: cache lookup, else one authorized provider call plus at most one
     schema-echo retry; the outcome (success OR failure) is always written to the cache."""
-    messages = _call_prompt(build_decision_messages,
-                            {"agent_view": agent_view, "feed_cards": feed_cards, "cfg": cfg, "shown": shown})
-    prompt_sha = sha256_text(_messages_text(messages))
-    img_shas = _image_shas(messages)
+    messages, prompt_sha, img_shas, prompt_notes = build_decision_messages(agent_view, feed_cards, cfg)
     model, _txt, max_tokens, max_attempts = _llm_cfg(cfg)
     key = cache.key_for(model, TEMP, prompt_sha, img_shas)
+    parser = lambda txt, channel="content": extract_decision(
+        txt, shown["pids"], shown["codes"], shown["held"], shown["orgs"], channel)[:2]
     row = cache.get(key)
     if row is not None:
         governor.record_cache_hit()
-        return _record_from_row(row, prompt_sha, img_shas, _decision_violations(row.get("parsed"), shown))
-    parser = lambda txt, channel="content": _parse_pair(extract_decision, txt)
-    notes = {"mode": "decision", "model": model, "retried": False}
+        viol, status = [], None
+        if row.get("parsed") is None:                        # replay derives exactly as the live path did
+            _norm, viol, status = extract_decision(row.get("raw") or "", shown["pids"], shown["codes"],
+                                                   shown["held"], shown["orgs"])
+        return _record_from_row(row, prompt_sha, img_shas, viol, status)
+    notes = {"mode": "decision", "model": model, "retried": False, "prompt_notes": list(prompt_notes or [])}
     governor.authorize(True)
     prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor, first_open=True)
-    parsed = prov.get("parsed")
+    parsed, viol, status = prov.get("parsed"), [], None
     if parsed is None:
-        parsed, _m = _parse_pair(extract_decision, prov.get("raw") or "")
+        norm, viol, status = extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
+                                              shown["held"], shown["orgs"])
+        parsed = norm
     total_attempts = int(prov.get("attempts") or 0)
     if parsed is None and max_attempts > 1:
         notes["retried"] = True
@@ -419,15 +402,17 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
                    governor=governor, first_open=False)
         parsed = prov.get("parsed")
         if parsed is None:
-            parsed, _m = _parse_pair(extract_decision, prov.get("raw") or "")
+            norm, viol, status = extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
+                                                  shown["held"], shown["orgs"])
+            parsed = norm
         total_attempts += int(prov.get("attempts") or 0)
     if parsed is None:
         governor.record_failure()
     raw = prov.get("raw") or ""
-    rec = {"parsed": parsed, "violations": _decision_violations(parsed, shown),
-           "parser_status": "ok" if parsed is not None else (prov.get("parser_status") or "unparsed"),
+    rec = {"parsed": parsed, "violations": [] if parsed is not None else viol,
+           "parser_status": "ok" if parsed is not None else (status or "unparsed"),
            "prompt_sha": prompt_sha,
-           "raw_sha": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
+           "raw_sha256": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
            "image_shas": img_shas, "cache_hit": False, "attempts": total_attempts, "notes": notes}
     cache.put(key, {"key": key, "provenance": prov, "parsed": parsed, "raw": prov.get("raw"),
                     "ts": round(time.time(), 3)})
@@ -437,8 +422,7 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
 def reflect(agent_view, cfg, cache, governor, llm):
     """One agent reflection (no retry): the same cache/governor pattern around
     build_reflection_messages / parse_reflection."""
-    messages = _call_prompt(build_reflection_messages, {"agent_view": agent_view, "cfg": cfg})
-    prompt_sha = sha256_text(_messages_text(messages))
+    messages, prompt_sha = build_reflection_messages(agent_view)
     img_shas = _image_shas(messages)
     vis, text_model, max_tokens, _ma = _llm_cfg(cfg)
     model = text_model or vis
@@ -448,19 +432,19 @@ def reflect(agent_view, cfg, cache, governor, llm):
         governor.record_cache_hit()
         return _record_from_row(row, prompt_sha, img_shas,
                                 [] if row.get("parsed") is not None else ["parse_failure"])
-    parser = lambda txt, channel="content": _parse_pair(parse_reflection, txt)
+    parser = lambda txt, channel="content": _reflection_pair(txt)
     governor.authorize(True)
     prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor, first_open=True)
     parsed = prov.get("parsed")
     if parsed is None:
-        parsed, _m = _parse_pair(parse_reflection, prov.get("raw") or "")
+        parsed, _m = _reflection_pair(prov.get("raw") or "")
     if parsed is None:
         governor.record_failure()
     raw = prov.get("raw") or ""
     rec = {"parsed": parsed, "violations": [] if parsed is not None else ["parse_failure"],
            "parser_status": "ok" if parsed is not None else (prov.get("parser_status") or "unparsed"),
            "prompt_sha": prompt_sha,
-           "raw_sha": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
+           "raw_sha256": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
            "image_shas": img_shas, "cache_hit": False, "attempts": int(prov.get("attempts") or 0),
            "notes": {"mode": "reflection", "model": model}}
     cache.put(key, {"key": key, "provenance": prov, "parsed": parsed, "raw": prov.get("raw"),
@@ -518,12 +502,21 @@ def _account_level(text):
 
 
 def _first_shown_r4(text, codes):
-    for line in (text or "").splitlines():
+    """First shown R4 fund code: the shown 6-digit code sharing the R4 card line, else the nearest
+    one in a +/-160-char window (multi-line cards), else the first shown code as last resort."""
+    text = text or ""
+    shown = set(codes or [])
+    for line in text.splitlines():
         if "R4" in line:
-            line_codes = _codes_in(line)
-            if line_codes:
-                return line_codes[0]
-    return codes[0] if codes and "R4" in (text or "") else None
+            near = [c for c in _codes_in(line) if c in shown]
+            if near:
+                return near[0]
+    for m in re.finditer(r"R4", text):
+        window = text[max(0, m.start() - 160): m.end() + 160]
+        near = [c for c in _codes_in(window) if c in shown]
+        if near:
+            return near[0]
+    return sorted(shown)[0] if shown and "R4" in text else None
 
 
 def _looks_like_reflection(text):
@@ -533,7 +526,15 @@ def _looks_like_reflection(text):
 
 class MockLLM:
     """Deterministic zero-API LLM: random.Random seeded from the sha256 of the prompt's text parts,
-    so the same prompt always produces the same raw output (and the same cached row)."""
+    so the same prompt always produces the same raw output (and the same cached row).  Decision
+    prompts emit the REAL decision schema (reads/engage/comments/trade/org_affinity_delta) so a
+    zero-API dry run exercises extract_decision and the whole downstream engine."""
+
+    _ACTIONS = ("like", "save", "follow")
+    _STANCES = ("bullish", "bearish", "watching")
+    _COMMENTS = _MOCK_COMMENTS + ("内容有参考价值，先收藏。", "希望补充数据来源再判断。")
+    _PID_RE = re.compile(r"[pP](\d+)")
+    _ORG_RE = re.compile(r"机构[：:]\s*([^\s，,。;；】]+)")
 
     def __init__(self, force_c2_r4=False, malformed_rate=0.05):
         self.force_c2_r4 = bool(force_c2_r4)
@@ -551,62 +552,98 @@ class MockLLM:
 
     def _render_reflection(self, rng):
         return json.dumps({"summary": rng.choice(_MOCK_SUMMARIES),
-                           "beliefs": [rng.choice(_MOCK_BELIEFS), rng.choice(_MOCK_BELIEFS)],
-                           "market_view": rng.choice(("bullish", "neutral", "bearish")),
-                           "risk_mood": rng.choice(("cautious", "stable", "aggressive"))},
+                           "beliefs": rng.sample(_MOCK_BELIEFS, rng.randint(1, min(3, len(_MOCK_BELIEFS)))),
+                           "market_view": rng.randint(1, 5), "risk_mood": rng.randint(1, 5)},
                           ensure_ascii=False)
 
     def _render_decision(self, text, rng):
-        obj = {"mood": rng.choice(("neutral", "cautious", "curious", "greedy", "fearful")),
-               "reason": rng.choice(_MOCK_REASONS),
-               "trade": {"action": "hold", "code": None, "amount_pct": 0.0,
-                         "sign_mismatch_confirm": False},
-               "comment": None}
+        reads = self._reads(text, rng)
+        obj = {"reads": reads,
+               "engage": self._engage(reads, rng),
+               "comments": self._comments(reads, rng),
+               "trade": self._trade(text, rng),
+               "org_affinity_delta": self._org_delta(text, rng),
+               "mood": rng.randint(1, 5),
+               "reason": rng.choice(_MOCK_REASONS)}
+        out = json.dumps(obj, ensure_ascii=False)
+        if rng.random() < self.malformed_rate:          # cut at 60% -> no complete {...} survives
+            out = out[: int(len(out) * 0.6)]
+        return out
+
+    def _reads(self, text, rng):
+        ids = []
+        for m in self._PID_RE.finditer(text or ""):
+            pid = "p" + m.group(1)
+            if pid not in ids:
+                ids.append(pid)
+        if not ids:
+            return []
+        k = rng.randint(1, min(4, len(ids)))
+        return [ids[i] for i in sorted(rng.sample(range(len(ids)), k))]
+
+    def _engage(self, reads, rng):
+        engage = {}
+        if reads:
+            k = rng.randint(0, min(2, len(reads)))
+            for i in sorted(rng.sample(range(len(reads)), k)):
+                engage[reads[i]] = list(rng.sample(self._ACTIONS, rng.randint(1, len(self._ACTIONS))))
+        return engage
+
+    def _comments(self, reads, rng):
+        if reads and rng.random() < 0.30:
+            return [{"post_id": rng.choice(reads), "stance": rng.choice(self._STANCES),
+                     "text": rng.choice(self._COMMENTS)}]
+        return []
+
+    def _trade(self, text, rng):
         codes, held = _codes_in(text), _held_codes(text)
         if self.force_c2_r4 and _account_level(text) == "C2":
             r4 = _first_shown_r4(text, codes)
             if r4:
-                obj["trade"] = {"action": "buy", "code": r4, "amount_pct": float(rng.choice((10, 20, 30))),
-                                "sign_mismatch_confirm": False}
-        else:
-            roll = rng.random()
-            if roll < 0.35 and codes:
-                obj["trade"] = {"action": "buy", "code": rng.choice(codes),
-                                "amount_pct": float(rng.randint(5, 50)), "sign_mismatch_confirm": False}
-            elif roll < 0.60 and held:
-                obj["trade"] = {"action": "sell", "code": rng.choice(held),
-                                "amount_pct": float(rng.randint(10, 80)), "sign_mismatch_confirm": False}
-        if rng.random() < 0.30:
-            obj["comment"] = {"stance": rng.choice(("positive", "neutral", "negative")),
-                              "text": rng.choice(_MOCK_COMMENTS)}
-        out = json.dumps(obj, ensure_ascii=False)
-        if rng.random() < self.malformed_rate:          # truncate so no complete {...} survives
-            core = out.rstrip()
-            out = core[: max(0, len(core) - rng.randint(1, 6))]
-        return out
+                return {"action": "buy", "fund": r4, "amount_pct": 20, "sign_mismatch_confirm": False}
+        roll = rng.random()
+        if codes and roll < 0.25:
+            return {"action": "buy", "fund": rng.choice(codes), "amount_pct": int(rng.randint(5, 40)),
+                    "sign_mismatch_confirm": bool(rng.random() < 0.3)}
+        if held and roll < 0.35:
+            return {"action": "redeem", "fund": rng.choice(held), "amount_pct": int(rng.randint(20, 100)),
+                    "sign_mismatch_confirm": False}
+        return {"action": "none", "fund": None, "amount_pct": 0, "sign_mismatch_confirm": False}
+
+    def _org_delta(self, text, rng):
+        orgs = []
+        for m in self._ORG_RE.finditer(text or ""):
+            if m.group(1) not in orgs:
+                orgs.append(m.group(1))
+        if not orgs:
+            return {}
+        k = rng.randint(0, min(2, len(orgs)))
+        return {orgs[i]: rng.randint(-2, 2) for i in sorted(rng.sample(range(len(orgs)), k))}
 
 
 def _synth_agent(i, held_codes):
+    # Mirrors the agent_view contract consumed by flowmirror.agents.prompt.build_decision_messages
+    # (persona_card_zh_rich, c_class, cash, holdings{code,name,r,units,nav,pnl_pct}, familiarity, memory, ...).
     return {"agent_id": f"A{i:03d}", "arm": "T" if i % 2 == 0 else "TV",
-            "risk_level": "C2" if i % 3 else "C3", "persona": f"投资者{1000 + i}号，风格稳健，关注回撤。",
-            "mood": ("neutral", "cautious", "curious", "greedy", "fearful")[i % 5],
-            "cash_pct": 40.0, "day": 10 + (i % 5),
-            "holdings": [{"code": c, "units": 800.0, "nav": 1.42, "cost": 1.35, "pnl_pct": 5.2,
-                          "last": "redeem_declined"} for c in held_codes],
-            "familiarity": {"ORG01": 1 + (i % 2)}, "follows": ["ORG01"], "memory": [], "experience": [],
-            "news": {"index": "沪深300本周+1.2%", "guba": "情绪偏谨慎"}, "trend": {}, "direct": [],
-            "social": {"climate": "neutral", "top": []}}
+            "c_class": "C2" if i % 3 else "C3", "cash": 10000.0 + 500.0 * (i % 7),
+            "persona_card_zh_rich": f"我是投资者{1000 + i}号，风格稳健，关注回撤，买基金前会先看一段时间。",
+            "market_view": 3, "risk_mood": 3, "day": 10 + (i % 5),
+            "holdings": [{"code": c, "name": f"持有基金{c[-2:]}", "r": "R3", "units": 800.0, "nav": 1.42,
+                          "pnl_pct": 5.2} for c in held_codes],
+            "familiarity": {"ORG01": 1 + (i % 2)}, "follows": ["ORG01"], "memory": [], "last_trade": None,
+            "declined_confirms": [], "guba": {}, "trend": {}, "direct": []}
 
 
 def _synth_cards(levels):
+    # Mirrors the feed_card contract of flowmirror.agents.prompt (post_id, landing{code,name,R,...}, arm, ...).
     out = []
     for j, r in enumerate(levels):
-        out.append({"pid": f"P{j:03d}", "org": "ORG01", "intent": "push" if j % 3 == 0 else "edu",
-                    "text": f"第{j}条帖子：近期市场波动与配置思路。",
-                    "fund": {"code": f"{100001 + j * 11:06d}", "name": f"示例基金{j}", "r": r,
-                             "family": "示例家族", "org": "ORG01", "r3m": 2.3, "r1y": 8.9,
-                             "nav": 1.21 + j * 0.01},
-                    "img": False, "likes": 10 + j, "comments": 2 + j})
+        out.append({"post_id": f"p{j + 1}", "org": "ORG01", "intent": "I2" if j % 3 == 0 else "I3",
+                    "title": f"第{j}条帖子", "caption": f"第{j}条帖子：近期市场波动与配置思路。",
+                    "landing": {"code": f"{100001 + j * 11:06d}", "name": f"示例基金{j}", "R": r,
+                                "ret_3m": 2.3, "ret_1y": 8.9, "min_buy": 10},
+                    "likes": 10 + j, "arm": "T", "image_path": None, "image_sha": None,
+                    "comments_prev": [], "climate_label": "no_signal"})
     return out
 
 
@@ -625,7 +662,7 @@ def _self_test():
     for i in range(200):
         held = [f"{200000 + (i % 20) * 13:06d}"] if i % 4 == 0 else []
         cards = _synth_cards([("R2", "R3", "R4")[i % 3] for _ in range(1 + i % 3)])
-        shown = {"pids": [c["pid"] for c in cards], "codes": [c["fund"]["code"] for c in cards],
+        shown = {"pids": [c["post_id"] for c in cards], "codes": [c["landing"]["code"] for c in cards],
                  "held": list(held), "orgs": ["ORG01"]}
         jobs.append((_synth_agent(i, held), cards, cfg, cache, gov, llm, shown))
     results = []
@@ -640,7 +677,7 @@ def _self_test():
     def first():
         recs = [decide(*j) for j in jobs]
         state["recs"] = recs
-        req = ("parsed", "violations", "parser_status", "prompt_sha", "raw_sha", "image_shas",
+        req = ("parsed", "violations", "parser_status", "prompt_sha", "raw_sha256", "image_shas",
                "cache_hit", "attempts", "notes")
         bad = sum(1 for r in recs if any(k not in r for k in req))
         okn = sum(1 for r in recs if r["parsed"] is not None)
@@ -662,11 +699,11 @@ def _self_test():
             cards = _synth_cards(["R4", "R2"])
             view = _synth_agent(i, [])
             view["risk_level"] = "C2"
-            shown = {"pids": [c["pid"] for c in cards], "codes": [c["fund"]["code"] for c in cards],
+            shown = {"pids": [c["post_id"] for c in cards], "codes": [c["landing"]["code"] for c in cards],
                      "held": [], "orgs": ["ORG01"]}
             rec = decide(view, cards, cfg, c2c, c2g, c2l, shown)
             tr = ((rec["parsed"] or {}).get("trade") or {})
-            if tr.get("action") == "buy" and tr.get("code") == cards[0]["fund"]["code"]:
+            if tr.get("action") == "buy" and tr.get("fund") == cards[0]["landing"]["code"]:
                 n += 1
         return n >= 1, f"forced C2 x R4 buys={n}/10"
 
