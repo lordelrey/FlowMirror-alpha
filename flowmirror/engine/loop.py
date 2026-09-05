@@ -195,7 +195,9 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             "market_view": inv.market_view, "risk_mood": inv.risk_mood,
             "c_class": inv.rc, "cash": round(inv.cash, 2), "holdings": hold,
             "last_trade": last_trade.get(inv.id, ""),
-            "declined_confirms": int(declined.get(inv.id, 0)),
+            # prompt.render_experience expects a list of sentences; the engine keeps only the count
+            "declined_confirms": ([f"你此前有 {int(declined.get(inv.id, 0))} 次在《风险不匹配确认书》前放弃了申购。"]
+                                  if int(declined.get(inv.id, 0)) > 0 else []),
             "familiarity": {org: inv.flag.get(org, 0) for org in orgs},
             "guba": {c: lb for c, lb in sorted(guba_view.items()) if c in inv.hold or c in codes},
             "direct": []}
@@ -358,14 +360,15 @@ def apply_decision(inv, rec, shown, day):
             logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="to_checkout")
             S["clicks"] += 1
             fund = FUNDS[code]               # ---- checkout: CxR distribution layer ----
-            smc = row.get("sign_mismatch_confirm")
+            trow = row.get("trade") if isinstance(row.get("trade"), dict) else {}   # amount/confirm live under trade
+            smc = trow.get("sign_mismatch_confirm")
             smc = smc if isinstance(smc, bool) else str(smc).lower() in ("true", "1")
             oc_cf = cxr_outcome(inv.rc, fund.r, smc)
             oc = oc_cf if (act == "subscribe" and cfg.get("suitability")) else "match"
             if act == "subscribe" and oc in ("match", "confirm_signed") and fund.qdii \
                     and code in qdii_blk:
                 oc = "purchase_blocked"      # QDII quota suspension, subscribe-only
-            pct = float(row.get("amount_pct") or 0.0) / 100.0   # amount_pct is 0-100
+            pct = float(trow.get("amount_pct") or 0.0) / 100.0   # amount_pct is 0-100
             amt = 0.0
             if oc in ("match", "confirm_signed"):
                 if act == "subscribe":
@@ -881,6 +884,9 @@ def main(argv=None):
         cfg["seed"] = args.seed
     if args.out:
         cfg["out_dir"] = args.out if os.path.isabs(args.out) else os.path.join(ROOT, args.out)
+        # A run's cache lives with its outputs unless the config points elsewhere on purpose; otherwise an
+        # --out override would silently replay another run's cached responses.
+        cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")
     if args.replay_check:
         logp = os.path.join(cfg["out_dir"], "event_log.jsonl")
         if run_simulation(cfg) != 0:

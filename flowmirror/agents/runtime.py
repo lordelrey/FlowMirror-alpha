@@ -570,12 +570,19 @@ class MockLLM:
             out = out[: int(len(out) * 0.6)]
         return out
 
+    _CARD_RE = re.compile(r"【([^】\n]{1,24})】机构[：:]")   # the card header renders the REAL post id
+
     def _reads(self, text, rng):
         ids = []
-        for m in self._PID_RE.finditer(text or ""):
-            pid = "p" + m.group(1)
+        for m in self._CARD_RE.finditer(text or ""):     # engine post ids as shown on the cards
+            pid = m.group(1).strip()
             if pid not in ids:
                 ids.append(pid)
+        if not ids:                                       # synthetic self-test cards use p1..pK labels
+            for m in self._PID_RE.finditer(text or ""):
+                pid = "p" + m.group(1)
+                if pid not in ids:
+                    ids.append(pid)
         if not ids:
             return []
         k = rng.randint(1, min(4, len(ids)))
