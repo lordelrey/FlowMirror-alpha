@@ -1,22 +1,18 @@
-# FlowMirror v7 engine defaults.
-# Documentation + deep_merge source: a run JSON overrides anything here
-# (see flowmirror/config/loader.py::deep_merge). Values mirror the M0 fixture.
-
 window:
-  max_trading_days: 63          # hard cap even if window.end is later
-suitability: true               # CSRC-style checkout as a randomized factor
+  max_trading_days: 63
+suitability: true
 strategy_mix: measured
 strategy_groups:
-  push_heavy: []                # org names overriding the named mix
+  push_heavy: []
   edu_heavy: []
-  _rule: "explicit org list wins; otherwise the named mix applies"
+  _rule: explicit org list wins; otherwise the named mix applies
 ranking: three_source
 arm_level: agent
 p_image: 0.5
 climate_weighting: true
 memory: true
 social: true
-channels:                       # defaults: all on except trend and direct
+channels:
   feed: true
   experience: true
   trend: false
@@ -29,14 +25,13 @@ feed:
   K: 6
   slots:
     follow: 2
-    match: 2
-    hot: 2
+    fit: 2
+    trending: 2
   w_trust: 1.0
-  w_fam: 1.0
-  w_fit: 0.6
-  w_soc: 0.3
-  w_attn: 0.4
-  eps_noise: 0.05
+  w_fit: 1.0
+  w_heat: 1.0
+  w_soc: 0.5
+  eps: 0.05
   gamma: 1.8
 p_active: 1.0
 memory_days: 5

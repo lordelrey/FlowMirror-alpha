@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\Desktop\ABM paper\flowmirror_v7\flowmirror\engine\loop.py", line 751, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "D:\Desktop\ABM paper\flowmirror_v7\flowmirror\engine\loop.py", line 747, in main
+    return run_simulation(cfg)
+           ^^^^^^^^^^^^^^^^^^^
+  File "D:\Desktop\ABM paper\flowmirror_v7\flowmirror\engine\loop.py", line 310, in run_simulation
+    invs = sorted(init_investors(cfg, W, rng), key=lambda x: x.id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: init_investors() takes 2 positional arguments but 3 were given
