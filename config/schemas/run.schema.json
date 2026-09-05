@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowmirror.example/schemas/run.schema.json",
+  "title": "FlowMirror run configuration (M0+)",
+  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, scenario, and any key starting with '_' (e.g. _what, _generated_from).",
+  "type": "object",
+  "properties": {
+    "run_tag": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_\\-]+$"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "mock_llm": {
+      "type": "boolean"
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "format": "date"
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "format": "date"
+        },
+        "max_trading_days": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "max_trading_days"
+      ],
+      "additionalProperties": false
+    },
+    "n_agents": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agents_file": {
+      "type": "string"
+    },
+    "orgs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "content_pool": {
+      "type": "string"
+    },
+    "posts_per_org_per_day": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "no_repeat_days": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nav_cache": {
+      "type": "string"
+    },
+    "guba_signal": {
+      "type": "string"
+    },
+    "suitability": {
+      "type": "boolean"
+    },
+    "strategy_mix": {
+      "description": "Named mix, or explicit I1/I2/I3 weights summing to ~1.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "measured",
+            "push_heavy",
+            "edu_heavy"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "I1": {
+              "type": "number"
+            },
+            "I2": {
+              "type": "number"
+            },
+            "I3": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "I1",
+            "I2",
+            "I3"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ranking": {
+      "type": "string",
+      "enum": [
+        "three_source",
+        "random"
+      ]
+    },
+    "arm_level": {
+      "type": "string",
+      "enum": [
+        "agent",
+        "exposure",
+        "day",
+        "post"
+      ]
+    },
+    "p_image": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "climate_weighting": {
+      "type": "boolean"
+    },
+    "memory": {
+      "type": "boolean"
+    },
+    "social": {
+      "type": "boolean"
+    },
+    "feed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "K",
+        "slots",
+        "w_trust",
+        "w_fit",
+        "w_heat",
+        "w_soc",
+        "eps",
+        "gamma"
+      ],
+      "properties": {
+        "K": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "slots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "follow",
+            "fit",
+            "trending"
+          ],
+          "properties": {
+            "follow": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "trending": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "w_trust": {
+          "type": "number"
+        },
+        "w_fit": {
+          "type": "number"
+        },
+        "w_heat": {
+          "type": "number"
+        },
+        "w_soc": {
+          "type": "number"
+        },
+        "eps": {
+          "type": "number"
+        },
+        "gamma": {
+          "type": "number"
+        }
+      }
+    },
+    "p_active": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "memory_days": {
+      "type": "integer"
+    },
+    "reflection_every_days": {
+      "type": "integer"
+    },
+    "llm": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "text_model": {
+          "type": "string"
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decision_failure_halt": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "cache": {
+          "type": "string"
+        },
+        "max_tokens_start": {
+          "type": "integer",
+          "minimum": 256
+        }
+      },
+      "required": [
+        "model",
+        "text_model",
+        "workers",
+        "max_attempts",
+        "decision_failure_halt",
+        "cache"
+      ],
+      "additionalProperties": false
+    },
+    "mock_options": {
+      "type": "object",
+      "properties": {
+        "force_c2_r4_click": {
+          "type": "boolean"
+        },
+        "malformed_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "force_c2_r4_click",
+        "malformed_rate"
+      ],
+      "additionalProperties": false
+    },
+    "out_dir": {
+      "type": "string"
+    },
+    "strategy_groups": {
+      "type": "object",
+      "properties": {
+        "push_heavy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "edu_heavy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "_rule": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "channels": {
+      "type": "object",
+      "description": "Only typed here; default values (all true except trend/direct) live in config/engine_defaults.yaml.",
+      "properties": {
+        "feed": {
+          "type": "boolean"
+        },
+        "experience": {
+          "type": "boolean"
+        },
+        "trend": {
+          "type": "boolean"
+        },
+        "social": {
+          "type": "boolean"
+        },
+        "news": {
+          "type": "boolean"
+        },
+        "direct": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "force_arm": {
+      "type": "string",
+      "enum": [
+        "T",
+        "TV"
+      ]
+    },
+    "scenario": {
+      "type": "string",
+      "description": "Path to a scenario.yaml bundle."
+    },
+    "fund_meta_file": {
+      "type": "string"
+    },
+    "family_file": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_tag",
+    "seed",
+    "mock_llm",
+    "window",
+    "n_agents",
+    "agents_file",
+    "orgs",
+    "content_pool",
+    "posts_per_org_per_day",
+    "no_repeat_days",
+    "nav_cache",
+    "guba_signal",
+    "suitability",
+    "strategy_mix",
+    "ranking",
+    "arm_level",
+    "p_image",
+    "climate_weighting",
+    "memory",
+    "social",
+    "feed",
+    "p_active",
+    "memory_days",
+    "reflection_every_days",
+    "llm",
+    "mock_options",
+    "out_dir"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^_": {}
+  }
+}

@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowmirror.example/schemas/scenario.schema.json",
+  "title": "FlowMirror scenario (data plugin bundle)",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "country": {
+      "type": "string",
+      "enum": [
+        "CN",
+        "US"
+      ]
+    },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "zh",
+            "en"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "language"
+      ],
+      "additionalProperties": false
+    },
+    "population": {
+      "type": "object",
+      "properties": {
+        "cells_file": {
+          "type": "string"
+        },
+        "cohort_file": {
+          "type": "string"
+        },
+        "reported_class_field": {
+          "type": "string"
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "cells_file",
+        "cohort_file",
+        "reported_class_field",
+        "classes"
+      ],
+      "additionalProperties": false
+    },
+    "institutions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "rule",
+              "llm"
+            ]
+          },
+          "policy": {
+            "type": "object",
+            "properties": {
+              "intent_mix": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object"
+                  }
+                ]
+              },
+              "cadence": {
+                "type": "integer"
+              },
+              "timing": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "after_rally",
+                  "month_start"
+                ]
+              },
+              "tactics": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "fee_discount",
+                    "new_issue_push",
+                    "series_education",
+                    "live_stream",
+                    "kol",
+                    "performance_showcase",
+                    "retarget_after_click"
+                  ]
+                }
+              },
+              "targeting": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "followers_first"
+                ]
+              }
+            },
+            "required": [
+              "intent_mix",
+              "cadence",
+              "timing",
+              "tactics",
+              "targeting"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "name",
+          "pool",
+          "mode",
+          "policy"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "market": {
+      "type": "object",
+      "properties": {
+        "nav_file": {
+          "type": "string"
+        },
+        "fund_meta_file": {
+          "type": "string"
+        },
+        "calendar": {
+          "type": "string",
+          "enum": [
+            "cn_trading",
+            "us_trading"
+          ]
+        },
+        "settlement_days": {
+          "type": "integer"
+        },
+        "fees": {
+          "type": "object",
+          "properties": {
+            "subscribe_rate": {
+              "type": "number"
+            },
+            "redeem_rate": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "subscribe_rate",
+            "redeem_rate"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "nav_file",
+        "fund_meta_file",
+        "calendar",
+        "settlement_days",
+        "fees"
+      ],
+      "additionalProperties": false
+    },
+    "regulator": {
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "type": "string",
+          "enum": [
+            "cn_cxr",
+            "us_regbi",
+            "none"
+          ]
+        },
+        "options": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "plugin",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "channels": {
+      "type": "object",
+      "properties": {
+        "feed": {
+          "type": "boolean"
+        },
+        "experience": {
+          "type": "boolean"
+        },
+        "trend": {
+          "type": "boolean"
+        },
+        "social": {
+          "type": "boolean"
+        },
+        "news": {
+          "type": "boolean"
+        },
+        "direct": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "feed",
+        "experience",
+        "trend",
+        "social",
+        "news",
+        "direct"
+      ],
+      "additionalProperties": false
+    },
+    "attention": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "guba",
+            "reddit",
+            "none"
+          ]
+        },
+        "file": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "file"
+      ],
+      "additionalProperties": false
+    },
+    "holdout": {
+      "type": "object",
+      "properties": {
+        "flows_file": {
+          "type": "string"
+        },
+        "lead_placebo_quarter": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flows_file",
+        "lead_placebo_quarter"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "name",
+    "country",
+    "platform",
+    "population",
+    "institutions",
+    "market",
+    "regulator",
+    "channels",
+    "attention",
+    "holdout"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^_": {}
+  }
+}

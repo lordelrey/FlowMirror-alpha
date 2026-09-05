@@ -1,0 +1,54 @@
+{
+  "_meta": {
+    "script": "sim/elasticity_real.py",
+    "version": "1.0.0",
+    "generated_at": "2026-09-05T05:07:46Z",
+    "window": "2023Q1-2025Q4",
+    "inputs_sha256": {
+      "flow_panel_v2.json": "6931d36db5e8bbde58327b2738e705e180a70870837b1b1cb0fb99dfd7ebf5f1",
+      "guba_posts_dir": "f5d6d403aaee63a3cf963408871e35ac01d1b5545686ab9346f491ceaa5a76ee"
+    },
+    "model_formula": "log(1+y_{f,q}) = beta*log(1+n_posts_{f,q}) + alpha_f + gamma_q + eps_{f,q}",
+    "se_type": "cluster_by_fund (small-sample factor G/(G-1)*(N-1)/(N-K))",
+    "n_funds": 752,
+    "n_fund_quarters": 8231,
+    "n_quarters": 12,
+    "guba_rows_read": 742054,
+    "guba_rows_dropped_crosslist": 87096,
+    "guba_rows_dedup": 0
+  },
+  "estimates": {
+    "net": {
+      "beta": -0.014491382613063982,
+      "se": 0.014654400436448957,
+      "t": -0.9888758448977885,
+      "n": 7581
+    },
+    "sub": {
+      "beta": 0.009066172377684938,
+      "se": 0.01175244029595607,
+      "t": 0.7714289244936257,
+      "n": 8231
+    },
+    "red": {
+      "beta": 0.013069850536859167,
+      "se": 0.014868640299821703,
+      "t": 0.8790212335028305,
+      "n": 8231
+    }
+  },
+  "placebo": {
+    "lead": {
+      "beta": -0.035368346406683605,
+      "se": 0.015854459097950132,
+      "t": -2.2308138163639075,
+      "n": 7581
+    },
+    "lag": {
+      "beta": -0.008008257461589776,
+      "se": 0.012663103744439644,
+      "t": -0.632408738268941,
+      "n": 7581
+    }
+  }
+}

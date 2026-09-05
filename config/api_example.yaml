@@ -1,0 +1,16 @@
+# FlowMirror LLM API example.
+# Copy to config/api.yaml and fill in your own credentials.
+# config/api.yaml is git-ignored; never commit real keys.
+
+provider:
+  base_url: https://open.bigmodel.cn/api/paas/v4
+  api_key: sk-REPLACE_ME
+  model: glm-4.6v              # vision model, reads creative cards (text+image)
+  text_model: glm-4.6v         # text-only fallback model
+
+images:
+  enabled: true                # requires: pip install -e ".[images]"
+  max_side: 768
+
+cache:
+  enabled: true

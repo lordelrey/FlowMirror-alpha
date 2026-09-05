@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowmirror"
+version = "7.0.0a0"
+description = "FlowMirror: an open, config-driven fund-market social sandbox with vision-LLM investor agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "FlowMirror authors" }]
+dependencies = [
+    "jsonschema>=4.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+images = ["Pillow>=9"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+flowmirror = "flowmirror.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["flowmirror*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

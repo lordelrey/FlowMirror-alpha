@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If FlowMirror contributed to your research, please cite it as below."
+title: "FlowMirror"
+authors:
+  - name: "FlowMirror authors"
+version: "7.0.0a0"
+date-released: "2026-01-01"
+license: MIT
+repository-code: "https://github.com/flowmirror/flowmirror"  # TODO: final home

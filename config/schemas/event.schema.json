@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowmirror.example/schemas/event.schema.json",
+  "title": "FlowMirror event log row",
+  "description": "One JSON object per line of event_log.jsonl. Shapes are frozen to what the pre-registered analysis script srs_analysis.py consumes (post/imp/click/co/act/st) plus the v6 additions (dec/cmt/clim/refl/tac). Key 'ev' is the discriminator.",
+  "type": "object",
+  "required": ["ev", "t", "d"],
+  "properties": {
+    "ev": {"type": "string", "enum": ["post", "imp", "click", "co", "act", "st", "dec", "cmt", "clim", "refl", "tac"]},
+    "t": {"type": "integer", "minimum": 0},
+    "d": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"ev": {"const": "post"}}}, "then": {"required": ["org", "p", "intent"], "properties": {
+      "org": {"type": "string"}, "p": {"type": "string"}, "intent": {"type": "string", "enum": ["I1", "I2", "I3"]},
+      "ig": {"type": "string", "enum": ["I2", "nonI2"]}, "fund": {"type": ["string", "null"]}, "img": {"type": "boolean"}}}},
+    {"if": {"properties": {"ev": {"const": "imp"}}}, "then": {"required": ["i", "p", "arm", "slot", "source"], "properties": {
+      "i": {"type": "string"}, "p": {"type": "string"}, "arm": {"type": "string", "enum": ["T", "TV"]},
+      "slot": {"type": "integer", "minimum": 0}, "source": {"type": "string", "enum": ["follow", "fit", "trending", "random", "fill"]}}}},
+    {"if": {"properties": {"ev": {"const": "click"}}}, "then": {"required": ["i", "p", "oc"], "properties": {
+      "i": {"type": "string"}, "p": {"type": "string"}, "oc": {"type": "string", "enum": ["to_checkout", "click_no_landing"]}}}},
+    {"if": {"properties": {"ev": {"const": "co"}}}, "then": {"required": ["i", "fund", "act", "oc", "oc_cf"], "properties": {
+      "i": {"type": "string"}, "p": {"type": ["string", "null"]}, "fund": {"type": "string", "pattern": "^\\d{6}$"},
+      "ig": {"type": "string"}, "act": {"type": "string", "enum": ["subscribe", "redeem"]},
+      "oc": {"type": "string", "enum": ["match", "confirm_signed", "confirm_declined", "hard_block", "purchase_blocked", "below_min", "no_holdings"]},
+      "oc_cf": {"type": "string", "enum": ["match", "confirm_signed", "confirm_declined", "hard_block", "purchase_blocked"]},
+      "amt": {"type": "number"}}}},
+    {"if": {"properties": {"ev": {"const": "act"}}}, "then": {"required": ["i", "kind", "fund", "amt", "units", "nav"], "properties": {
+      "i": {"type": "string"}, "p": {"type": ["string", "null"]}, "kind": {"type": "string", "enum": ["subscribe", "redeem", "dca"]},
+      "fund": {"type": "string"}, "amt": {"type": "number"}, "units": {"type": "number"}, "nav": {"type": "number"}}}},
+    {"if": {"properties": {"ev": {"const": "st"}}}, "then": {"required": ["i", "org", "what"], "properties": {
+      "i": {"type": "string"}, "org": {"type": "string"}, "what": {"type": "string", "enum": ["level", "follow"]},
+      "lv": {"type": "integer", "minimum": 0, "maximum": 2}, "fam": {"type": "number"}, "aff": {"type": "number"}}}},
+    {"if": {"properties": {"ev": {"const": "dec"}}}, "then": {"required": ["i", "prompt_sha", "cache_hit", "attempts", "status", "arm"], "properties": {
+      "i": {"type": "string"}, "prompt_sha": {"type": "string"}, "raw_sha": {"type": ["string", "null"]}, "cache_hit": {"type": "boolean"},
+      "attempts": {"type": "integer", "minimum": 0}, "status": {"type": "string", "enum": ["ok", "parse_fail", "infeasible", "timeout", "cap_stopped", "mock"]},
+      "arm": {"type": "string", "enum": ["T", "TV"]}, "mood": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+      "reason": {"type": ["string", "null"]}, "violations": {"type": "array", "items": {"type": "string"}}}}},
+    {"if": {"properties": {"ev": {"const": "cmt"}}}, "then": {"required": ["i", "p", "stance", "text"], "properties": {
+      "i": {"type": "string"}, "p": {"type": "string"}, "stance": {"type": "string", "enum": ["bullish", "bearish", "watching", "no_comment"]},
+      "text": {"type": "string", "maxLength": 80}}}},
+    {"if": {"properties": {"ev": {"const": "clim"}}}, "then": {"required": ["p", "label", "source"], "properties": {
+      "p": {"type": "string"}, "label": {"type": "string", "enum": ["no_signal", "bullish_majority", "mixed", "bearish_majority"]},
+      "counts": {"type": "object"}, "top": {"type": "array"}, "source": {"type": "string", "enum": ["guba_seed", "agent"]}}}},
+    {"if": {"properties": {"ev": {"const": "refl"}}}, "then": {"required": ["i", "summary_sha"], "properties": {
+      "i": {"type": "string"}, "summary_sha": {"type": "string"}}}},
+    {"if": {"properties": {"ev": {"const": "tac"}}}, "then": {"required": ["org", "type"], "properties": {
+      "org": {"type": "string"}, "type": {"type": "string"}, "fund": {"type": ["string", "null"]}, "start": {"type": "string"}, "end": {"type": "string"}}}}
+  ]
+}

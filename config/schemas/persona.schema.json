@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flowmirror.example/schemas/persona.schema.json",
+  "title": "FlowMirror persona artifacts (cell / individual / belief_state)",
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "properties": {
+        "cell_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+\\|[a-z]+\\|[a-z]+$"
+        },
+        "age": {
+          "type": "number"
+        },
+        "asset": {
+          "type": "number"
+        },
+        "risk_latent": {
+          "type": "string",
+          "enum": [
+            "fragile",
+            "typical",
+            "tolerant"
+          ]
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reported_C": {
+          "type": "string",
+          "enum": [
+            "C1",
+            "C2",
+            "C3",
+            "C4",
+            "C5"
+          ]
+        },
+        "max_R_default": {
+          "type": "string",
+          "enum": [
+            "R1",
+            "R2",
+            "R3",
+            "R4",
+            "R5"
+          ]
+        },
+        "cpt": {
+          "type": "object",
+          "properties": {
+            "lambda": {
+              "type": "number"
+            },
+            "alpha": {
+              "type": "number"
+            },
+            "w_plus": {
+              "type": "number"
+            },
+            "w_minus": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "lambda",
+            "alpha",
+            "w_plus",
+            "w_minus"
+          ],
+          "additionalProperties": false
+        },
+        "kernel": {
+          "type": "object",
+          "description": "chaser + allocator + social should sum to ~1.",
+          "properties": {
+            "chaser": {
+              "type": "number"
+            },
+            "allocator": {
+              "type": "number"
+            },
+            "social": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "chaser",
+            "allocator",
+            "social"
+          ],
+          "additionalProperties": false
+        },
+        "traits": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "cell_id",
+        "age",
+        "asset",
+        "risk_latent",
+        "weight",
+        "reported_C",
+        "max_R_default",
+        "cpt",
+        "kernel",
+        "traits"
+      ],
+      "additionalProperties": false
+    },
+    "individual": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^inv_\\d{5}$"
+        },
+        "cell": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+\\|[a-z]+\\|[a-z]+$"
+        },
+        "age": {
+          "type": "number"
+        },
+        "asset": {
+          "type": "number"
+        },
+        "risk_latent": {
+          "type": "string",
+          "enum": [
+            "fragile",
+            "typical",
+            "tolerant"
+          ]
+        },
+        "core": {
+          "type": "string",
+          "enum": [
+            "chaser",
+            "allocator",
+            "social"
+          ]
+        },
+        "wealth_wan": {
+          "type": "number",
+          "minimum": 0
+        },
+        "entry_day": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "reported_C": {
+          "type": "string",
+          "enum": [
+            "C1",
+            "C2",
+            "C3",
+            "C4",
+            "C5"
+          ]
+        },
+        "c_misreported": {
+          "type": "boolean"
+        },
+        "traits": {
+          "type": "object"
+        },
+        "strat_weight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "cell",
+        "age",
+        "asset",
+        "risk_latent",
+        "core",
+        "wealth_wan",
+        "entry_day",
+        "reported_C",
+        "c_misreported",
+        "traits"
+      ],
+      "additionalProperties": false
+    },
+    "belief_state": {
+      "type": "object",
+      "properties": {
+        "market_view": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "risk_mood": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "trust": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "attention": {
+          "type": "object"
+        },
+        "ref_point": {
+          "type": "object"
+        },
+        "gain_loss": {
+          "type": "object"
+        },
+        "experience": {
+          "type": "object"
+        },
+        "trend_read": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "market_view",
+        "risk_mood",
+        "trust",
+        "attention",
+        "ref_point",
+        "gain_loss"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/cell"
+    },
+    {
+      "$ref": "#/$defs/individual"
+    },
+    {
+      "$ref": "#/$defs/belief_state"
+    }
+  ]
+}

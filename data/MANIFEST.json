@@ -1,0 +1,95 @@
+{
+  "generated_at_utc": "2026-09-05T09:11:17Z",
+  "tool": "data_pipeline/cn/import_from_research.py",
+  "note": "Rows cover files written in this run only; the MANIFEST files exclude themselves. nav_cache.json is never copied (derived codes/readme only).",
+  "files": [
+    {
+      "sha256": "c555ac61041b6b65757fe54abe10dccf6328bf237b3ec4ed74a9282a8b0b1618",
+      "path": "data/attention/elasticity_real_v1.json",
+      "bytes": 1504,
+      "source": "research:sim/elasticity_real_v1.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim"
+    },
+    {
+      "sha256": "46afe5f3720d5e77d912110e894985ab2c6823b9d5219c0c788d93810ab1b2e8",
+      "path": "data/attention/guba_signal_v1.json",
+      "bytes": 1053194,
+      "source": "research:sim/guba_signal_v1.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "stance_jobs stripped (aggregates only)"
+    },
+    {
+      "sha256": "33b8e183888f88b021c6e39b0d3e314e288f5b4dc8968d1526948235640942ab",
+      "path": "data/creatives/cn/content_pool_v1_masked.jsonl",
+      "bytes": 2278584,
+      "source": "research:sim/content_pool_v1_masked.jsonl",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "images stripped (image_paths_resized -> image_ids; path keys dropped)"
+    },
+    {
+      "sha256": "6c09ee5998b76bd3e136e70c1ea78bab5a71a759facda90ba56b2625eaeb0cd3",
+      "path": "data/creatives/cn/tables_frozen_meta.json",
+      "bytes": 3319,
+      "source": "research:paper/figs/tables_frozen_meta.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim; absolute paths replaced by basenames; absolute paths replaced by basenames"
+    },
+    {
+      "sha256": "6931d36db5e8bbde58327b2738e705e180a70870837b1b1cb0fb99dfd7ebf5f1",
+      "path": "data/flows/flow_panel_v2.json",
+      "bytes": 3336914,
+      "source": "research:sim/flow_panel_v2.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim (public quarterly disclosures)"
+    },
+    {
+      "sha256": "5774341a876b2af0d38cdbd0e373ddec0f66783184bcfc3f071f5eb8071fbb67",
+      "path": "data/flows/stylized_facts_real.json",
+      "bytes": 2048,
+      "source": "research:sim/stylized_facts.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim"
+    },
+    {
+      "sha256": "68ee03c28cc681149689ee102cc0554b319a31c598a4ce6f0102728ed44238cf",
+      "path": "data/funds/README.md",
+      "bytes": 295,
+      "source": "research:sim/nav_cache.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "derived: regeneration readme"
+    },
+    {
+      "sha256": "3073743ee9dd530ce59d0f078de5f3802e7e9fb73e2dc558b883e7f4d305ca69",
+      "path": "data/funds/nav_codes.txt",
+      "bytes": 2793,
+      "source": "research:sim/nav_cache.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "derived: sorted fund codes only"
+    },
+    {
+      "sha256": "75f5b7a1d8914ceeb41fab49fa5737b5d8c270cbe32618a4f6b512a429fb057a",
+      "path": "data/population/agents_seed2027.json",
+      "bytes": 438305,
+      "source": "research:sim/agents_seed2027.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim (agents_sha256 verified)"
+    },
+    {
+      "sha256": "23a5f66024fc8013cc7c25d70f329c505d04203052e8bd8aaac594a1d3535ef9",
+      "path": "data/population/persona_grid_v3.json",
+      "bytes": 145024,
+      "source": "research:data/persona_grid_v3.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim"
+    },
+    {
+      "sha256": "1af2854ce4c7280ff418084a9c2ff679b0c51ba87156b760140a8cf90eba1531",
+      "path": "data/population/population_10k_v3.json",
+      "bytes": 4561946,
+      "source": "external:flowmirror/flowmirror/data/population_10k_v3.json",
+      "generated_at": "2026-09-05T09:11:17Z",
+      "transformation": "verbatim"
+    }
+  ]
+}
