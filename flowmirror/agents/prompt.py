@@ -9,8 +9,13 @@ oldest first), c_class, cash, holdings ([{code,name,r,units,nav,pnl_pct}]), last
 (str or {d,act,code,amt}), declined_confirms (list[str]), familiarity ({org:0|1|2}),
 index_5d, holdings_1d, guba ({code:{name,mult,bull_ratio}}), trend ({code:{name,ret_1w,
 ret_1m,ret_3m,mdd,pos}}), direct (list[str]). feed_cards carry post_id/org/title/caption/
-landing({code,name,R,ret_3m,ret_1y,min_buy}|None)/likes/arm("T"|"TV")/image_path/image_sha/
-comments_prev (<=3 x {stance,text,fam_phrase})/climate.
+landing({code,name,R,ret_3m,ret_1y,min_buy}|None)/likes/arm("T"|"TC"|"TV")/image_path/
+image_sha/comments_prev (<=3 x {stance,text,fam_phrase})/climate plus n_comments_prev
+(int: the TOTAL day-(t-1) comment count shown in the social header; when absent the
+header falls back to the excerpt count, reproducing the original bytes).  TC cards
+additionally carry ocr_masked|ocr_text (the note's OCR text, hard-capped at 200 chars
+in the prompt) and image_caption_frozen (str or list[str], concatenated in order).
+TV cards attach image_path as a base64 data-URI; TC and T cards never attach pixels.
 """
 from __future__ import annotations
 
@@ -85,9 +90,10 @@ def iter_json_objects(text):
 # Anti-priming guard and the fixed prompt texts (block order A-G is frozen).
 # ---------------------------------------------------------------------------
 ANTI_PRIMING_WORDS = ["适当性", "监管", "配图", "跟风", "羊群", "假设", "研究", "实验"]
-# The spec mandates the literal T-arm marker even though it contains the scanned word
-# 配图: that one platform-mechanic line is a sanctioned literal, stripped before scanning.
-_SANCTIONED_LITERALS = ("配图不展示",)
+# The spec mandates the literal arm-marker lines even though they contain the scanned
+# word 配图: those platform-mechanic lines are sanctioned literals, stripped before
+# scanning (T arm since v1.3; the TC no-payload fallback since PREREG v1.5 A).
+_SANCTIONED_LITERALS = ("配图不展示", "配图信息不可用")
 
 
 def check_anti_priming(text, where="text"):
@@ -155,7 +161,7 @@ def _pct(v):
 
 
 def _pctu(v):
-    return f"{abs(float(v or 0)) * 100:.1f}%"
+    return f"{abs(float(v or 0) * 100):.1f}%"
 
 
 def _truncate_caption(text, limit=200):
@@ -243,12 +249,23 @@ def render_trend(view):
 
 
 def render_social(card):
-    """social channel (block F, per card): t-1 top comments + climate; '' when the label is no_signal."""
+    """social channel (block F, per card): t-1 top comments + climate; '' when the label is no_signal.
+
+    The header count is the TOTAL day-(t-1) comment count on the post when the card
+    carries n_comments_prev (the loop supplies it from the t-1 comment list length,
+    PREREG analysis need B2); only the top-3 lines are ever shown.  Cards without
+    n_comments_prev (or with an inconsistent value below the excerpt count) fall
+    back to the number of excerpted comments, which reproduces the original
+    rendering byte-for-byte.
+    """
     cps = card.get("comments_prev") or []
     label = str(card.get("climate") or card.get("climate_label") or "no_signal")
     if not cps or label == "no_signal":
         return ""
-    out = [f"昨日评论（共 {len(cps)} 条，{_CLIMATE_ZH.get(label, '看法分歧')}）："]
+    n = card.get("n_comments_prev")
+    if isinstance(n, bool) or not isinstance(n, int) or n < len(cps):
+        n = len(cps)
+    out = [f"昨日评论（共 {n} 条，{_CLIMATE_ZH.get(label, '看法分歧')}）："]
     for i, c in enumerate(cps[:3]):
         c = c if isinstance(c, dict) else {}
         stance = _STANCE_ZH.get(str(c.get("stance", "")), "观望")
@@ -264,6 +281,35 @@ def render_direct(view):
 # ---------------------------------------------------------------------------
 # Feed cards (block F). Feed order is itself part of the treatment: never shuffle.
 # ---------------------------------------------------------------------------
+def _tc_image_text(card):
+    """TC-arm text payload describing the image without pixels; None when unavailable.
+
+    ocr_masked wins over ocr_text; whichever is used is hard-capped at 200 chars
+    (PREREG v1.5 A).  image_caption_frozen may be a str or a list[str]; list items
+    are concatenated in order.  Returns None when neither source exists, in which
+    case render_card() writes 配图信息不可用。 and build_decision_messages()
+    records the tc_no_caption degradation note.
+    """
+    ocr = ""
+    for key in ("ocr_masked", "ocr_text"):
+        v = card.get(key)
+        if isinstance(v, str) and v.strip():
+            ocr = v[:200]
+            break
+    cap_raw = card.get("image_caption_frozen")
+    if isinstance(cap_raw, str):
+        cap = cap_raw
+    elif isinstance(cap_raw, (list, tuple)):
+        cap = "".join(x for x in cap_raw if isinstance(x, str))
+    else:
+        cap = ""
+    if not cap.strip():
+        cap = ""
+    if not ocr and not cap:
+        return None
+    return ocr + cap
+
+
 def render_card(card, social_on=True):
     lines = [f"【{card.get('post_id', '')}】机构：{card.get('org', '')} ｜ 热度：{card.get('likes', 0)} 赞",
              "标题：" + str(card.get("title", "")),
@@ -276,8 +322,14 @@ def render_card(card, social_on=True):
                      + FUND_ZH.format(ftype=ftype, r3m=_pct(landing.get("ret_3m")),
                                       r1y=_pct(landing.get("ret_1y")))
                      + f"起购金额 {landing.get('min_buy', 0)} 元。")
-    if str(card.get("arm") or "T") == "T":
+    arm = str(card.get("arm") or "T")
+    if arm == "T":
         lines.append("配图不展示。")
+    elif arm == "TC":
+        # PREREG v1.5 A: no pixels; the image is conveyed by the note's OCR
+        # text (ocr_masked preferred, <=200 chars) plus the frozen caption.
+        payload = _tc_image_text(card)
+        lines.append(("图片信息（文字）：" + payload) if payload is not None else "配图信息不可用。")
     if social_on:
         social = render_social(card)
         if social:
@@ -294,8 +346,10 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     messages is OpenAI chat format (system + one user message whose content is a list of
     text/image parts; a TV image part sits right after its card text part). prompt_sha
     hashes the concatenated TEXT of all blocks (base64 payloads excluded). notes records
-    image degradations ("image_missing"/"image_unsupported") and one
-    "channel_sha:<name>=<8hex>" line per ENABLED channel.
+    image degradations ("image_missing"/"image_unsupported"), the TC-arm degradation
+    "tc_no_caption" (PREREG v1.5 A: TC card with neither OCR text nor frozen caption),
+    and one "channel_sha:<name>=<8hex>" line per ENABLED channel.  Images are attached
+    ONLY for arm == "TV"; T and TC cards are text-only by construction.
     """
     cfg = cfg or {}
     channels = dict(cfg.get("channels") or {})
@@ -341,7 +395,10 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     add_text("blocks B-E", head)
     for card in feed_cards:
         add_text("card:" + str(card.get("post_id")), render_card(card, social_on), check=False)
-        if str(card.get("arm") or "T") != "TV":
+        arm = str(card.get("arm") or "T")
+        if arm == "TC" and _tc_image_text(card) is None:
+            notes.append("tc_no_caption")
+        if arm != "TV":
             continue
         ipath = str(card.get("image_path") or "")
         exists = bool(ipath) and os.path.isfile(ipath)
@@ -634,6 +691,51 @@ def _self_test():
         check("build: creative text with sensitive word is NOT censored", True)
     except ValueError:
         check("build: creative text with sensitive word is NOT censored", False, "ValueError on data")
+
+    # --- TC arm (PREREG v1.5 A) + n_comments_prev header (analysis B2) ----
+    tc_extra = [
+        {"post_id": "p7", "org": "华夏基金", "title": "一张图看懂资产配置", "caption": "图解配置思路。",
+         "landing": None, "likes": 9, "arm": "TC", "image_path": jpg, "image_sha": None,
+         "ocr_masked": "横轴为风险等级，纵轴为建议仓位比例。",
+         "ocr_text": "不应被采用的备用OCR文本。",
+         "image_caption_frozen": ["蓝色区域代表债券部分。", "红色区域代表权益部分。"],
+         "comments_prev": [], "climate": "no_signal", "n_comments_prev": 0},
+        {"post_id": "p8", "org": "易方达基金", "title": "定投微笑曲线图解", "caption": "图解定投。",
+         "landing": None, "likes": 6, "arm": "TC", "image_path": None, "image_sha": None,
+         "ocr_masked": "曲线示意图：下跌段买入更多份额。",
+         "comments_prev": [{"stance": "bullish", "text": "坚持定投第三年", "fam_phrase": "老持有人"},
+                           {"stance": "watching", "text": "图里低谷期好长", "fam_phrase": "新人"},
+                           {"stance": "bearish", "text": "止盈更难", "fam_phrase": "路人"},
+                           {"stance": "watching", "text": "第四条不应展示", "fam_phrase": "路人"}],
+         "climate": "mixed", "n_comments_prev": 11},
+        {"post_id": "p9", "org": "华夏基金", "title": "图注缺失的帖子", "caption": "这条帖子的图注缺失。",
+         "landing": None, "likes": 3, "arm": "TC", "image_path": None, "image_sha": None,
+         "comments_prev": [], "climate": "no_signal"},
+        {"post_id": "p10", "org": "易方达基金", "title": "长OCR截断测试", "caption": "OCR超长截断。",
+         "landing": None, "likes": 4, "arm": "TC", "image_path": None, "image_sha": None,
+         "ocr_text": "长" * 500, "comments_prev": [], "climate": "no_signal"},
+    ]
+    cards_tc = cards + tc_extra
+    m_tc, _psha_tc, ishas_tc, notes_tc = build_decision_messages(view_a, cards_tc, cfg)
+    text_tc = "\n".join(p["text"] for p in m_tc[1]["content"] if p.get("type") == "text")
+    img_tc = [p for p in m_tc[1]["content"] if p.get("type") == "image_url"]
+    check("TC: never attaches an image, even with a real image_path",
+          len(img_tc) == 1 and ishas_tc == [sha256_file(jpg)]
+          and str(img_tc[0]["image_url"]["url"]).startswith("data:image/jpeg;base64,"))
+    check("TC: renders OCR + frozen caption after the text-image marker",
+          "图片信息（文字）：横轴为风险等级，纵轴为建议仓位比例。蓝色区域代表债券部分。红色区域代表权益部分。" in text_tc)
+    check("TC: ocr_masked preferred over ocr_text", "不应被采用的备用OCR文本。" not in text_tc)
+    check("TC: no payload -> fallback line + exactly one tc_no_caption note",
+          "配图信息不可用。" in text_tc and notes_tc.count("tc_no_caption") == 1)
+    check("TC: ocr_text fallback capped at 200 chars",
+          ("图片信息（文字）：" + "长" * 200) in text_tc and "长" * 201 not in text_tc)
+    check("B2: header shows the t-1 total via n_comments_prev, top-3 kept",
+          "昨日评论（共 11 条，看法分歧）：" in text_tc and "第四条不应展示" not in text_tc)
+    check("B2: cards without n_comments_prev keep the old header bytes",
+          "昨日评论（共 2 条，看法分歧）：" in text_tc)
+    check("TC: no anti-priming word beyond the sanctioned literals",
+          not any(w in text_tc.replace("配图不展示", "").replace("配图信息不可用", "")
+                  for w in ANTI_PRIMING_WORDS))
 
     rmsg, rsha = build_reflection_messages(view_a)
     check("reflect: messages+sha", rmsg[0]["role"] == "system" and len(rsha) == 64
