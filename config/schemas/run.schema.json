@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/run.schema.json",
   "title": "FlowMirror run configuration (M0+)",
-  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, scenario, and any key starting with '_' (e.g. _what, _generated_from).",
+  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml; arm_level is accepted as a legacy alias mapped to modality_level when modality_level is absent), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from).",
   "type": "object",
   "properties": {
     "run_tag": {
@@ -14,6 +14,102 @@
     },
     "mock_llm": {
       "type": "boolean"
+    },
+    "agent_policy": {
+      "description": "Decision source for every agent: 'llm' (live/mock caller) or 'null' (flowmirror.agents.null_policy.NullPolicyLLM; wins over mock_llm). Parameters in null_params are PREREGISTERED (PREREG v1.5 draft section F, forbidden item 12): fix them before seeing main-grid results.",
+      "type": "string",
+      "enum": [
+        "llm",
+        "null"
+      ],
+      "default": "llm"
+    },
+    "null_params": {
+      "description": "Rule parameters for the null policy (Card C); all scalar keys are numbers, stance_probs carries the three stance probabilities. Defaults live in config/engine_defaults.yaml.",
+      "type": "object",
+      "properties": {
+        "p_redeem_gain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "p_redeem_loss": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "redeem_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "p_sub_base": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "chase_slope": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sub_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "p_sign_mismatch": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "p_like": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "p_save": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "p_follow": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "p_comment": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stance_probs": {
+          "type": "object",
+          "properties": {
+            "bullish": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "bearish": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "watching": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "bullish",
+            "bearish",
+            "watching"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "window": {
       "type": "object",
@@ -122,6 +218,59 @@
         "day",
         "post"
       ]
+    },
+    "modality_level": {
+      "description": "Assignment level for modality arms; arm_level is the legacy alias used when this key is absent.",
+      "type": "string",
+      "enum": [
+        "agent",
+        "run",
+        "exposure"
+      ]
+    },
+    "modality_arms": {
+      "description": "Non-empty unique subset of {T, TC, TV}.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "T",
+          "TC",
+          "TV"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "modality_run_arm": {
+      "description": "Arm applied to every agent when modality_level == 'run'; must appear in modality_arms.",
+      "type": "string",
+      "enum": [
+        "T",
+        "TC",
+        "TV"
+      ]
+    },
+    "fees": {
+      "description": "Subscription/redemption fee rates in [0, 0.1].",
+      "type": "object",
+      "properties": {
+        "subscribe_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.1
+        },
+        "redeem_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.1
+        }
+      },
+      "required": [
+        "subscribe_rate",
+        "redeem_rate"
+      ],
+      "additionalProperties": false
     },
     "p_image": {
       "type": "number",
@@ -366,5 +515,70 @@
   "additionalProperties": false,
   "patternProperties": {
     "^_": {}
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "modality_run_arm": {
+            "const": "T"
+          }
+        },
+        "required": [
+          "modality_run_arm"
+        ]
+      },
+      "then": {
+        "properties": {
+          "modality_arms": {
+            "contains": {
+              "const": "T"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "modality_run_arm": {
+            "const": "TC"
+          }
+        },
+        "required": [
+          "modality_run_arm"
+        ]
+      },
+      "then": {
+        "properties": {
+          "modality_arms": {
+            "contains": {
+              "const": "TC"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "modality_run_arm": {
+            "const": "TV"
+          }
+        },
+        "required": [
+          "modality_run_arm"
+        ]
+      },
+      "then": {
+        "properties": {
+          "modality_arms": {
+            "contains": {
+              "const": "TV"
+            }
+          }
+        }
+      }
+    }
+  ]
 }

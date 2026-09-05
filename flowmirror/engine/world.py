@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """flowmirror.engine.world -- FlowMirror v7 world layer (everything but the day loop).
 
-Owns: run-config validation, data loaders (World), the Fund/Inv state classes, the
-institution posting policy, guba climate seeding, the event logger, the invariant
-checks and the report writers. flowmirror.engine.loop imports this module and owns
-only the trading-day loop, the apply step and the CLI.
+Owns: run-config validation (incl. the A2 modality arms and fee keys), data loaders (World),
+the Fund/Inv state classes, the institution posting policy, guba climate seeding, the event
+logger, the invariant checks and the report writers. flowmirror.engine.loop imports this module
+and owns only the trading-day loop, the apply step and the CLI.
 
 Determinism: random.Random(rng_seed_from(run_tag, *parts)) streams only; hashlib
 sha256 via flowmirror.io.hashing; never built-in hash(); sets are never iterated
@@ -91,6 +91,12 @@ _YAML_ALIAS = {"start_date": ("window", "start"), "end_date": ("window", "end"),
                "days": ("window", "max_trading_days"), "llm_workers": ("llm", "workers"),
                "K": ("feed", "K"), "eps": ("feed", "eps"), "gamma": ("feed", "gamma")}
 
+# A2 modality contract: level (agent|run|exposure), the arm set and the fee schedule.
+_MOD_LEVELS = ("agent", "run", "exposure")
+_MOD_ARMS = ("T", "TC", "TV")
+_FALLBACK_ARMS = ["T", "TV"]
+_FALLBACK_FEES = {"subscribe_rate": 0.0, "redeem_rate": 0.0}
+
 
 def _engine_defaults() -> dict:
     raw = {}
@@ -113,6 +119,73 @@ def _engine_defaults() -> dict:
 
 
 DEFAULT_CONFIG = _engine_defaults()   # nothing else merged; no config files are written here
+# A2: pick the modality/fee defaults up from engine_defaults.yaml when the yaml carries them,
+# and hard-code the same fallbacks so the engine also runs before the yaml lands.
+if DEFAULT_CONFIG.get("modality_level") not in _MOD_LEVELS:
+    DEFAULT_CONFIG["modality_level"] = "agent"
+_ma = DEFAULT_CONFIG.get("modality_arms")
+if not isinstance(_ma, list) or not _ma or any(a not in _MOD_ARMS for a in _ma):
+    DEFAULT_CONFIG["modality_arms"] = list(_FALLBACK_ARMS)
+if DEFAULT_CONFIG.get("modality_run_arm") not in _MOD_ARMS:
+    DEFAULT_CONFIG["modality_run_arm"] = "TV"
+try:
+    _mf = DEFAULT_CONFIG.get("fees")
+    _mf = _mf if isinstance(_mf, dict) else {}
+    DEFAULT_CONFIG["fees"] = {"subscribe_rate": float(_mf.get("subscribe_rate", 0.0)),
+                              "redeem_rate": float(_mf.get("redeem_rate", 0.0))}
+except Exception:
+    DEFAULT_CONFIG["fees"] = dict(_FALLBACK_FEES)
+
+
+def _mod_level_of(cfg: dict) -> str:
+    """Effective modality level: modality_level wins; arm_level is the legacy alias; default agent."""
+    return cfg.get("modality_level") or cfg.get("arm_level") or "agent"
+
+
+def _modality_compat(cfg: dict) -> str:
+    """Backward compat (A2): a config that lacks modality_level but carries the legacy arm_level
+    alias is upgraded in place (modality_level = arm_level). Returns the effective level."""
+    if "modality_level" not in cfg and "arm_level" in cfg:
+        cfg["modality_level"] = cfg["arm_level"]
+    return _mod_level_of(cfg)
+
+
+def _validate_modality(cfg: dict) -> None:
+    lvl = _modality_compat(cfg)
+    if lvl not in _MOD_LEVELS:
+        die(f"config: modality_level must be one of agent|run|exposure (got {lvl!r})")
+    cfg["modality_level"] = lvl
+    arms = cfg.get("modality_arms")
+    if arms is None:
+        arms = list(DEFAULT_CONFIG.get("modality_arms") or _FALLBACK_ARMS)
+        cfg["modality_arms"] = arms
+    if not isinstance(arms, list) or not arms:
+        die("config: modality_arms must be a non-empty list of arm names")
+    if any(a not in _MOD_ARMS for a in arms):
+        die(f"config: modality_arms entries must be T|TC|TV (got {arms})")
+    if len(set(arms)) != len(arms):
+        die(f"config: modality_arms must not repeat an arm (got {arms})")
+    run_arm = cfg.get("modality_run_arm")
+    if run_arm is None:
+        run_arm = DEFAULT_CONFIG.get("modality_run_arm") or "TV"
+        cfg["modality_run_arm"] = run_arm
+    if run_arm not in _MOD_ARMS:
+        die(f"config: modality_run_arm must be T|TC|TV (got {run_arm!r})")
+    if run_arm not in arms:
+        die(f"config: modality_run_arm {run_arm!r} must be one of modality_arms {arms}")
+    fees = cfg.get("fees")
+    if fees is None:
+        fees = dict(DEFAULT_CONFIG.get("fees") or _FALLBACK_FEES)
+        cfg["fees"] = fees
+    if not isinstance(fees, dict):
+        die("config: fees must be an object {subscribe_rate, redeem_rate}")
+    for key in ("subscribe_rate", "redeem_rate"):
+        v = fees.get(key, 0.0)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            die(f"config: fees.{key} must be a number in [0, 0.1] (got {v!r})")
+        if not 0.0 <= float(v) <= 0.1:
+            die(f"config: fees.{key} must lie in [0, 0.1] (got {v})")
+        fees[key] = float(v)
 
 
 def _read_rows(p) -> list:
@@ -150,8 +223,7 @@ def validate_config(cfg: dict) -> None:
         die("config: strategy_mix must be measured|push_heavy|edu_heavy")
     if cfg.get("ranking") not in ("three_source", "random"):
         die("config: ranking must be three_source|random")
-    if cfg.get("arm_level") not in ("agent", "exposure"):
-        die("config: arm_level must be agent|exposure")
+    _validate_modality(cfg)                        # A2: level/arms/run_arm/fees (arm_level alias)
     if cfg["strategy_mix"] != "measured":
         if not (cfg.get("strategy_groups") or {}).get(cfg["strategy_mix"]):
             die("config: strategy_groups needs a non-empty list for this strategy_mix")
@@ -260,7 +332,7 @@ def load_world(cfg: dict) -> World:
 # --- §3 investors -----------------------------------------------------------------------------
 class Inv:
     __slots__ = ("id", "jid", "cell", "risk", "rc", "core", "strat_weight", "cash", "other", "hold", "cost",
-                 "fam", "aff", "follow", "flag", "entry", "dca", "realized", "w0", "expo", "memory",
+                 "fam", "aff", "follow", "flag", "entry", "dca", "realized", "fees", "w0", "expo", "memory",
                  "reflection", "beliefs", "market_view", "risk_mood", "attention", "gain_loss",
                  "arm", "arm_tally", "rng")
 
@@ -289,6 +361,9 @@ def init_investors(world: World, cfg: dict) -> list:
     run_tag, n = cfg["run_tag"], int(cfg["n_agents"])
     if len(world.agents) < n:
         die(f"agents file has {len(world.agents)} rows < n_agents={n}")
+    arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
+    lvl = _mod_level_of(cfg)
+    run_arm = cfg.get("modality_run_arm") or "TV"
     out = []
     for rec in world.agents[:n]:
         tr = rec.get("traits") or {}
@@ -332,22 +407,32 @@ def init_investors(world: World, cfg: dict) -> list:
         inv.entry = max(int(round(ev_days * spread / 365.0)), 0)
         inv.dca = (tr.get("dca") == "positive")
         inv.realized = 0.0
+        inv.fees = 0.0                            # A2: cumulative subscribe/redeem fees paid (CNY)
         inv.w0 = cash + sum(u * cost[c] for c, u in hold.items()) + other   # == fin (identity check (d))
         inv.expo, inv.memory, inv.reflection, inv.beliefs = {}, [], {}, []
         inv.market_view = inv.risk_mood = 0
         if cfg.get("force_arm"):
             inv.arm = cfg["force_arm"]
-        elif cfg.get("arm_level") == "agent":
-            inv.arm = feed.arm_for_agent(run_tag, inv.id)
-        else:
+        elif lvl == "run":
+            inv.arm = run_arm
+        elif lvl == "agent":
+            inv.arm = feed.arm_for_agent(run_tag, inv.id, arms)
+        else:                                     # exposure: per-impression arms assigned in the loop
             inv.arm = "TV"
-        inv.arm_tally = {"T": 0, "TV": 0}
+        inv.arm_tally = {a: 0 for a in arms}
         out.append(inv)
     return out
 
 
 # --- §4 institution posting policy ------------------------------------------------------------
 _INTENTS = ("I1", "I2", "I3")
+_IG_GROUPS = ("I2", "nonI2")   # post.ig domain: the two-way intent group (schema + engine_v5 ig=grp)
+
+
+def intent_group(intent: str) -> str:
+    """Two-way intent group for post rows: ig / intent_group carry {"I2","nonI2"} while `intent`
+    keeps the raw label in {I1,I2,I3} (config/schemas/event.schema.json; sim/engine_v5.py)."""
+    return "I2" if intent == "I2" else "nonI2"
 
 
 def _ig_of(note: dict):
@@ -437,10 +522,11 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
                     code = c
                     break
             pid = f"{t:03d}{oi}{j}"
-            posts.append({"post_id": pid, "org": org, "intent": intent, "intent_group": intent,
+            ig = intent_group(intent)             # post.ig is the intent GROUP in {I2, nonI2}, not the raw label
+            posts.append({"post_id": pid, "org": org, "intent": intent, "intent_group": ig,
                           "note": nid, "code": code, "img": _has_image(note), "t_pub": dstr})
             if log is not None:
-                log.emit("post", t=t, d=dstr, org=org, p=pid, intent=intent, ig=intent, fund=code,
+                log.emit("post", t=t, d=dstr, org=org, p=pid, intent=intent, ig=ig, fund=code,
                          img=posts[-1]["img"])
     return posts
 
@@ -519,22 +605,42 @@ def event_log_sha(path) -> str:
 
 
 # --- §7 invariants ----------------------------------------------------------------------------
+def _agent_fees(a) -> float:
+    """Cumulative fee paid by an agent row; 0.0 for legacy rows created before fees existed."""
+    try:
+        v = a.get("fees") if isinstance(a, dict) else getattr(a, "fees", 0.0)
+        return 0.0 if v is None else float(v)
+    except Exception:
+        return 0.0
+
+
+def _jsonable(v):
+    if isinstance(v, dict):
+        return {str(k): _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, (bool, int, float, str)) or v is None:
+        return v
+    return str(v)
+
+
 def check_invariants(state: dict, events_path, cfg: dict):
-    """state contract: agents, funds, end(iso), signal_audit[{t,used,live_end,prev_live_end,day_keys}],
-    active_per_day{t:n}, agent_arms{i:arm}; funds maps code -> Fund for end-of-run pricing."""
+    """state contract: agents (rows carry fees; default 0 when absent so old states still pass),
+    funds, end(iso), signal_audit[{t,used,live_end,prev_live_end,day_keys}], active_per_day{t:n},
+    agent_arms{i:arm}; funds maps code -> Fund for end-of-run pricing."""
     agents = state.get("agents") or []
     funds = state.get("funds") or {}
     id2cell = {a.id: a.cell for a in agents}
     rows = load_jsonl(Path(events_path))
     co_oc, co_cf = defaultdict(int), defaultdict(int)
     hard_p, holdings = set(), defaultdict(set)
-    b_viol = c_viol = i_viol = 0
-    imp_cnt, exposed = defaultdict(lambda: [0, 0]), set()
+    b_viol, c_viol, f_viol, i_viol = 0, 0, 0, 0
+    imp_arms, exposed = defaultdict(lambda: defaultdict(int)), set()
     dec_day, cmt_idx, clims = defaultdict(int), defaultdict(set), []
     for r in rows:
         ev = r.get("ev")
         if ev == "imp":
-            imp_cnt[r.get("i")][0 if r.get("arm") == "T" else 1] += 1
+            imp_arms[r.get("i")][r.get("arm") or "T"] += 1
             exposed.add(id2cell.get(r.get("i")))
         elif ev == "act":
             i, fund, kind = r.get("i"), r.get("fund"), r.get("kind")
@@ -550,6 +656,9 @@ def check_invariants(state: dict, events_path, cfg: dict):
                 hard_p.add((r.get("i"), r.get("p")))
             if r.get("act") == "redeem" and oc in ("hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"):
                 i_viol += 1
+        elif ev == "post":                        # (f) post.ig is the intent GROUP {I2, nonI2}
+            if r.get("ig") not in _IG_GROUPS or (r.get("ig") == "I2") != (r.get("intent") == "I2"):
+                f_viol += 1
         elif ev == "dec":
             dec_day[r.get("t")] += 1
         elif ev == "cmt":
@@ -577,19 +686,21 @@ def check_invariants(state: dict, events_path, cfg: dict):
     max_res, tol = 0.0, 1e-6 * max([1.0] + [a.w0 for a in agents])
     end = date.fromisoformat(state["end"]) if state.get("end") else None
     if end is not None:
-        for a in agents:                          # (d) cash+units*nav+other == w0+realized+unrealized
+        for a in agents:                          # (d) cash+units*nav+other+fees == w0+realized+unrealized
             holdv = costv = 0.0
             for c, u in a.hold.items():
                 nv = funds[c].nav_at(end) if c in funds else a.cost.get(c, 0.0)
                 holdv += u * nv
                 costv += u * a.cost.get(c, 0.0)
-            res = (a.cash + holdv + a.other) - (a.w0 + a.realized + (holdv - costv))
+            res = (a.cash + holdv + a.other + _agent_fees(a)) - (a.w0 + a.realized + (holdv - costv))
             max_res = max(max_res, abs(res))
     checks["d_wealth_conservation"] = {"pass": max_res <= tol, "max_abs_residual_cny": max_res, "tolerance": tol}
     cells = sorted(set(id2cell.values()))
     n_exp = sum(1 for c in cells if c in exposed)
     checks["e_all_cells_exposed"] = {"pass": len(cells) > 0 and n_exp == len(cells),
                                      "cells_exposed": n_exp, "cells_total": len(cells)}
+    checks["f_post_ig_is_intent_group"] = {"pass": f_viol == 0, "violations": f_viol,
+                                           "ig_domain": list(_IG_GROUPS)}
     g_viol = j_viol = 0
     for r in clims:
         if r.get("source") == "guba_seed":        # exogenous day-1 seed, exempt from cmt matching
@@ -605,26 +716,36 @@ def check_invariants(state: dict, events_path, cfg: dict):
                 j_viol += 1
     checks["g_comments_lagged_only"] = {"pass": g_viol == 0, "violations": g_viol}
     checks["j_displayed_comment_matches_prev_day"] = {"pass": j_viol == 0, "violations": j_viol}
-    if cfg.get("arm_level") == "agent":
+    arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
+    lvl = _mod_level_of(cfg)
+    if lvl == "agent":
+        entry = {"pass": True, "level": "agent", "arms": list(arms)}
         try:
-            res = feed.check_arm_balance(state.get("agent_arms") or {}, id2cell)
-            h_ok = all(bool(v) for v in res.values()) if isinstance(res, dict) else bool(res)
+            ok, rep = feed.check_arm_balance(state.get("agent_arms") or {}, id2cell, arms=arms)
+            entry["pass"] = bool(ok)
+            if isinstance(rep, dict) and rep:
+                entry["report"] = _jsonable(rep)
         except Exception:
-            res, h_ok = None, False
-        entry = {"pass": bool(h_ok), "level": "agent"}
-        if res is None:
+            entry["pass"] = False
             entry["error"] = "check_arm_balance raised"
         checks["h_arm_balance"] = entry
-    else:
+    elif lvl == "run":
+        checks["h_arm_balance"] = {"pass": True, "level": "run",
+                                   "note": "run-level arm: balance not applicable"}
+    else:                                         # exposure: per-agent per-arm impression shares
         viol = checked = 0
-        for i in sorted(imp_cnt, key=str):
-            t_cnt, tv_cnt = imp_cnt[i]
-            if t_cnt + tv_cnt >= 50:
-                checked += 1
-                if abs(tv_cnt / (t_cnt + tv_cnt) - 0.5) > 0.02:
+        for i in sorted(imp_arms, key=str):
+            cnt = imp_arms[i]
+            n_imp = sum(cnt.values())
+            if n_imp < 20:
+                continue
+            checked += 1
+            for am in arms:
+                if abs(cnt.get(am, 0) / n_imp - 1.0 / len(arms)) > 0.03 + 1.0 / n_imp:
                     viol += 1
-        checks["h_arm_balance"] = {"pass": viol == 0, "level": "exposure", "agents_checked": checked,
-                                  "violations": viol}
+                    break
+        checks["h_arm_balance"] = {"pass": viol == 0, "level": "exposure", "arms": list(arms),
+                                   "agents_checked": checked, "violations": viol}
     # (i) redemptions are never gated: a `co` row with act == "redeem" may carry match / no_holdings only.
     # Suitability (PREREG v1.3 §B9) and the QDII purchase block apply to subscriptions alone.
     gated = {"hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"}
@@ -659,12 +780,21 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
     counters["decision_failure_rate"] = round(df / att, 6) if att else 0.0
     dflt_org = (cfg.get("orgs") or [""])[0]
     agents = state.get("agents") or []
+    agent_arms = state.get("agent_arms") or {}
+    fees_cfg = cfg.get("fees") if isinstance(cfg.get("fees"), dict) else {}
     dump(out_dir / "run_meta.json", {
         "engine": "v6", "cfg": cfg, "inputs_sha256": world.inputs_sha256,
         "universe": {"base": world.base_codes, "deferred": world.deferred, "size": len(world.funds)},
         "funds": {c: {"r": f.r, "qdii": f.qdii, "family": f.family, "org": world.fund_org.get(c, dflt_org),
                       "active_from": str(f.active_from)} for c, f in sorted(world.funds.items())},
         "investors": {"total": len(agents), "active_ever": sum(1 for a in agents if a.entry < len(world.nav_days))},
+        "arms": {str(k): agent_arms[k] for k in sorted(agent_arms, key=str)},
+        "modality": {"level": _mod_level_of(cfg),
+                     "arms": list(cfg.get("modality_arms") or ("T", "TV")),
+                     "run_arm": cfg.get("modality_run_arm") or "TV"},
+        "fees": {"subscribe_rate": float(fees_cfg.get("subscribe_rate", 0.0) or 0.0),
+                 "redeem_rate": float(fees_cfg.get("redeem_rate", 0.0) or 0.0),
+                 "total": round(sum(_agent_fees(a) for a in agents), 2)},
         "counters": counters,
         "checkout_oc": dict(sorted((state.get("checkout_oc") or {}).items())),
         "checkout_oc_cf": dict(sorted((state.get("checkout_oc_cf") or {}).items())),
@@ -699,6 +829,14 @@ def self_test() -> int:
     def skip(name):
         rows_out.append((name, None))
 
+    class _MemLog:                                # captures log.emit rows for post-schema assertions
+        def __init__(self):
+            self.rows = []
+
+        def emit(self, ev: str, **fields):
+            fields.pop("ev", None)
+            self.rows.append({"ev": ev, **fields})
+
     if all(k in paths for k in ("agents", "content_pool", "nav_cache", "guba")):
         orgs = sorted({r.get("org") for r in _read_rows(paths["content_pool"]) if r.get("org")})[:4]
         cfg = deep_merge(DEFAULT_CONFIG, {
@@ -729,18 +867,53 @@ def self_test() -> int:
                 same = same and len({tuple(pr[o][k] for k in _INTENTS) for o in pr}) == 1
         chk("intent_probs_sum_to_1", ok_sum)
         chk("push_heavy_identical", same)
-        recent, rngp, viol = {}, random.Random(rng_seed_from(cfg["run_tag"], "platform", "selftest")), 0
+        recent, rngp, viol, ig_viol = {}, random.Random(rng_seed_from(cfg["run_tag"], "platform", "selftest")), 0, 0
+        mem = _MemLog()
         for t in range(len(world.nav_days)):
             seen = {o: set(recent.get(o, ())) for o in world.orgs}
-            for pst in publish_day(world, cfg, t, recent, rngp):
+            for pst in publish_day(world, cfg, t, recent, rngp, log=mem):
                 if pst["note"] in seen[pst["org"]] and len(world.pool[pst["org"]]) >= 20:
                     viol += 1
+                if pst["intent_group"] not in _IG_GROUPS or (pst["intent_group"] == "I2") != (pst["intent"] == "I2"):
+                    ig_viol += 1
         chk("publish_no_repeat_within_10d", viol == 0)
+        prows = [r for r in mem.rows if r.get("ev") == "post"]
+        chk("publish_post_ig_is_intent_group",
+            ig_viol == 0 and bool(prows)
+            and all(r.get("intent") in _INTENTS and r.get("ig") in _IG_GROUPS
+                    and (r.get("ig") == "I2") == (r.get("intent") == "I2") for r in prows))
     else:
         print(f"SKIP world checks: real data files not found (data_root={data_root}, research={research})")
         for nm in ("agents_eq_n_agents", "orgs_eq_cfg", "notes_50_per_org_frozen_pool", "funds_active_ge_140",
-                   "nav_days_eq_60", "intent_probs_sum_to_1", "push_heavy_identical", "publish_no_repeat_within_10d"):
+                   "nav_days_eq_60", "intent_probs_sum_to_1", "push_heavy_identical", "publish_no_repeat_within_10d",
+                   "publish_post_ig_is_intent_group"):
             skip(nm)
+    # A2: compat rule arm_level -> modality_level (data-independent)
+    c_compat = {"arm_level": "exposure"}
+    chk("compat_arm_level_maps_to_modality",
+        _modality_compat(c_compat) == "exposure" and c_compat.get("modality_level") == "exposure")
+    c_both = {"modality_level": "run", "arm_level": "agent"}
+    chk("compat_modality_level_wins", _modality_compat(c_both) == "run")
+    chk("compat_defaults_to_agent", _modality_compat({}) == "agent")
+    # A2: three-arm agent-level init over 300 synthetic ids (synthetic world, no data files needed)
+    fw = World()
+    fw.start = date(2025, 10, 1)
+    fw_dts = [date(2025, 1, 2) + timedelta(days=i) for i in range(320)]
+    fw.funds = {"F00001": Fund("F00001", "R3", False, "FAM", fw_dts, [1.0] * len(fw_dts), date(2025, 1, 2))}
+    fw.base_codes = ["F00001"]
+    fw.agents = [{"id": f"s{i:03d}", "cell": "C2", "risk_latent": "R3", "reported_C": "C2",
+                  "wealth_wan": 10.0, "core": "", "strat_weight": 1.0, "entry_day": 0,
+                  "traits": {"invest_share": "10_30pct", "n_funds": "5_10", "dca": "positive"}}
+                 for i in range(300)]
+    cfg3 = {"run_tag": "selftest|3arm", "n_agents": 300, "modality_level": "agent",
+            "modality_arms": ["T", "TC", "TV"], "modality_run_arm": "TV",
+            "fees": {"subscribe_rate": 0.0012, "redeem_rate": 0.005}}
+    invs3 = init_investors(fw, cfg3)
+    chk("three_arm_agent_init_all_arms", {v.arm for v in invs3} == {"T", "TC", "TV"})
+    chk("three_arm_agent_init_tally_fees",
+        all(v.arm_tally == {"T": 0, "TC": 0, "TV": 0} and v.fees == 0.0 for v in invs3))
+    invs_run = init_investors(fw, dict(cfg3, modality_level="run", modality_run_arm="TC"))
+    chk("run_level_init_uniform_arm", {v.arm for v in invs_run} == {"TC"})
     with tempfile.TemporaryDirectory() as td:
         tdp = Path(td)
         log = EventLog(tdp / "events.jsonl")
@@ -760,6 +933,8 @@ def self_test() -> int:
                                {"t": 1, "used": "bb", "live_end": "cc", "prev_live_end": "bb", "day_keys": 1}]}
         clean = [{"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00000", "intent": "I2",
                   "ig": "I2", "fund": None, "img": False},
+                 {"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00001", "intent": "I1",
+                  "ig": "nonI2", "fund": None, "img": True},
                  {"ev": "imp", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "arm": "T", "slot": 0,
                   "source": "random"},
                  {"ev": "dec", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "prompt_sha": "x", "raw_sha": "y",
@@ -769,7 +944,9 @@ def self_test() -> int:
                   "act": "subscribe", "oc": "match", "oc_cf": "match", "amt": 100.0},
                  {"ev": "act", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "kind": "subscribe",
                   "fund": "000001", "amt": 100.0, "units": 50.0, "nav": 2.0}]
-        bad = [dict(clean[3], i=2, p="00001", act="redeem", oc="hard_block", oc_cf="hard_block", amt=0.0)]
+        bad = [dict(clean[4], i=2, p="00002", act="redeem", oc="hard_block", oc_cf="hard_block", amt=0.0),
+               dict(clean[0], intent="I3", ig="I3"),        # ig outside the group domain (old bug)
+               dict(clean[1], intent="I1", ig="I2")]        # group inconsistent with the raw intent
         cp, bp = tdp / "clean.jsonl", tdp / "bad.jsonl"
         write_jsonl_atomic(cp, clean)
         write_jsonl_atomic(bp, bad)
@@ -777,6 +954,51 @@ def self_test() -> int:
         bc, bf = check_invariants(st, bp, {"arm_level": "exposure"})
         chk("invariants_clean_passes", cf is False and [k for k, v in cc.items() if not v["pass"]] == ["e_all_cells_exposed"])
         chk("invariants_flag_redeem_block", bf is True and bc["i_redeem_checkout_never_blocked"]["pass"] is False)
+        chk("invariants_flag_post_ig_not_group",
+            bf is True and bc["f_post_ig_is_intent_group"]["pass"] is False
+            and bc["f_post_ig_is_intent_group"]["violations"] == 2)
+        # A2: invariant (d) with fees; run-level (h) note
+        def _mk_agent(cash: float, fees=None):
+            a = Inv()
+            a.id, a.cell, a.rc = 7, "C1", "C1"
+            a.cash, a.other, a.realized, a.w0 = cash, 0.0, 0.0, 100.0
+            a.hold, a.cost = {}, {}
+            if fees is not None:
+                a.fees = fees
+            return a
+
+        base_st = {"funds": {}, "end": "2025-12-31", "active_per_day": {0: 1}, "agent_arms": {},
+                   "signal_audit": list(st["signal_audit"])}
+        run_cfg = {"modality_level": "run"}
+        c_fee, _ = check_invariants(dict(base_st, agents=[_mk_agent(99.5, 0.5)]), cp, run_cfg)
+        c_drop, _ = check_invariants(dict(base_st, agents=[_mk_agent(99.5)]), cp, run_cfg)
+        c_old, _ = check_invariants(dict(base_st, agents=[_mk_agent(100.0)]), cp, run_cfg)
+        chk("invariant_d_passes_with_fees", c_fee["d_wealth_conservation"]["pass"] is True)
+        chk("invariant_d_fails_when_fees_dropped", c_drop["d_wealth_conservation"]["pass"] is False)
+        chk("invariant_d_legacy_rows_still_pass", c_old["d_wealth_conservation"]["pass"] is True)
+        chk("h_run_level_not_applicable",
+            c_fee["h_arm_balance"]["pass"] is True
+            and c_fee["h_arm_balance"].get("note") == "run-level arm: balance not applicable")
+        # A2: exposure-level (h) per-agent share check
+        def _imp_rows(n_t, n_tv):
+            rows = []
+            for j in range(n_t):
+                rows.append({"ev": "imp", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000",
+                             "arm": "T", "slot": j % 10, "source": "random"})
+            for j in range(n_tv):
+                rows.append({"ev": "imp", "t": 0, "d": "2025-10-01", "i": 1, "p": "00001",
+                             "arm": "TV", "slot": j % 10, "source": "random"})
+            return rows
+
+        ep_ok, ep_bad = tdp / "expo_ok.jsonl", tdp / "expo_bad.jsonl"
+        write_jsonl_atomic(ep_ok, _imp_rows(10, 10))
+        write_jsonl_atomic(ep_bad, _imp_rows(19, 1))
+        c_e1, _ = check_invariants(st, ep_ok, {"modality_level": "exposure"})
+        c_e2, _ = check_invariants(st, ep_bad, {"modality_level": "exposure"})
+        chk("h_exposure_balanced_shares_pass",
+            c_e1["h_arm_balance"]["pass"] is True and c_e1["h_arm_balance"]["agents_checked"] == 1)
+        chk("h_exposure_skewed_shares_flagged",
+            c_e2["h_arm_balance"]["pass"] is False and c_e2["h_arm_balance"]["violations"] == 1)
     fails = sum(1 for _, ok in rows_out if ok is False)
     skips = sum(1 for _, ok in rows_out if ok is None)
     print("=" * 56)

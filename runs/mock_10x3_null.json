@@ -1,0 +1,91 @@
+{
+  "_what": "Card C null-policy dry run: copy of runs/mock_10x3.json with agent_policy='null' (NullPolicyLLM decides; the mock_llm flag is ignored because agent_policy wins in loop._make_llm) and outputs/cache under runs/out/mock_10x3_null. null_params repeat the preregistered defaults (PREREG v1.5 draft section F, forbidden item 12: fixed BEFORE any main-grid result). nav_cache.json is gitignored: copy it from the research repo or regenerate with data_pipeline/cn/fill_nav.py.",
+  "run_tag": "mock_10x3_null",
+  "seed": 2027,
+  "mock_llm": true,
+  "agent_policy": "null",
+  "null_params": {
+    "p_redeem_gain": 0.06,
+    "p_redeem_loss": 0.03,
+    "redeem_pct": 50,
+    "p_sub_base": 0.05,
+    "chase_slope": 2.0,
+    "sub_pct": 20,
+    "p_sign_mismatch": 0.5,
+    "p_like": 0.15,
+    "p_save": 0.08,
+    "p_follow": 0.02,
+    "p_comment": 0.1,
+    "stance_probs": {
+      "bullish": 0.35,
+      "bearish": 0.3,
+      "watching": 0.35
+    }
+  },
+  "window": {
+    "start": "2025-10-01",
+    "end": "2025-12-31",
+    "max_trading_days": 3
+  },
+  "n_agents": 10,
+  "agents_file": "data/population/agents_seed2027.json",
+  "orgs": [
+    "广发基金",
+    "鹏华基金",
+    "国联基金",
+    "汇添富基金"
+  ],
+  "content_pool": "data/creatives/cn/content_pool_v1_masked.jsonl",
+  "posts_per_org_per_day": 2,
+  "no_repeat_days": 10,
+  "nav_cache": "data/funds/nav_cache.json",
+  "guba_signal": "data/attention/guba_signal_v1.json",
+  "suitability": true,
+  "strategy_mix": "measured",
+  "ranking": "three_source",
+  "arm_level": "agent",
+  "p_image": 0.5,
+  "climate_weighting": true,
+  "memory": true,
+  "social": true,
+  "channels": {
+    "feed": true,
+    "experience": true,
+    "trend": false,
+    "social": true,
+    "news": true,
+    "direct": false
+  },
+  "feed": {
+    "K": 6,
+    "slots": {
+      "follow": 2,
+      "fit": 2,
+      "trending": 2
+    },
+    "w_trust": 1.0,
+    "w_fit": 1.0,
+    "w_heat": 1.0,
+    "w_soc": 0.5,
+    "eps": 0.05,
+    "gamma": 1.8
+  },
+  "p_active": 1.0,
+  "memory_days": 5,
+  "reflection_every_days": 5,
+  "llm": {
+    "model": "glm-4.6v",
+    "text_model": "glm-4.6v",
+    "workers": 4,
+    "max_attempts": 3,
+    "decision_failure_halt": 0.02,
+    "cache": "runs/out/mock_10x3_null/llm_cache.jsonl",
+    "max_tokens_start": 6144
+  },
+  "mock_options": {
+    "force_c2_r4_click": true,
+    "malformed_rate": 0.05
+  },
+  "out_dir": "runs/out/mock_10x3_null",
+  "fund_meta_file": "data/flows/flow_panel_v2.json"
+}

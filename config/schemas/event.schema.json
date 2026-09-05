@@ -111,6 +111,7 @@
             "type": "string",
             "enum": [
               "T",
+              "TC",
               "TV"
             ]
           },
@@ -193,7 +194,10 @@
             "pattern": "^\\d{6}$"
           },
           "ig": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "act": {
             "type": "string",
@@ -227,7 +231,62 @@
           "amt": {
             "type": "number"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "act": {
+                  "const": "redeem"
+                }
+              },
+              "required": [
+                "act"
+              ]
+            },
+            "then": {
+              "properties": {
+                "p": {
+                  "type": "null"
+                },
+                "ig": {
+                  "type": "null"
+                },
+                "oc": {
+                  "enum": [
+                    "match",
+                    "no_holdings"
+                  ]
+                },
+                "oc_cf": {
+                  "const": "match"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "act": {
+                  "const": "subscribe"
+                }
+              },
+              "required": [
+                "act"
+              ]
+            },
+            "then": {
+              "properties": {
+                "p": {
+                  "type": "string"
+                },
+                "ig": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {
@@ -276,8 +335,58 @@
           },
           "nav": {
             "type": "number"
+          },
+          "fee": {
+            "type": "number",
+            "minimum": 0
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "subscribe"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "p": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "redeem",
+                    "dca"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "p": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {
@@ -359,20 +468,25 @@
             "minimum": 0
           },
           "status": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "parser_status written verbatim from runtime/prompt: extract_decision yields ok/no_json_object/schema_invalid/ambiguous_reasoning, runtime falls back to unparsed, and the rule-based null policy records null",
             "enum": [
               "ok",
-              "parse_fail",
-              "infeasible",
-              "timeout",
-              "cap_stopped",
-              "mock"
+              "no_json_object",
+              "schema_invalid",
+              "ambiguous_reasoning",
+              "unparsed",
+              null
             ]
           },
           "arm": {
             "type": "string",
             "enum": [
               "T",
+              "TC",
               "TV"
             ]
           },
@@ -395,6 +509,42 @@
             "items": {
               "type": "string"
             }
+          },
+          "n_read": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "n_like": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "n_save": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "n_follow": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "n_comment": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "aff_sum": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         }
       }

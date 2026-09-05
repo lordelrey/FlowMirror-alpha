@@ -16,19 +16,37 @@ runtime: decide(agent_view, feed_cards, cfg, cache, governor, llm, shown) and
          violations, parser_status, prompt_sha, raw_sha256, image_shas,
          cache_hit, attempts, notes; run_parallel(jobs, fn, workers);
          BudgetGovernor(hard_cap_attempts); MockLLM(force_c2_r4, malformed_rate).
+         Card C: cfg agent_policy == "null" swaps every job's llm for
+         NullPolicyLLM(cfg null_params, run_tag) from flowmirror.agents.null_policy,
+         regardless of mock_llm -- the rule-based anti-A1 baseline.
 prompt:  agent_view keys persona_card_zh_rich, memory, last_reflection,
          market_view, risk_mood, c_class, cash, holdings[{code,name,r,units,
          nav,pnl_pct}], last_trade, declined_confirms, familiarity{org:level},
-         guba, trend, direct; feed_card keys post_id, org, title, caption,
-         landing{code,name,R,ret_3m,ret_1y,min_buy}, likes, arm, image_path,
-         image_sha, comments_prev[{stance,text,fam_phrase}], climate_label.
+         guba, trend, direct; feed_card keys post_id, org, title, caption
+         (masked preferred), landing{code,name,R,ret_3m,ret_1y,min_buy}, likes,
+         arm in {T,TC,TV}, image_path, image_sha, comments_prev[{stance,text,
+         fam_phrase}], climate_label, n_comments_prev (full t-1 count);
+         TC-only ocr_text and image_caption_frozen (str or list[str]).  TV
+         attaches image_path as data-URI; T and TC never attach pixels.
 feed:    rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg["feed"],
          rng, mode); climate_for(post_id, comments_prev, min_n=4, weights) ->
          (label, counts); top_comments(post_id, comments_prev, k=3, weights);
-         assign_arms(rng, k, tally); check_arm_balance(arms, cells) -> (ok, rep).
+         assign_arms(rng, k, tally, arms=('T','TV')); check_arm_balance(
+         agent_arms, agent_cells, arms=None) -> (ok, rep).
 Inv:     slots only -- units in inv.hold[code] (float), cost NAV in
          inv.cost[code], familiarity level inv.flag[org], follows inv.follow,
-         trust adstock inv.aff, EMA familiarity inv.fam, per-agent inv.rng.
+         trust adstock inv.aff, EMA familiarity inv.fam, per-agent inv.rng,
+         per-arm impression tally inv.arm_tally; the A2 world card adds the
+         inv.fees slot (accumulated subscription/redemption fees).
+Loop A2: modality_level {agent, run, exposure} (legacy arm_level alias) picks
+         per-agent / whole-run / per-impression arms from cfg["modality_arms"];
+         apply_decision(..., fees={"subscribe_rate","redeem_rate"}) charges
+         cash-side fees, logged as act.fee on every act row.
+Card L:  redeem checkouts emit NO click row (a redeem is not a feed click);
+         their co rows carry p=None/ig=None with oc=oc_cf="match" (invariant
+         i, no CxR gate on redeem -- the counterfactual obeys it too; only the
+         engine refusal no_holdings can still override oc), their act rows
+         keep p=None, and QDII purchase_blocked stays subscribe-only.
 """
 from __future__ import annotations
 
@@ -47,6 +65,7 @@ from types import SimpleNamespace
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+from flowmirror.agents.null_policy import NullPolicyLLM
 from flowmirror.agents.runtime import (BudgetGovernor, CapStop, LLMCache, MockLLM,
                                        call_glm, decide, reflect, run_parallel)
 from flowmirror.channels.feed import (assign_arms, check_arm_balance, climate_for,
@@ -146,8 +165,14 @@ def _rank_item(item):
     return item, "fit"
 
 
-def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur):
-    """One impression card with exactly the keys flowmirror.agents.prompt reads."""
+def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur, n_prev):
+    """One impression card with the keys flowmirror.agents.prompt reads.
+
+    Text fields prefer masked variants; n_comments_prev is the FULL t-1 comment
+    count per post (the card header renders 共 n 条) while comments_prev stays
+    the top-3 excerpt.  TC cards additionally carry OCR text and the frozen
+    image caption; T and TV cards gain no pixel-side keys beyond image_path/sha,
+    so only n_comments_prev (and masked text) changes them vs the baseline."""
     pid = post["post_id"]
     nid = post.get("note")
     note = notes_by_id.get(str(nid)) if nid is not None else None
@@ -162,16 +187,24 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
     image_path = None
     if post.get("img"):
         image_path = note.get("image_path") or note.get("image") or note.get("cover")
-    return {"post_id": pid, "org": post.get("org"),
+    card = {"post_id": pid, "org": post.get("org"),
             "title": note.get("title") or note.get("display_title") or "",
-            "caption": note.get("caption") or note.get("abstract") or note.get("summary") or "",
+            "caption": (note.get("caption_masked") or note.get("caption")
+                        or note.get("abstract") or note.get("summary") or ""),
             "landing": landing, "likes": round(float(heat_prev.get(pid, 0.0)), 1),
             "arm": arm, "image_path": image_path,
             "image_sha": sha256_text(str(image_path)) if image_path else None,
             "comments_prev": [{"stance": c.get("stance"), "text": c.get("text"),
                                "fam_phrase": c.get("fam_phrase", "")}
                               for c in (top_prev.get(pid) or []) if isinstance(c, dict)],
-            "climate_label": clim_prev.get(pid)}
+            "climate_label": clim_prev.get(pid),
+            "n_comments_prev": int(n_prev.get(pid, 0) or 0)}
+    if arm == "TC":                 # text-complement arm: OCR text in, pixels still out
+        card["ocr_text"] = note.get("ocr_masked") or note.get("ocr_text") or ""
+        frozen = note.get("image_caption_frozen")
+        if frozen is not None:
+            card["image_caption_frozen"] = frozen
+    return card
 
 
 def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba_view,
@@ -214,6 +247,8 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
 
 
 def _make_llm(cfg):
+    if cfg.get("agent_policy") == "null":   # Card C: null policy wins over mock/live
+        return NullPolicyLLM(cfg.get("null_params") or {}, cfg["run_tag"])
     if cfg.get("mock_llm"):
         return MockLLM(bool(cfg.get("mock_force_c2_r4")),
                        float(cfg.get("mock_malformed_rate", 0.05)))
@@ -308,10 +343,56 @@ def _adapt_record(rec, shown, inv):
     return out
 
 
-def apply_decision(inv, rec, shown, day):
-    """Serial apply of one decision record; returns (comment, affinity, trade) views."""
+def _dec_counts(adapted, n_cards, social_on):
+    """Post-feasibility decision tallies for the dec row; all null on parse failure.
+
+    The counts mirror the adapted record after the same feasibility rules
+    apply_decision enforces (comments exist only with the social channel on);
+    cache_hit/attempts stay OUT of dec by design (invariant l, byte-identical
+    replays -- they live in llm_cache.jsonl and run_meta.counters)."""
+    keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum")
+    if adapted is None:
+        return {k: None for k in keys}
+    aff = adapted.get("aff") or {}
+    return {"n_read": int(n_cards),
+            "n_like": len(adapted.get("likes") or ()),
+            "n_save": len(adapted.get("saves") or ()),
+            "n_follow": len(adapted.get("follows") or ()),
+            "n_comment": len(adapted.get("comments") or ()) if social_on else 0,
+            "aff_sum": int(round(sum(float(v) for v in aff.values())))}
+
+
+def _bump_fees(inv, fee):
+    """Accumulate cash-side fees on inv.fees (getattr-safe: the slot ships with
+    the A2 world card; a pre-A2 slots-only Inv just drops it, and pre-A2 configs
+    carry no fees anyway, so both worlds stay runnable)."""
+    if fee:
+        try:
+            inv.fees = float(getattr(inv, "fees", 0.0) or 0.0) + float(fee)
+        except AttributeError:
+            pass
+
+
+def apply_decision(inv, rec, shown, day, fees=None):
+    """Serial apply of one decision record; returns (comment, affinity, trade) views.
+
+    fees (keyword, default None -> both rates 0, so pre-A2 callers keep working)
+    is cfg["fees"]: subscribe pays fee = amt*subscribe_rate out of the ticket,
+    so units = (amt - fee)/nav at cost basis amt - fee; redeem pays
+    fee = gross*redeem_rate out of the proceeds, so cash += gross - fee.  Fees
+    leave cash, accumulate on inv.fees, and every act row carries fee (2dp,
+    0.0 when fees are off) so cash can be replayed from the event log.
+
+    Card L-fix: a redeem is not a feed click (there is no post behind it), so
+    it never emits a click row nor bumps the click counters; its co row carries
+    p=None, ig=None with oc=oc_cf="match" (invariant i -- no CxR gate applies
+    to a redeem, the counterfactual included; only the engine refusal
+    no_holdings can still override oc); and its act row keeps p=None."""
     cfg, S, logd, row = day.cfg, day.S, day.logd, rec.get("parsed")
     t, dstr = day.t, day.dstr
+    fee_cfg = fees if isinstance(fees, dict) else {}
+    sub_rate = float(fee_cfg.get("subscribe_rate") or 0.0)
+    red_rate = float(fee_cfg.get("redeem_rate") or 0.0)
     w = day.weights.get(inv.id, 1.0) if day.weights else 1.0
     for key, dst in (("likes", day.likes), ("saves", day.saves)):
         for pid in rec.get(key) or ():
@@ -352,24 +433,30 @@ def apply_decision(inv, rec, shown, day):
         code = post.get("code")
         if code is None and act == "redeem" and trade.get("fund") in inv.hold:
             code = trade.get("fund")
+        # Card L-fix: a redeem is not a feed click -- no click row, no click counter.
         if code is None:                     # I2 note without in-universe common-support code
-            logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="click_no_landing")
-            S["click_no_landing"] += 1
+            if act != "redeem":
+                logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="click_no_landing")
+                S["click_no_landing"] += 1
             tr = {"act": act, "exec": False, "oc": "click_no_landing", "code": None, "amt": 0.0}
         else:
-            logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="to_checkout")
-            S["clicks"] += 1
+            if act != "redeem":              # only a feed-sourced subscribe clicks
+                logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="to_checkout")
+                S["clicks"] += 1
             fund = FUNDS[code]               # ---- checkout: CxR distribution layer ----
             trow = row.get("trade") if isinstance(row.get("trade"), dict) else {}   # amount/confirm live under trade
-            smc = trow.get("sign_mismatch_confirm")
-            smc = smc if isinstance(smc, bool) else str(smc).lower() in ("true", "1")
-            oc_cf = cxr_outcome(inv.rc, fund.r, smc)
-            oc = oc_cf if (act == "subscribe" and cfg.get("suitability")) else "match"
-            if act == "subscribe" and oc in ("match", "confirm_signed") and fund.qdii \
-                    and code in qdii_blk:
-                oc = "purchase_blocked"      # QDII quota suspension, subscribe-only
+            if act == "subscribe":
+                smc = trow.get("sign_mismatch_confirm")
+                smc = smc if isinstance(smc, bool) else str(smc).lower() in ("true", "1")
+                oc_cf = cxr_outcome(inv.rc, fund.r, smc)
+                oc = oc_cf if cfg.get("suitability") else "match"
+                if oc in ("match", "confirm_signed") and fund.qdii and code in qdii_blk:
+                    oc = "purchase_blocked"  # QDII quota suspension, subscribe-only
+            else:                            # invariant (i): a redeem is never CxR-gated and
+                oc = oc_cf = "match"         # the counterfactual obeys the same rule
             pct = float(trow.get("amount_pct") or 0.0) / 100.0   # amount_pct is 0-100
             amt = 0.0
+            fee = 0.0
             if oc in ("match", "confirm_signed"):
                 if act == "subscribe":
                     amt = pct * inv.cash
@@ -377,21 +464,25 @@ def apply_decision(inv, rec, shown, day):
                         oc = "below_min"
                     else:
                         nav = navday[code]
-                        units = amt / nav
+                        fee = amt * sub_rate
+                        units = (amt - fee) / nav
                         if code in inv.hold:                    # average-cost update
                             tot = inv.hold[code] + units
                             inv.cost[code] = (inv.hold[code] * inv.cost.get(code, nav)
-                                              + amt) / tot
+                                              + (amt - fee)) / tot
                             inv.hold[code] = tot
                         else:
                             inv.hold[code] = units
                             inv.cost[code] = nav
                         inv.cash -= amt
+                        _bump_fees(inv, fee)
                         S["sub_n"] += 1
                         S["sub_cny"] += amt
+                        S["fees_cny"] += fee
                         flows[fund.family][quarter_of(dt_cur)]["sub"] += amt
                         logd("act", t=t, d=dstr, i=inv.id, p=pid, kind="subscribe", fund=code,
-                             amt=round(amt, 2), units=round(units, 6), nav=nav)
+                             amt=round(amt, 2), units=round(units, 6), nav=nav,
+                             fee=round(fee, 2))
                 else:
                     u = float(inv.hold.get(code) or 0.0)
                     if u <= 0.0:
@@ -399,24 +490,32 @@ def apply_decision(inv, rec, shown, day):
                     else:
                         nav = navday[code]
                         units = u * pct
-                        amt = units * nav
+                        amt = units * nav    # gross redemption value before the fee
+                        fee = amt * red_rate
                         cst = inv.cost.get(code, nav)
                         inv.realized += units * (nav - cst)
                         inv.hold[code] = u - units
                         if inv.hold[code] <= 1e-9:
                             del inv.hold[code]
                             inv.cost.pop(code, None)
-                        inv.cash += amt
+                        inv.cash += amt - fee
+                        _bump_fees(inv, fee)
                         S["red_n"] += 1
                         S["red_cny"] += amt
+                        S["fees_cny"] += fee
                         flows[fund.family][quarter_of(dt_cur)]["red"] += amt
-                        logd("act", t=t, d=dstr, i=inv.id, p=pid, kind="redeem", fund=code,
-                             amt=round(amt, 2), units=round(units, 6), nav=nav)
+                        logd("act", t=t, d=dstr, i=inv.id, p=None, kind="redeem", fund=code,
+                             amt=round(amt, 2), units=round(units, 6), nav=nav,
+                             fee=round(fee, 2))
             checkout_oc[oc] += 1
             day.checkout_oc_cf[oc_cf] += 1
-            logd("co", t=t, d=dstr, i=inv.id, p=pid, fund=code,
-                 ig=post.get("intent_group", post.get("intent")), act=act,
-                 oc=oc, oc_cf=oc_cf, amt=round(amt, 2))
+            if act == "redeem":              # a redeem checkout has no post context
+                logd("co", t=t, d=dstr, i=inv.id, p=None, fund=code, ig=None, act=act,
+                     oc=oc, oc_cf=oc_cf, amt=round(amt, 2))
+            else:
+                logd("co", t=t, d=dstr, i=inv.id, p=pid, fund=code,
+                     ig=post.get("intent_group", post.get("intent")), act=act,
+                     oc=oc, oc_cf=oc_cf, amt=round(amt, 2))
             if oc == "confirm_declined":
                 day.declined[inv.id] = day.declined.get(inv.id, 0) + 1
             elif amt > 0.0:
@@ -443,6 +542,12 @@ def run_simulation(cfg):
     W = load_world(cfg)
     rng_platform = random.Random(cfg["seed"])
     invs = sorted(init_investors(W, cfg), key=lambda x: x.id)
+    for inv in invs:        # fees slot ships with the A2 world card; stay runnable without it
+        if not hasattr(inv, "fees"):
+            try:
+                inv.fees = 0.0
+            except AttributeError:
+                pass
     persona = {rec.get("id"): (rec.get("persona_card_zh_rich") or rec.get("persona") or rec)
                for rec in W.agents}
     notes_by_id = _note_index(W)
@@ -456,6 +561,8 @@ def run_simulation(cfg):
     delta, p_active = float(cfg.get("fam_decay", 0.1)), float(cfg["p_active"])
     refl_every, mem_days = int(cfg["reflection_every_days"]), max(1, int(cfg["memory_days"]))
     workers = int(cfg["llm"]["workers"])
+    modality_arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
+    modality_level = cfg.get("modality_level") or cfg.get("arm_level") or "agent"
     wmap = ({inv.id: float(inv.strat_weight or 1.0) for inv in invs}
             if cfg.get("climate_weighting") else None)
     S = Counter()
@@ -477,6 +584,7 @@ def run_simulation(cfg):
     def snapshot(tag, dstr):
         rows = [{"i": inv.id, "arm": inv.arm, "cash": round(inv.cash, 2),
                  "realized": round(inv.realized, 2),
+                 "fees": round(float(getattr(inv, "fees", 0.0) or 0.0), 2),
                  "hold": {c: round(float(u), 4) for c, u in sorted(inv.hold.items())},
                  "cost": {c: round(float(inv.cost[c]), 4) for c in sorted(inv.cost)},
                  "fam": {o: round(v, 3) for o, v in sorted(inv.fam.items())},
@@ -539,6 +647,10 @@ def run_simulation(cfg):
             if t - 2 in comments:
                 del comments[t - 2]
             prev_cmts = comments.get(t - 1, [])
+            n_prev = {}                    # full t-1 comment count per pid (header 共 n 条)
+            for c in prev_cmts:
+                p = c.get("p")
+                n_prev[p] = n_prev.get(p, 0) + 1
             clim_now, top_now = {}, {}
             for post in cand:                      # (3) social lag, one trading day
                 pid, code = post["post_id"], post.get("code")
@@ -582,8 +694,10 @@ def run_simulation(cfg):
                           "hold": sorted(inv.hold)}
                 ranked = rank_feed(astate, cand, heat_prev, clim_prev, cfg["feed"],
                                    inv.rng, mode=cfg.get("ranking", "three_source")) or []
-                arms = ([inv.arm] * len(ranked) if cfg.get("arm_level") == "agent"
-                        else assign_arms(inv.rng, K, inv.arm_tally))
+                # agent/run level: the arm is a property of the agent; exposure level:
+                # each impression draws its own arm from the same per-agent stream.
+                arms = ([inv.arm] * len(ranked) if modality_level in ("agent", "run")
+                        else assign_arms(inv.rng, K, inv.arm_tally, arms=modality_arms))
                 shown, arm_by_pid, last_src = {}, {}, None
                 for s, item in enumerate(ranked):
                     post, source = _rank_item(item)
@@ -603,7 +717,8 @@ def run_simulation(cfg):
                 if not shown:
                     continue
                 cards = [_feed_card(W, shown[pid], notes_by_id, arm_by_pid[pid],
-                                    heat_prev, clim_prev, top_prev, dt_cur) for pid in shown]
+                                    heat_prev, clim_prev, top_prev, dt_cur, n_prev)
+                         for pid in shown]
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined)
                 jobs.append({"inv": inv, "shown": shown, "cards": cards, "view": view,
@@ -632,15 +747,17 @@ def run_simulation(cfg):
                 # cache_hit / attempts are provenance, not simulation state: they differ between a cold run
                 # and its warm replay, which would break invariant (l) byte-identical logs. They live in
                 # llm_cache.jsonl (per call) and run_meta.counters (aggregate) instead.
+                adapted = _adapt_record(rec, job["shown"], inv) if row is not None else None
                 logd("dec", t=t, d=dstr, i=inv.id, prompt_sha=rec.get("prompt_sha"),
                      raw_sha=rec.get("raw_sha256"), status=rec.get("parser_status"),
                      arm=inv.arm, mood=(row or {}).get("mood"), reason=(row or {}).get("reason"),
-                     violations=list(rec.get("violations") or ()))
+                     violations=list(rec.get("violations") or ()),
+                     **_dec_counts(adapted, len(job["cards"]), bool(cfg.get("social"))))
                 if row is None:
                     S["decision_failures"] += 1
                     continue
-                cmt_out, aff_first, tr = apply_decision(inv, _adapt_record(rec, job["shown"], inv),
-                                                        job["shown"], day)
+                cmt_out, aff_first, tr = apply_decision(inv, adapted, job["shown"], day,
+                                                        fees=cfg.get("fees"))
                 inv.memory.append(_memory_line(t, len(job["cards"]), tr, cmt_out, aff_first,
                                                row.get("mood"), row.get("reason")))
                 del inv.memory[:-mem_days]
@@ -670,7 +787,7 @@ def run_simulation(cfg):
                         S["dca_cny"] += amt
                         flows[FUNDS[code].family][quarter_of(dt_cur)]["sub"] += amt
                         logd("act", t=t, d=dstr, i=inv.id, p=None, kind="dca", fund=code,
-                             amt=round(amt, 2), units=round(units, 6), nav=nav)
+                             amt=round(amt, 2), units=round(units, 6), nav=nav, fee=0.0)
             if heat != heat_prev:                  # would mean mid-day signal mutation (inv a)
                 inv_a_ok = False
             for inv in invs:                       # (8) lagged updates, visible from t+1 only
@@ -746,7 +863,8 @@ def _print_summary(cfg, counters, checks, days, elapsed, checkout_oc, checkout_o
           f"decision_failure_rate={counters.get('decision_failures', 0) / n:.4f}")
     print(f"checkout_oc={dict(sorted(checkout_oc.items()))}")
     print(f"checkout_oc_cf={dict(sorted(checkout_oc_cf.items()))}")
-    print(f"factor_switches={counters.get('factor_switches', 0)} "
+    print(f"fees_cny={round(float(counters.get('fees_cny', 0.0) or 0.0), 2)} "
+          f"factor_switches={counters.get('factor_switches', 0)} "
           f"elapsed_s={round(elapsed, 1)}")
     fails = [k for k, v in sorted(checks.items()) if not v.get("pass", True)]
     print("invariants=PASS" if not fails else "invariants=FAIL(" + ",".join(fails) + ")")
@@ -776,7 +894,10 @@ def _fake_day(cfg, **over):
                           weights=None, comments=[], likes={}, saves={}, cw={},
                           checkout_oc=Counter(), checkout_oc_cf=Counter(), events=[],
                           last_trade={}, declined={})
-    day.logd = lambda **kw: day.events.append(kw)
+    # apply_decision passes the event kind as the FIRST POSITIONAL argument,
+    # exactly like the real EventLog.emit; store it under the "ev" key so the
+    # self-test can filter rows by kind.
+    day.logd = lambda ev, **kw: day.events.append(dict(ev=ev, **kw))
     for k, v in over.items():
         setattr(day, k, v)
     return day
@@ -790,17 +911,29 @@ def _self_test():
         ok = ok and bool(cond)
         print(("PASS " if cond else "FAIL ") + name)
 
+    chk("make_llm_prefers_null_policy_over_mock",
+        isinstance(_make_llm({"agent_policy": "null", "run_tag": "st", "mock_llm": True,
+                              "null_params": {}}), NullPolicyLLM))
+    chk("make_llm_mock_fallback_without_null_policy",
+        isinstance(_make_llm({"mock_llm": True}), MockLLM))
     shown = {"P1": {"post_id": "P1", "org": "orgA", "code": "F1", "intent": "I2",
                     "intent_group": "I2"}}
-    base = {"parsed": {"amount_pct": 10, "sign_mismatch_confirm": "false"}, "likes": ["P1"],
-            "saves": [], "follows": ["orgA"], "aff": {"orgA": 0.5}, "comments": [],
-            "trade": {"p": "P1", "act": "subscribe", "amount_pct": 10}}
+    # apply_decision reads amount_pct / sign_mismatch_confirm from parsed["trade"],
+    # so the fixture nests them there (a flat parsed dict silently yields amount 0).
+    base = {"parsed": {"trade": {"amount_pct": 10, "sign_mismatch_confirm": "false"}},
+            "likes": ["P1"], "saves": [], "follows": ["orgA"], "aff": {"orgA": 0.5},
+            "comments": [], "trade": {"p": "P1", "act": "subscribe", "amount_pct": 10}}
     day, inv = _fake_day({"social": False, "suitability": False}), _fake_inv()
     apply_decision(inv, dict(base), shown, day)
     co = [e for e in day.events if e["ev"] == "co"][0]
     chk("suitability_off_executes_match_cf_logged", co["oc"] == "match" and co["oc_cf"] in _VALID_OC)
+    chk("subscribe_still_emits_click_row",
+        any(e["ev"] == "click" and e.get("oc") == "to_checkout" for e in day.events))
     chk("subscribe_and_engagement_applied", bool(inv.hold) and inv.cash < 100000.0
         and "orgA" in inv.follow and inv.aff.get("orgA") == 0.5)
+    chk("act_rows_carry_zero_fee_when_fees_off",
+        bool([e for e in day.events if e["ev"] == "act"])
+        and all(e.get("fee") == 0.0 for e in day.events if e["ev"] == "act"))
     day, inv = _fake_day({"social": False, "suitability": True}), _fake_inv()
     apply_decision(inv, dict(base), shown, day)
     co = [e for e in day.events if e["ev"] == "co"][0]
@@ -810,14 +943,88 @@ def _self_test():
     rec["trade"] = {"p": "P1", "act": "redeem", "amount_pct": 50}
     apply_decision(inv, rec, shown, day)
     co = [e for e in day.events if e["ev"] == "co"][0]
-    chk("redeem_ungated_no_holdings", co["oc"] == "no_holdings" and co["oc_cf"] in _VALID_OC)
+    chk("redeem_ungated_no_holdings", co["oc"] == "no_holdings" and co["oc_cf"] in _VALID_OC
+        and co["p"] is None and not any(e["ev"] == "click" for e in day.events))
+    day, inv = _fake_day({"social": False, "suitability": True}), _fake_inv(
+        hold={"F1": 1000.0}, cost={"F1": 1.0})
+    rec = dict(base)
+    rec["parsed"] = {"trade": {"amount_pct": 50, "sign_mismatch_confirm": "false"}}
+    rec["trade"] = {"p": "P1", "act": "redeem", "amount_pct": 50}
+    apply_decision(inv, rec, shown, day)
+    co = [e for e in day.events if e["ev"] == "co"][0]
+    acts = [e for e in day.events if e["ev"] == "act"]
+    chk("redeem_no_click_co_forced_match_p_none",
+        not any(e["ev"] == "click" for e in day.events)
+        and co["act"] == "redeem" and co["oc"] == "match" and co["oc_cf"] == "match"
+        and co["p"] is None and co["ig"] is None
+        and bool(acts) and all(e.get("p") is None for e in acts))
     day, inv = _fake_day({"social": False, "suitability": False}), _fake_inv()
     rec = dict(base)
-    rec["parsed"] = {"amount_pct": 0.001, "sign_mismatch_confirm": "false"}
+    rec["parsed"] = {"trade": {"amount_pct": 0.001, "sign_mismatch_confirm": "false"}}
     apply_decision(inv, rec, shown, day)
     co = [e for e in day.events if e["ev"] == "co"][0]
     chk("below_min_blocks_ticket", co["oc"] == "below_min"
         and not any(e["ev"] == "act" for e in day.events))
+    day, inv = _fake_day({"social": False, "suitability": False}), _fake_inv()
+    apply_decision(inv, dict(base), shown, day,
+                   fees={"subscribe_rate": 0.0012, "redeem_rate": 0.005})
+    act = [e for e in day.events if e["ev"] == "act"][0]
+    chk("subscribe_fee_charged_tracked_identity_holds",
+        act["fee"] > 0.0 and abs(act["fee"] - 12.0) < 1e-6
+        and abs(getattr(inv, "fees", -1.0) - act["fee"]) < 1e-9
+        and inv.cash == 90000.0
+        and abs(inv.cash + inv.hold["F1"] * 1.5 + getattr(inv, "fees", 0.0)
+                - 100000.0 - inv.realized) < 1e-6)
+    day, inv = _fake_day({"social": False, "suitability": False}), _fake_inv(
+        hold={"F1": 1000.0}, cost={"F1": 1.0})
+    rec = dict(base)
+    rec["parsed"] = {"trade": {"amount_pct": 50, "sign_mismatch_confirm": "false"}}
+    rec["trade"] = {"p": "P1", "act": "redeem", "amount_pct": 50}
+    apply_decision(inv, rec, shown, day,
+                   fees={"subscribe_rate": 0.0012, "redeem_rate": 0.005})
+    act = [e for e in day.events if e["ev"] == "act"][0]
+    chk("redeem_fee_charged_on_gross_proceeds",
+        abs(act["fee"] - 3.75) < 1e-6 and abs(inv.cash - 100746.25) < 1e-6
+        and abs(getattr(inv, "fees", 0.0) - 3.75) < 1e-6
+        and abs(inv.realized - 250.0) < 1e-6)
+    Wt = SimpleNamespace(funds={}, fund_meta={},
+                         pool={"orgA": [{"id": "N1", "title": "t1", "caption": "raw cap",
+                                         "caption_masked": "masked cap",
+                                         "image_path": "imgs/n1.jpg", "ocr_text": "raw ocr",
+                                         "ocr_masked": "masked ocr",
+                                         "image_caption_frozen": "frozen cap"}]})
+    notes_t = _note_index(Wt)
+    post_t = {"post_id": "P1", "org": "orgA", "note": "N1", "code": None, "img": 1}
+    card_tc = _feed_card(Wt, post_t, notes_t, "TC", {}, {}, {}, date(2024, 1, 2), {"P1": 9})
+    card_t = _feed_card(Wt, post_t, notes_t, "T", {}, {}, {}, date(2024, 1, 2), {"P1": 9})
+    card_tv = _feed_card(Wt, post_t, notes_t, "TV", {}, {}, {}, date(2024, 1, 2), {})
+    chk("tc_card_carries_ocr_text_and_frozen_caption",
+        card_tc.get("ocr_text") == "masked ocr"
+        and card_tc.get("image_caption_frozen") == "frozen cap"
+        and card_tc.get("caption") == "masked cap")
+    chk("t_and_tv_cards_have_no_tc_fields",
+        all("ocr_text" not in c and "image_caption_frozen" not in c
+            for c in (card_t, card_tv)))
+    chk("n_comments_prev_always_present",
+        card_tc["n_comments_prev"] == 9 and card_t["n_comments_prev"] == 9
+        and card_tv["n_comments_prev"] == 0)
+    shown2 = {"P1": {"post_id": "P1", "org": "orgA", "code": "F1", "intent": "I2"},
+              "P2": {"post_id": "P2", "org": "orgB", "code": None, "intent": "I1"}}
+    adapted = _adapt_record(
+        {"parsed": {"engage": {"P1": ["like", "save"], "P2": ["follow"]},
+                    "org_affinity_delta": {"orgA": 1, "orgB": -1, "orgC": 0},
+                    "comments": [{"post_id": "P1", "stance": "bull", "text": "tt"},
+                                 {"post_id": "P2", "stance": "no_comment", "text": ""}],
+                    "trade": None}}, shown2, _fake_inv())
+    chk("dec_counts_match_adapted_row",
+        _dec_counts(adapted, 2, True) == {"n_read": 2, "n_like": 1, "n_save": 1,
+                                          "n_follow": 1, "n_comment": 1, "aff_sum": 0})
+    chk("dec_counts_all_null_when_parse_failed",
+        _dec_counts(None, 2, True) == {k: None for k in
+                                       ("n_read", "n_like", "n_save", "n_follow",
+                                        "n_comment", "aff_sum")})
+    chk("dec_counts_drop_comments_when_social_off",
+        _dec_counts(adapted, 2, False)["n_comment"] == 0)
     chk("memory_line_shape", _memory_line(3, 4, None, None, None, "neutral", "r" * 99)
         .startswith("D3｜看4条｜未交易"))
     tr = {"act": "subscribe", "exec": False, "oc": "confirm_declined", "code": "F1", "amt": 0.0}
@@ -845,11 +1052,47 @@ def _self_test():
     chk("mock_end_to_end_rc0", rc == 0)
     if rc != 0:
         return 1
-    evs = {row.get("ev") for row in iter_jsonl(logp)}
+    rows = list(iter_jsonl(logp))
+    evs = {row.get("ev") for row in rows}
     chk("required_event_kinds", {"post", "imp", "dec", "clim"} <= evs)
+    tally_keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum")
+    decs = [r for r in rows if r.get("ev") == "dec"]
+    chk("dec_rows_carry_tally_fields",
+        bool(decs) and all(all(k in d for k in tally_keys) for d in decs))
+    chk("act_rows_carry_fee_field",
+        all("fee" in r and float(r["fee"]) >= 0.0 for r in rows if r.get("ev") == "act"))
     sha1 = event_log_sha(logp)
     chk("replay_sha_identical", run_simulation(cfg) == 0 and sha1 is not None
         and sha1 == event_log_sha(logp))
+    cfg3_path = next((os.path.join(b_, "runs", "mock_10x3_3arm.json") for b_ in (root, alt, ROOT)
+                      if os.path.exists(os.path.join(b_, "runs", "mock_10x3_3arm.json"))), None)
+    if cfg3_path is None:
+        print("SKIP: no runs/mock_10x3_3arm.json (A2-schema card adds it)")
+    else:
+        cfg3 = None
+        try:
+            cfg3 = _load_cfg(cfg3_path)
+        except ConfigError:
+            print("SKIP: mock_10x3_3arm.json not accepted by the active schema yet")
+        if cfg3 is not None:
+            cfg3.update({"mock_llm": True, "n_agents": 8,
+                         "out_dir": tempfile.mkdtemp(prefix="fm_loop_st3_")})
+            cfg3["window"]["max_trading_days"] = 2
+            try:
+                rc3 = run_simulation(cfg3)
+            except (ConfigError, SystemExit) as exc:
+                rc3 = None
+                print(f"SKIP: three-arm run blocked by config/world layer: {exc}")
+            if rc3 is not None:
+                chk("mock_three_arm_fees_rc0", rc3 == 0)
+                if rc3 == 0:
+                    rows3 = list(iter_jsonl(os.path.join(cfg3["out_dir"],
+                                                         "event_log.jsonl")))
+                    arms3 = {r.get("arm") for r in rows3 if r.get("ev") in ("imp", "dec")}
+                    chk("three_arm_arms_in_enum_and_act_fees_logged",
+                        bool(arms3) and arms3 <= {"T", "TC", "TV"}
+                        and all("fee" in r and float(r["fee"]) >= 0.0
+                                for r in rows3 if r.get("ev") == "act"))
     return 0 if ok else 1
 
 

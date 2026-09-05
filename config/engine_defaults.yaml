@@ -1,5 +1,25 @@
 window:
   max_trading_days: 63
+# Card C: rule-based null policy (anti-A1 baseline). The null_params below are
+# PREREGISTERED (PREREG v1.5 draft section F, forbidden item 12): they must be
+# fixed BEFORE any main-grid result is seen and never tuned after the fact.
+agent_policy: llm
+null_params:
+  p_redeem_gain: 0.06
+  p_redeem_loss: 0.03
+  redeem_pct: 50
+  p_sub_base: 0.05
+  chase_slope: 2.0
+  sub_pct: 20
+  p_sign_mismatch: 0.5
+  p_like: 0.15
+  p_save: 0.08
+  p_follow: 0.02
+  p_comment: 0.10
+  stance_probs:
+    bullish: 0.35
+    bearish: 0.30
+    watching: 0.35
 suitability: true
 strategy_mix: measured
 strategy_groups:
@@ -8,6 +28,14 @@ strategy_groups:
   _rule: explicit org list wins; otherwise the named mix applies
 ranking: three_source
 arm_level: agent
+modality_level: agent
+modality_arms:
+  - "T"
+  - "TV"
+modality_run_arm: "TV"
+fees:
+  subscribe_rate: 0.0
+  redeem_rate: 0.0
 p_image: 0.5
 climate_weighting: true
 memory: true
