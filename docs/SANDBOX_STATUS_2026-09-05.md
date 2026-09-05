@@ -53,8 +53,8 @@ script/run.sh（校验配置；引擎接线后即可跑）· .github/workflows/c
 |---|---|---|
 | 机构 | 4 家真实公司 × 50 条真实笔记（正文 + OCR + 五维标签，时点表述已遮蔽），每交易日各发 2 条，按**实测意图组合**抽（广发 I2 20% / 鹏华 34% / 国联 38% / 汇添富 48%） | ✅ 数据冻结（pool_sha 64a683ae…）；**扩到 8 家进行中**：华夏 277 / 国泰 121 / 富国 87 / 平安 67 / 天弘 50 条合格，其中华夏、平安只有封面图；新四家提到的基金多无净值 |
 | 平台 | 三源推荐器（关注 2 / 匹配 2 / 热门 2 = K=6）；热度 h = log10(L+2S+3C+1)/(age+1)^1.8；评论只显示 t−1 的前 3 条 + 气候标签（按 strat_weight 加权）；图片臂 **agent 级**（每人整场固定看图/不看图）；随机排序臂作反 A1 对照 | ✅ `feed.py` |
-| 投资者 | 400 个活 LLM agent（glm-4.6v）：人设卡 + 8 维信念状态（market_view/risk_mood 由 agent 反思改写；trust/attention/ref_point/gain_loss/experience/trend_read 由引擎维护）+ 5 日记忆 + 每 5 日反思；输出结构化 JSON（互动/留言/交易/好感/心情/理由）；六条信息通道 feed / experience / trend / social / news / direct，论文场景只开 feed+experience+social+news | ⏳ `agents/prompt.py`、`agents/runtime.py` 生成中 |
-| 监管与市场 | C×R 结账只管申购、赎回不拦；**适当性开/关是运行级随机化因子**（关时仍记录反事实 `oc_cf`）；153→399 只基金真实日净值；定投；财富守恒 | ✅ `regulator/`；⏳ `engine/world.py`、`engine/loop.py` 生成中 |
+| 投资者 | 400 个活 LLM agent（glm-4.6v）：人设卡 + 2 维 agent 可写信念（market_view/risk_mood）+ 6 维引擎数值（trust/attention/ref_point/gain_loss/experience/trend_read）+ 5 日记忆 + 每 5 日反思；输出结构化 JSON（reads/engage/comments{四类立场}/trade{一日一笔，百分比}/org_affinity_delta/mood/reason）；六条信息通道 feed / experience / trend / social / news / direct，论文场景只开 feed+experience+social+news | ✅ `agents/prompt.py`（自检 57/57）、`agents/runtime.py`（5/5） |
+| 监管与市场 | C×R 结账只管申购、赎回不拦；**适当性开/关是运行级随机化因子**（关时仍记录反事实 `oc_cf`）；真实日净值（R 级由申赎面板的类型字段分类）；定投；财富守恒；费率（申购 0.12% / 赎回 0.5%，决策 #12，待实现） | ✅ `regulator/`、`engine/world.py`（12/12）、`engine/loop.py`（**M0 通过**：10×3 与 40×5 mock，不变量 PASS，重放逐字节相同，`srs_analysis.py` 可算） |
 
 ### 2.2 实验设计（不变，= 预注册）
 2×2 主设计：适当性 {on, off} × 策略组合 {推品重 = 国联+汇添富实测组合, 投教重 = 广发+鹏华}，每格 5 种子（2027–2031），共 20 次运行；参考格 {on, measured} 上加随机排序臂 3 种子、记忆关/社交关 ≤3 种子、底座替换 2 种子、气候加权关 1 种子。配置由 `make_grid_configs.py` 生成（37 个）。主终点 Δ1 = SRS(熟悉≥1) − SRS(0)，SESOI +0.05，**种子级 t 区间（df 4）**；第二终点 r_off − r_on；C4 = 策略因子主效应（v1.4）。
@@ -68,7 +68,9 @@ M0 干跑（10 人 × 3 日 mock；不变量全过、两次日志逐字节相同
 
 | 项 | 状态 | 影响论文 |
 |---|---|---|
-| 引擎四模块 `agents/prompt.py`、`agents/runtime.py`、`engine/world.py`、`engine/loop.py` | ⏳ GLM 5.3 按四张任务卡生成（复用 4-15-6e 的 v1.3 规格 + v7 包路径），落盘后跑自检与 M0 | §3.5 成本表 `GAP_S4_COST`、全部 §5–§6 数字 |
+| 引擎四模块 | ✅ 全部落盘、自检通过、**M0 干跑通过**（见 §2.1）；M1 真模型冒烟待 `config/api.yaml`；成本数字仍为 `GAP_S4_COST` | §3.5 成本表、全部 §5–§6 数字 |
+| **沙盒细节 14 条已由业主逐条拍板** | ✅ `specs/DECISIONS_2026-09-05_SANDBOX.md`（每条附顶会做法与选择）；**PREREG v1.5 草案** `specs/PREREG_v1.5_DRAFT.md`（多模态升为第二主线：三臂 T/TC/TV，agent 级 + 整场级；主终点 = 互动率/评论率/好感增量，交易为次；SESOI h=0.10；费率；空模拟器规则；8 机构分组规则；预算 ≈45 次运行）——**未冻结**，业主复核后改名 v1.5 | §3 全节措辞；§4 设计；附录 C 升为 §6 的第二结果节 |
+| 内部规范 | ✅ `SANDBOX_INTERNAL_SPEC_v1.md`（每因素一卡：定义/量化/更新/出处/配置/日志；§J 调研回填与不采纳建议）；`PROJECT_ARCHITECTURE_v7.1.md`（五层递进：原子→组件→agent→GM 环境→社会；CoALA 记忆 + Concordia GM + 中介社会层；BDI 只留信念向量） | §3 系统描述的权威来源 |
 | 8 家机构内容池 v2 | ⏳ 新四家已导出 602 条候选（`sim/manifest_ext_20260905.jsonl`），待 GLM 打标/OCR → `content_pool_build.py --orgs … --out sim/content_pool_v2` → 时点清洗 → PREREG v1.5（因子二分组规则：按实测 I2 占比前 4 / 后 4） | Table 2 → 8 行；§3.2 文字；Fig 2 机构带；**所有语料数字用 LaTeX 宏** |
 | 新机构基金净值 | ⏳ 61 只待且慢 MCP（业主会话） | 落地率、留出覆盖 |
 | Table 3 真实幅度列 | ⛔ 复权净值待重估；只取符号。**新增真实结果**：股吧讨论量→季度净申购弹性 β = −0.015 (SE 0.015)，申购 +0.009、赎回 +0.013，均不显著，领先安慰剂 −0.035 (t −2.2)（2023Q1–2025Q4、752 只、8,231 基金季度、双向 FE，`sim/elasticity_real_v1.json`）→ v1.4 §C2 预期 β>0 **未获支持**，按预注册如实报告 | §5.1 注意力买入行、`GAP_S5_ELAST` |
