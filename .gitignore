@@ -10,3 +10,4 @@ __pycache__/
 .pytest_cache/
 data/funds/nav_cache.json
 *.bak_*
+runs/out/
