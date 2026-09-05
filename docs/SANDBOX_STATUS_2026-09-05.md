@@ -3,6 +3,8 @@
 > 读者：负责论文写作的会话。本文件回答三件事：沙盒**现在**长什么样（已建成 / 在建 / 未建）、代码与数据在 GitHub 上的位置、论文里可以据此写什么、不能写什么。数字均来自可核对的文件；未落地的部分明确标 ⏳。
 > 权威文件顺序：`specs/PREREG_v1.md → v1.1 → v1.2 → v1.3 → v1.4`（后者覆盖前者）> `paper/CLAIM_BOUNDARIES.md` > `paper/STYLE_RULES.md`。方法学时间线：`METHODS_LEDGER.md` R17–R28。
 
+> **2026-09-05 22:2x 更新（P3b 落地，METHODS_LEDGER R31）**：引擎已接入 **三臂模态 T/TC/TV**（`modality_level` agent/run/exposure、`modality_arms`、`modality_run_arm`）、**费率**（`fees`，默认 0，进不变量 (d)）、`dec` 六个互动计数、`run_meta.arms`；**规则型空模拟器**（`agent_policy: null`）、**模态分析层**、**五层立面**、**TC 冻结描述器**全部落盘。验收：7 模块自检、pytest 72、三份 mock 事件日志逐行过 event.schema、M0/三臂/空模拟器各自重放一致（sha 4df9263c… / e016807e… / b0cdeacd…）。两处既有 bug 已修：`post.ig` 现为 {I2,nonI2}；赎回结账不再发 click 行且 `oc_cf` 恒为 match。**论文可写**：三臂设计与随机化单位、TC 的"文字化图片"定义、空模拟器规则与参数（在结果前固定）、费率机制；**仍不可写**：任何运行结果、TC 描述已生成、M1 已跑。M0 基线哈希因遮蔽文案/评论总数/新字段而变化，属有意变更（R31）。
+
 ---
 
 ## 1. 仓库与文件位置
@@ -28,7 +30,12 @@ flowmirror/regulator/cn_cxr.py         C×R 结账（与 v5 逐项一致的穷�
 flowmirror/population/sampler.py       400 人等比抽样（复现冻结队列 sha ddae7d79…）✅
 flowmirror/config/{loader,validate}.py · flowmirror/cli.py         `flowmirror validate <cfg>`、`flowmirror tree`
 flowmirror/io/{jsonl,hashing,backups}.py
-flowmirror/agents/{prompt,runtime}.py · flowmirror/engine/{world,loop}.py   ⏳ GLM 5.3 生成中（见 §3）
+flowmirror/agents/{prompt,runtime}.py · flowmirror/engine/{world,loop}.py   ✅ 落盘、自检、M0 通过；P3b 已接入三臂模态 / 费率 / dec 计数
+flowmirror/agents/null_policy.py       规则型空模拟器（Odean 处置 + Sirri–Tufano 追涨 + 人口均值率；agent_policy: null，零 API）✅
+flowmirror/analysis/{common,modality}.py   模态实验分析：agent 级 bootstrap + 种子级 t 区间 + 三分判定（单种子只报描述）✅
+flowmirror/core/{types,protocols}.py · platform/ · society/ · engine/gm.py · agents/perceive/   五层立面（docs/LAYERS.md）✅
+data_pipeline/cn/caption_frozen.py     TC 臂冻结描述器（提示哈希键、断点续跑、泄漏审计）✅ 脚本就位，描述尚未批量生成
+runs/mock_10x3_3arm.json · runs/mock_10x3_null.json                三臂（费率开）与空模拟器的 M0 配置 ✅
 data/population/  persona_grid_v3.json（36 格）· population_10k_v3.json · agents_seed2027.json（400 人）
 data/creatives/cn/content_pool_v1_masked.jsonl（200 条，**去图片路径**，含遮蔽后文案/OCR）· tables_frozen_meta.json
 data/attention/   guba_signal_v1.json（周度聚合，**去帖子 id**）· elasticity_real_v1.json
@@ -68,7 +75,7 @@ M0 干跑（10 人 × 3 日 mock；不变量全过、两次日志逐字节相同
 
 | 项 | 状态 | 影响论文 |
 |---|---|---|
-| 引擎四模块 | ✅ 全部落盘、自检通过、**M0 干跑通过**（见 §2.1）；M1 真模型冒烟待 `config/api.yaml`；成本数字仍为 `GAP_S4_COST` | §3.5 成本表、全部 §5–§6 数字 |
+| 引擎四模块 + P3b（三臂/费率/空模拟器/分析层/立面） | ✅ 全部落盘并验收（R31：pytest 72、三份日志 schema 干净、三配置重放一致）；M1 真模型冒烟待 `config/api.yaml`；成本数字仍为 `GAP_S4_COST` | §3.5 成本表、全部 §5–§6 数字 |
 | **沙盒细节 14 条已由业主逐条拍板** | ✅ `specs/DECISIONS_2026-09-05_SANDBOX.md`（每条附顶会做法与选择）；**PREREG v1.5 草案** `specs/PREREG_v1.5_DRAFT.md`（多模态升为第二主线：三臂 T/TC/TV，agent 级 + 整场级；主终点 = 互动率/评论率/好感增量，交易为次；SESOI h=0.10；费率；空模拟器规则；8 机构分组规则；预算 ≈45 次运行）——**未冻结**，业主复核后改名 v1.5 | §3 全节措辞；§4 设计；附录 C 升为 §6 的第二结果节 |
 | 内部规范 | ✅ `SANDBOX_INTERNAL_SPEC_v1.md`（每因素一卡：定义/量化/更新/出处/配置/日志；§J 调研回填与不采纳建议）；`PROJECT_ARCHITECTURE_v7.1.md`（五层递进：原子→组件→agent→GM 环境→社会；CoALA 记忆 + Concordia GM + 中介社会层；BDI 只留信念向量） | §3 系统描述的权威来源 |
 | 8 家机构内容池 v2 | ⏳ 新四家已导出 602 条候选（`sim/manifest_ext_20260905.jsonl`），待 GLM 打标/OCR → `content_pool_build.py --orgs … --out sim/content_pool_v2` → 时点清洗 → PREREG v1.5（因子二分组规则：按实测 I2 占比前 4 / 后 4） | Table 2 → 8 行；§3.2 文字；Fig 2 机构带；**所有语料数字用 LaTeX 宏** |
