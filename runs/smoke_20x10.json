@@ -3,10 +3,19 @@
   "run_tag": "smoke_20x10",
   "seed": 2027,
   "mock_llm": false,
-  "window": {"start": "2025-10-01", "end": "2025-12-31", "max_trading_days": 10},
+  "window": {
+    "start": "2025-10-01",
+    "end": "2025-12-31",
+    "max_trading_days": 10
+  },
   "n_agents": 20,
   "agents_file": "data/population/agents_seed2027.json",
-  "orgs": ["广发基金", "鹏华基金", "国联基金", "汇添富基金"],
+  "orgs": [
+    "广发基金",
+    "鹏华基金",
+    "国联基金",
+    "汇添富基金"
+  ],
   "content_pool": "data/creatives/cn/content_pool_v1_masked.jsonl",
   "posts_per_org_per_day": 2,
   "no_repeat_days": 10,
@@ -20,12 +29,44 @@
   "climate_weighting": true,
   "memory": true,
   "social": true,
-  "channels": {"feed": true, "experience": true, "trend": false, "social": true, "news": true, "direct": false},
-  "feed": {"K": 6, "slots": {"follow": 2, "fit": 2, "trending": 2}, "w_trust": 1.0, "w_fit": 1.0, "w_heat": 1.0, "w_soc": 0.5, "eps": 0.05, "gamma": 1.8},
+  "channels": {
+    "feed": true,
+    "experience": true,
+    "trend": false,
+    "social": true,
+    "news": true,
+    "direct": false
+  },
+  "feed": {
+    "K": 6,
+    "slots": {
+      "follow": 2,
+      "fit": 2,
+      "trending": 2
+    },
+    "w_trust": 1.0,
+    "w_fit": 1.0,
+    "w_heat": 1.0,
+    "w_soc": 0.5,
+    "eps": 0.05,
+    "gamma": 1.8
+  },
   "p_active": 0.7,
   "memory_days": 5,
   "reflection_every_days": 5,
-  "llm": {"model": "glm-4.6v", "text_model": "glm-4.6v", "workers": 12, "max_attempts": 3, "decision_failure_halt": 0.02, "cache": "runs/out/smoke_20x10/llm_cache.jsonl", "max_tokens_start": 6144},
-  "mock_options": {"force_c2_r4_click": false, "malformed_rate": 0.0},
-  "out_dir": "runs/out/smoke_20x10"
+  "llm": {
+    "model": "glm-4.6v",
+    "text_model": "glm-4.6v",
+    "workers": 12,
+    "max_attempts": 3,
+    "decision_failure_halt": 0.02,
+    "cache": "runs/out/smoke_20x10/llm_cache.jsonl",
+    "max_tokens_start": 6144
+  },
+  "mock_options": {
+    "force_c2_r4_click": false,
+    "malformed_rate": 0.0
+  },
+  "out_dir": "runs/out/smoke_20x10",
+  "fund_meta_file": "data/flows/flow_panel_v2.json"
 }

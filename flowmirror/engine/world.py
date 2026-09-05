@@ -351,6 +351,11 @@ _INTENTS = ("I1", "I2", "I3")
 
 
 def _ig_of(note: dict):
+    # Pool rows carry the three-way tag in `intent` (I1 brand / I2 product-push / I3 education) and a
+    # two-way `intent_group` (I2 / nonI2). The measured mix is over the three-way tag (PREREG v1.1 §B4).
+    it = note.get("intent")
+    if it in _INTENTS:
+        return it
     ig = note.get("intent_group")
     if ig in _INTENTS:
         return ig

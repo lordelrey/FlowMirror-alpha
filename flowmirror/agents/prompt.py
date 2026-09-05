@@ -326,17 +326,21 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     head = "\n\n".join(t for t in (render_belief(agent_view), c_text, "\n".join(d_lines),
                                    "\n".join(e_lines)) if t)
 
+    check_anti_priming(sys_text, "block A (persona + frame)")   # our framing, not data
     messages = [{"role": "system", "content": sys_text}]
     parts, sha_blocks = [], [sys_text]
 
-    def add_text(where, text):
-        check_anti_priming(text, where)
+    def add_text(where, text, check=True):
+        # Anti-priming guards OUR framing/instructions. Real creatives and real prior comments are data:
+        # a marketing note may legitimately say 跟风 or 监管, and censoring it would alter the stimulus.
+        if check:
+            check_anti_priming(text, where)
         parts.append({"type": "text", "text": text})
         sha_blocks.append(text)
 
     add_text("blocks B-E", head)
     for card in feed_cards:
-        add_text("card:" + str(card.get("post_id")), render_card(card, social_on))
+        add_text("card:" + str(card.get("post_id")), render_card(card, social_on), check=False)
         if str(card.get("arm") or "T") != "TV":
             continue
         ipath = str(card.get("image_path") or "")
@@ -615,13 +619,21 @@ def _self_test():
     check("build: T marker + truncation", "配图不展示。" in all_text and "…[展开]" in all_text)
     check("build: prompt_sha stable + agent-differs", build_decision_messages(view_a, cards, cfg)[1] == psha
           and build_decision_messages(view_b, cards, cfg)[1] != psha)
-    poisoned = [dict(c) for c in cards]
-    poisoned[0]["title"] = "监管提示：理性投资"
+    # Real creatives are data and exempt; the guard protects OUR framing (persona/belief/instruction blocks).
+    poisoned_view = dict(view_a)
+    poisoned_view["persona_card_zh_rich"] = str(view_a.get("persona_card_zh_rich") or "") + " 监管提示：理性投资。"
     try:
-        build_decision_messages(view_a, poisoned, cfg)
-        check("build: poisoned title raises", False, "no ValueError")
+        build_decision_messages(poisoned_view, cards, cfg)
+        check("build: poisoned framing raises", False, "no ValueError")
     except ValueError:
-        check("build: poisoned title raises", True)
+        check("build: poisoned framing raises", True)
+    poisoned_cards = [dict(c) for c in cards]
+    poisoned_cards[0]["title"] = "别跟风，理性投资"
+    try:
+        build_decision_messages(view_a, poisoned_cards, cfg)
+        check("build: creative text with sensitive word is NOT censored", True)
+    except ValueError:
+        check("build: creative text with sensitive word is NOT censored", False, "ValueError on data")
 
     rmsg, rsha = build_reflection_messages(view_a)
     check("reflect: messages+sha", rmsg[0]["role"] == "system" and len(rsha) == 64
