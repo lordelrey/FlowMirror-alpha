@@ -23,6 +23,7 @@ run_simulation returns 0, and the failing key never reaches stdout.
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -41,6 +42,16 @@ REGISTRY = (
     "g_comments_lagged_only", "h_arm_balance", "i_redeem_checkout_never_blocked",
     "j_displayed_comment_matches_prev_day", "k_dec_matches_active",
 )
+
+
+def _patch_nav_cache_for_repo(cfg):
+    nav = Path(ROOT) / str(cfg.get("nav_cache", ""))
+    if nav.is_file():
+        return cfg
+    demo = Path(ROOT) / "data" / "funds" / "nav_demo_2025q4.json"
+    if demo.is_file():
+        cfg["nav_cache"] = "data/funds/nav_demo_2025q4.json"
+    return cfg
 
 
 def _cfg_path(name="mock_10x3.json"):
@@ -64,6 +75,7 @@ def _run_mock(tmp_path, agents=40, days=5, name="mock_10x3.json"):
         pytest.skip(f"no runs/{name} under FLOWMIRROR_DATA_ROOT / "
                     "FLOWMIRROR_RESEARCH_ROOT / repo root")
     cfg = _load_cfg(path)
+    cfg = _patch_nav_cache_for_repo(cfg)
     cfg.update({"mock_llm": True, "n_agents": agents, "out_dir": str(tmp_path)})
     cfg["window"]["max_trading_days"] = days
     cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")

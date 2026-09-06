@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -33,15 +34,38 @@ def _mock_cfg_path():
     return None
 
 
+def _repo_has_runnable_nav():
+    nav = Path(ROOT) / "data" / "funds" / "nav_cache.json"
+    demo = Path(ROOT) / "data" / "funds" / "nav_demo_2025q4.json"
+    return nav.is_file() or demo.is_file()
+
+
+def _patch_nav_cache_for_repo(cfg):
+    nav = Path(ROOT) / str(cfg.get("nav_cache", ""))
+    if nav.is_file():
+        return cfg
+    demo = Path(ROOT) / "data" / "funds" / "nav_demo_2025q4.json"
+    if demo.is_file():
+        cfg["nav_cache"] = "data/funds/nav_demo_2025q4.json"
+    return cfg
+
+
+def _write_cfg_for_entrypoint(tmp_path, out_name):
+    cfg = _patch_nav_cache_for_repo(_load_cfg(_mock_cfg_path()))
+    cfg_path = tmp_path / out_name
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(cfg_path)
+
+
 needs_mock = pytest.mark.skipif(
-    _mock_cfg_path() is None,
-    reason="runs/mock_10x3.json not found (set FLOWMIRROR_DATA_ROOT)",
+    _mock_cfg_path() is None or not _repo_has_runnable_nav(),
+    reason="requires runs/mock_10x3.json and either nav_cache.json or nav_demo_2025q4.json",
 )
 
 
 def _tiny_cfg(out_dir):
     """Tiny mock run: 2 trading days, 8 agents, every output under out_dir."""
-    cfg = _load_cfg(_mock_cfg_path())
+    cfg = _patch_nav_cache_for_repo(_load_cfg(_mock_cfg_path()))
     cfg.update({"mock_llm": True, "n_agents": 8, "out_dir": str(out_dir)})
     cfg["window"]["max_trading_days"] = 2
     cfg.setdefault("llm", {})["cache"] = os.path.join(str(out_dir), "llm_cache.jsonl")
@@ -94,7 +118,8 @@ def test_engine_entry_point_accepts_the_dump_prompt_flag(tmp_path):
     from flowmirror.engine.loop import main as engine_main
 
     out = tmp_path / "eng"
-    rc = engine_main([_mock_cfg_path(), "--mock", "--days", "2", "--agents", "8",
+    cfg_path = _write_cfg_for_entrypoint(tmp_path, "cfg_engine.json")
+    rc = engine_main([cfg_path, "--mock", "--days", "2", "--agents", "8",
                       "--out", str(out), "--dump-prompt", "first"])
     assert rc == 0
     pdir = out / "prompts"
@@ -109,7 +134,8 @@ def test_control_cli_run_accepts_the_dump_prompt_flag(tmp_path):
     from flowmirror.cli import main as cli_main
 
     out = tmp_path / "cli"
-    rc = cli_main(["run", _mock_cfg_path(), "--mock", "--days", "2", "--agents", "8",
+    cfg_path = _write_cfg_for_entrypoint(tmp_path, "cfg_cli.json")
+    rc = cli_main(["run", cfg_path, "--mock", "--days", "2", "--agents", "8",
                    "--out", str(out), "--dump-prompt", "first"])
     assert rc == 0
     pdir = out / "prompts"
@@ -121,7 +147,7 @@ def test_control_cli_run_accepts_the_dump_prompt_flag(tmp_path):
 def test_run_schema_still_rejects_a_literal_dump_prompt_key():
     from flowmirror.config.loader import load_config
 
-    obj = load_config(_mock_cfg_path())
+    obj = _patch_nav_cache_for_repo(load_config(_mock_cfg_path()))
     validate(obj, "run")              # precondition: the config we hand the engine is clean
     obj["dump_prompt"] = "first"      # the old laundering path must keep failing loudly
     with pytest.raises(ConfigError):
