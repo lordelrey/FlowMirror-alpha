@@ -31,7 +31,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from flowmirror.engine import loop                     # noqa: E402
-from flowmirror.engine.loop import _load_cfg, run_simulation  # noqa: E402
+from flowmirror.engine.loop import run_simulation      # noqa: E402
 
 # The 11 registered invariants (flowmirror.engine.world.INVARIANTS); mirrored
 # here so this test fails loudly if the registry and the wiring drift apart.
@@ -55,19 +55,19 @@ def _cfg_path(name="mock_10x3.json"):
     return None
 
 
-def _run_mock(tmp_path, agents=40, days=5, name="mock_10x3.json"):
-    """Build a tiny mock run config; 40x5 mirrors the acceptance command for
-    mock_10x3.json so the cohort-scale-sensitive checks are in their validated
-    regime."""
-    path = _cfg_path(name)
-    if path is None:
-        pytest.skip(f"no runs/{name} under FLOWMIRROR_DATA_ROOT / "
-                    "FLOWMIRROR_RESEARCH_ROOT / repo root")
-    cfg = _load_cfg(path)
-    cfg.update({"mock_llm": True, "n_agents": agents, "out_dir": str(tmp_path)})
-    cfg["window"]["max_trading_days"] = days
-    cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")
-    return cfg
+def _run_mock(tmp_path, agents=None, days=None):
+    """Build a runnable mock config from the SELF-CONTAINED demo config.
+
+    Card CI1: this used to derive from runs/mock_10x3.json, whose nav_cache input
+    is the git-ignored 4.4 MB research cache, so the suite was green only on a
+    machine that happened to hold that file and red on every clean clone."""
+    from tests.conftest import DEMO_AGENTS, DEMO_DAYS, build_demo_cfg, find_demo_run
+
+    if find_demo_run() is None:
+        pytest.skip("runs/demo_two_arm.json not found (set FLOWMIRROR_DATA_ROOT)")
+    return build_demo_cfg(tmp_path,
+                          agents=DEMO_AGENTS if agents is None else agents,
+                          days=DEMO_DAYS if days is None else days)
 
 
 def _find_entry(node, key):

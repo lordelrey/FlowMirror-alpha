@@ -18,34 +18,35 @@ import os
 import pytest
 
 from flowmirror.config.validate import ConfigError, validate
-from flowmirror.engine.loop import (ROOT, RuntimeOpts, _load_cfg, event_log_sha,
-                                    run_simulation)
+from flowmirror.engine.loop import (RuntimeOpts, event_log_sha, run_simulation)
 from flowmirror.io.jsonl import iter_jsonl
+
+# Card CI1: the fixture base is runs/demo_two_arm.json, the one run config whose
+# every input is tracked in git, so these tests pass on a clean clone.  The old
+# base, runs/mock_10x3.json, pointed at data/funds/nav_cache.json -- the 4.4 MB
+# third-party NAV cache, git-ignored on purpose -- so the suite was green only
+# on machines that happened to hold that file.  Construction now lives in
+# tests/conftest.py (demo_cfg_factory / demo_run_path) so this suite and
+# test_invariant_wiring.py cannot drift to different bases again.
+
+
+from tests.conftest import build_demo_cfg, find_demo_run
+
+# The demo config ships with the repo, so these tests run on a clean clone; the
+# guard only fires in an exotic tree where it was moved or removed.
+needs_mock = pytest.mark.skipif(
+    find_demo_run() is None,
+    reason="runs/demo_two_arm.json not found (set FLOWMIRROR_DATA_ROOT)")
 
 
 def _mock_cfg_path():
-    """Same search order as the engine self-test: env overrides, then the repo."""
-    for base in (os.environ.get("FLOWMIRROR_DATA_ROOT"),
-                 os.environ.get("FLOWMIRROR_RESEARCH_ROOT"),
-                 ROOT):
-        if base and os.path.isfile(os.path.join(base, "runs", "mock_10x3.json")):
-            return os.path.join(base, "runs", "mock_10x3.json")
-    return None
-
-
-needs_mock = pytest.mark.skipif(
-    _mock_cfg_path() is None,
-    reason="runs/mock_10x3.json not found (set FLOWMIRROR_DATA_ROOT)",
-)
+    """Path to the self-contained demo config, for the CLI entry-point tests."""
+    return find_demo_run()
 
 
 def _tiny_cfg(out_dir):
     """Tiny mock run: 2 trading days, 8 agents, every output under out_dir."""
-    cfg = _load_cfg(_mock_cfg_path())
-    cfg.update({"mock_llm": True, "n_agents": 8, "out_dir": str(out_dir)})
-    cfg["window"]["max_trading_days"] = 2
-    cfg.setdefault("llm", {})["cache"] = os.path.join(str(out_dir), "llm_cache.jsonl")
-    return cfg
+    return build_demo_cfg(out_dir, agents=8, days=2)
 
 
 def _log_path(out_dir):
