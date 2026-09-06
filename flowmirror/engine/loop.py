@@ -50,11 +50,15 @@ Card L:  redeem checkouts emit NO click row (a redeem is not a feed click);
          i, no CxR gate on redeem -- the counterfactual obeys it too; only
          the engine refusal no_holdings can still override oc), their act rows
          keep p=None, and QDII purchase_blocked stays subscribe-only.
-E1:     --dump-prompt <agent_id>@<day> | first (cfg key dump_prompt) writes
+E1:     --dump-prompt <agent_id>@<day> | first writes
          <out_dir>/prompts/<agent>_d<day>.txt -- the exact rendered system+user
          text with image parts replaced by "[image: <sha256 prefix>, <bytes>
          bytes]" placeholders (never base64) -- plus a .json sidecar with
-         prompt_sha, arm, the card ids shown and the channel shas.  It is a
+         prompt_sha, arm, the card ids shown and the channel shas.  The spec
+         travels in RuntimeOpts (card R2D), a CLI-only runtime-options object
+         threaded main() -> run_simulation(cfg, rt); it is NOT a run-config
+         key (run.schema.json is additionalProperties:false and rejects one on
+         purpose -- the parallel-card API mismatch this fixes).  It is a
          side artifact ONLY: no event-log row, no RNG draw, no hash change, so
          --replay-check stays byte-identical with or without the flag.  The
          live branch of _make_llm forwards the caller's model kwarg and only
@@ -103,6 +107,36 @@ ONE_DAY = timedelta(days=1)
 _VALID_OC = ("match", "confirm_signed", "confirm_declined", "hard_block",
              "purchase_blocked", "below_min", "no_holdings")
 _FAM_PHRASE = {0: "不熟悉该机构", 1: "略有耳闻", 2: "关注已久"}
+
+
+class RuntimeOpts:
+    """CLI-only runtime switches (card R2D); never keys of the validated run config.
+
+    run.schema.json is additionalProperties:false (with a '^_' patternProperties
+    escape hatch) and run_simulation re-validates the merged cfg it is handed,
+    so parking a CLI flag's value in cfg -- as the original --dump-prompt card
+    did with `dump_prompt` -- killed the run at schema time with
+    "'dump_prompt' does not match any of the regexes: '^_'" before day 0.  The
+    rule this class enforces:
+      * keys that DEFINE the experiment stay in cfg; their CLI overrides
+        (--seed/--days/--agents/--mock/--out) write schema-valid keys
+        (seed, window.max_trading_days, n_agents, mock_llm, out_dir), so they
+        are correct as config overrides and deliberately NOT moved here;
+      * switches that only change what the engine does AROUND the experiment
+        travel in this object and are threaded explicitly to their use site.
+    Flag audit (card R2D): --replay-check never reaches run_simulation
+    (main()-level orchestration, writes nothing to cfg); --days/--agents/
+    --seed/--out/--map-to-schema-keys as above; only --dump-prompt was
+    laundered, so only it moved.  Future CLI-only switches (--profile,
+    --dry-run, ...) get a slot here, never a schema key."""
+
+    __slots__ = ("dump_prompt",)
+
+    def __init__(self, dump_prompt=None):
+        self.dump_prompt = dump_prompt
+
+    def __repr__(self):
+        return f"RuntimeOpts(dump_prompt={self.dump_prompt!r})"
 
 
 def _week_key(d):
@@ -646,9 +680,16 @@ def apply_decision(inv, rec, shown, day, fees=None):
     return cmt_out, aff_first, tr
 
 
-def run_simulation(cfg):
-    """One simulation pass; returns 0 ok, 2 cap_stopped, 3 halt / invariant failure."""
+def run_simulation(cfg, rt=None):
+    """One simulation pass; returns 0 ok, 2 cap_stopped, 3 halt / invariant failure.
+
+    rt carries CLI-only runtime switches (RuntimeOpts, card R2D) that must NOT
+    be laundered through cfg: cfg is re-validated against run.schema.json
+    below, and the schema rightly rejects keys that do not define the
+    experiment.  Defaults to an empty RuntimeOpts so legacy single-argument
+    callers keep working."""
     t0 = time.time()
+    rt = rt if rt is not None else RuntimeOpts()
     out_dir = cfg["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
     for name in ("event_log.jsonl", "run_meta.json", "invariants_report.json"):
@@ -702,8 +743,9 @@ def run_simulation(cfg):
     n_days = len(W.nav_days)
     inv_a_ok = True
     last_d = W.nav_days[0] if W.nav_days else W.start
-    # E1-3: --dump-prompt spec (cfg key injected by main()); side artifact only.
-    dump_spec = cfg.get("dump_prompt") or None
+    # E1-3: --dump-prompt spec, a CLI-only runtime switch carried in rt (card
+    # R2D: never a cfg key -- the run schema rejects those); side artifact only.
+    dump_spec = rt.dump_prompt or None
     dump_target = _dump_target(dump_spec) if dump_spec else None
     dump_done = False
 
@@ -1190,6 +1232,9 @@ def _self_test():
     except ValueError:
         bad_spec = True
     chk("dump_target_rejects_bad_spec", bad_spec)
+    chk("runtime_opts_carry_cli_only_switches",
+        RuntimeOpts().dump_prompt is None
+        and RuntimeOpts(dump_prompt="first").dump_prompt == "first")
     root = os.environ.get("FLOWMIRROR_DATA_ROOT") or os.path.join(ROOT, "data")
     alt = os.environ.get("FLOWMIRROR_RESEARCH_ROOT") or "D:/Desktop/ABM paper/fundmarket-sim"
     cfg_path = next((os.path.join(b_, "runs", "mock_10x3.json") for b_ in (root, alt, ROOT)
@@ -1218,11 +1263,14 @@ def _self_test():
     chk("replay_sha_identical", run_simulation(cfg) == 0 and sha1 is not None
         and sha1 == event_log_sha(logp))
     # --- E1-3: --dump-prompt side artifact must not touch the log ------------
+    # Card R2D: the spec rides in RuntimeOpts (a CLI-only runtime-options
+    # object), never in cfgd -- the run schema rejects a literal dump_prompt
+    # key, which is exactly what made the flag unreachable before.
     cfgd = _load_cfg(cfg_path)
-    cfgd.update({"mock_llm": True, "n_agents": 8, "dump_prompt": "first",
+    cfgd.update({"mock_llm": True, "n_agents": 8,
                  "out_dir": tempfile.mkdtemp(prefix="fm_loop_dmp_")})
     cfgd["window"]["max_trading_days"] = 2
-    rcd = run_simulation(cfgd)
+    rcd = run_simulation(cfgd, RuntimeOpts(dump_prompt="first"))
     pdir = os.path.join(cfgd["out_dir"], "prompts")
     txts = sorted(f for f in os.listdir(pdir) if f.endswith(".txt")) \
         if os.path.isdir(pdir) else []
@@ -1291,7 +1339,8 @@ def main(argv=None):
     ap.add_argument("--dump-prompt", metavar="SPEC", default=None,
                     help="write the exact prompt for <agent_id>@<day> (0-based trading-day "
                          "index) or 'first' to <out_dir>/prompts/<agent>_d<day>.txt plus a "
-                         ".json sidecar; side artifact only, the event log is unaffected")
+                         ".json sidecar; runtime-only switch carried in RuntimeOpts (never "
+                         "a run-config key); side artifact only, the event log is unaffected")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
     if args.self_test:
@@ -1316,19 +1365,25 @@ def main(argv=None):
         # A run's cache lives with its outputs unless the config points elsewhere on purpose; otherwise an
         # --out override would silently replay another run's cached responses.
         cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")
+    # Card R2D: --dump-prompt is a CLI-only runtime switch, so it rides in
+    # RuntimeOpts and never enters the validated run config. Parking it in cfg
+    # (the old behavior) made run_simulation's schema re-validation reject the
+    # whole run ("'dump_prompt' does not match any of the regexes: '^_'")
+    # before the first trading day, leaving the feature unreachable.
+    rt = RuntimeOpts()
     if args.dump_prompt:
         try:
             _dump_target(args.dump_prompt)
         except ValueError as exc:
             print(f"dump-prompt error: {exc}")
             return 1
-        cfg["dump_prompt"] = args.dump_prompt
+        rt.dump_prompt = args.dump_prompt
     if args.replay_check:
         logp = os.path.join(cfg["out_dir"], "event_log.jsonl")
-        if run_simulation(cfg) != 0:
+        if run_simulation(cfg, rt) != 0:
             return 3
         sha1 = event_log_sha(logp)
-        if run_simulation(cfg) != 0:
+        if run_simulation(cfg, rt) != 0:
             return 3
         sha2 = event_log_sha(logp)
         m2 = _last_meta(cfg["out_dir"])
@@ -1338,7 +1393,7 @@ def main(argv=None):
               f"warm_cache_calls={(m2.get('counters') or {}).get('calls')}")
         print(f"replay-check identical={bool(same)}")
         return 0 if same else 3
-    return run_simulation(cfg)
+    return run_simulation(cfg, rt)
 
 
 if __name__ == "__main__":

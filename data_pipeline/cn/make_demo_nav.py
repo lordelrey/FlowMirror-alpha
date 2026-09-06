@@ -42,8 +42,10 @@ The output is written atomically (tempfile in the target dir + os.replace);
 the pool file is never modified. Expected size for the 341-code pool is
 ~1.9 MB (target: < ~3 MB; the script warns if exceeded).
 
-Console output is ASCII-only. Pure stdlib + the installed flowmirror
-package (hashing helpers only; no network, no engine behaviour changed).
+Console output is ASCII-only. Pure stdlib + the flowmirror package (hashing
+helpers only; no network, no engine behaviour changed). The repo bootstrap
+below the imports lets the documented plain-script invocation run from any
+working directory, with or without an editable install.
 """
 from __future__ import annotations
 
@@ -58,7 +60,27 @@ import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
-from flowmirror.io.hashing import rng_seed_from, sha256_text
+# --- repo bootstrap (DEFECT 4) ---------------------------------------------------
+# Running this file directly (the documented invocation) puts only its own
+# directory on sys.path, so `import flowmirror` raises ModuleNotFoundError
+# unless the package was pip-installed. Probe the import; on failure, walk
+# up from __file__ to the first ancestor directory containing the flowmirror
+# package (the repo root) and insert it into sys.path. No-op when flowmirror
+# is already importable (python -m from the repo root, or pip install -e .).
+# Paste-able verbatim into any repo-local script directly above its first
+# flowmirror import (it needs only `import sys` above it).
+try:
+    import flowmirror  # noqa: F401 -- probe only; the real imports follow
+except ModuleNotFoundError:
+    from pathlib import Path
+    for _p in Path(__file__).resolve().parents:
+        if (_p / "flowmirror").is_dir():
+            sys.path.insert(0, str(_p))
+            break
+    else:
+        raise  # not inside a checkout and not installed: keep the real error
+
+from flowmirror.io.hashing import rng_seed_from, sha256_text  # noqa: E402 (after bootstrap)
 
 # --- frozen constants (NEVER edit: _meta.seed_rule and reproducibility pin them) ---
 START_DATE = date(2025, 1, 2)        # first weekday of the window (2025-01-01 is a Wednesday)

@@ -7,6 +7,22 @@ the Fund/Inv state classes, the institution posting policy, guba climate seeding
 logger, the invariant checks and the report writers. flowmirror.engine.loop imports this module
 and owns only the trading-day loop, the apply step and the CLI.
 
+Invariant reporting: every invariant this engine defines is registered in INVARIANTS (stable
+key -> one-line description). write_reports() writes ONE invariants_report.json entry per
+registered key (union with anything check_invariants returned): description plus pass/fail
+with the numeric detail the check produced, or skipped+reason when the check does not apply,
+never silence; a top-level summary carries passed/failed/skipped counts and the overall
+boolean. event_log_sha256 is kept and the event log itself is untouched.
+
+Arms: agent-level modality arms come from feed.assign_agent_arms() (stratified block
+randomisation within each population cell, PREREG v1.3 B10); feed.arm_for_agent() remains the
+unbalanced per-agent coin, kept only as the no-cohort fallback (exposure path, tests).
+
+NAV loading: top-level nav_cache keys that are not 6-digit fund codes (e.g. the demo file's
+`_meta` honesty block) are skipped and counted in the loader's summary line; a nav_cache with
+`_meta.synthetic == true` prints one warning line at run start and records
+`"synthetic_nav": true` in run_meta.json so demo runs are distinguishable from research runs.
+
 Determinism: random.Random(rng_seed_from(run_tag, *parts)) streams only; hashlib
 sha256 via flowmirror.io.hashing; never built-in hash(); sets are never iterated
 unsorted. Stdlib + this package only; console output is ASCII-only.
@@ -239,12 +255,20 @@ def validate_config(cfg: dict) -> None:
 # --- §2 loaders -------------------------------------------------------------------------------
 class World:
     __slots__ = ("agents", "pool", "orgs", "funds", "fund_org", "family", "fund_meta", "guba",
-                 "nav_days", "inputs_sha256", "base_codes", "deferred", "start", "end", "run_tag")
+                 "nav_days", "inputs_sha256", "base_codes", "deferred", "start", "end", "run_tag",
+                 "nav_synthetic", "nav_source", "nav_skipped")
 
 
 def _abs(p) -> Path:
     p = Path(p)
     return p if p.is_absolute() else (REPO_ROOT / p)
+
+
+def _is_fund_code(code) -> bool:
+    """A nav_cache top-level key is a fund series iff it is a 6-digit ASCII code. Anything else
+    (the demo file's `_meta` honesty block, future bookkeeping keys) is skipped, not parsed."""
+    s = str(code)
+    return len(s) == 6 and s.isascii() and s.isdigit()
 
 
 def load_world(cfg: dict) -> World:
@@ -284,8 +308,24 @@ def load_world(cfg: dict) -> World:
     win = cfg["window"]
     start, end, maxd = date.fromisoformat(win["start"]), date.fromisoformat(win["end"]), int(win.get("max_trading_days") or 0)
     nav_cache = load_json(paths["nav_cache"])
+    if not isinstance(nav_cache, dict):
+        die(f"nav_cache must be a JSON object of fund code -> {{date: nav}}: {paths['nav_cache']}")
+    # DEFECT 3: only 6-digit fund codes are series; `_meta` & friends are skipped (counted,
+    # never parsed). `_meta.synthetic == true` marks the shipped demo file -> warn + run_meta.
+    nav_skipped = sorted(k for k in nav_cache if not _is_fund_code(k))
+    nav_series = {c: nav_cache[c] for c in sorted(nav_cache) if _is_fund_code(c)}
+    if not nav_series:
+        die(f"nav_cache carries no 6-digit fund codes: {paths['nav_cache']}")
+    nav_meta = nav_cache.get("_meta") if isinstance(nav_cache.get("_meta"), dict) else {}
+    nav_synthetic = bool(nav_meta.get("synthetic"))
+    try:
+        nav_label = paths["nav_cache"].relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        nav_label = str(paths["nav_cache"])
+    if nav_synthetic:
+        print(f"[world] WARNING: synthetic demo NAVs in use ({nav_label}) -- results are illustrative, not market data.")
     lo, hi = win["start"], win["end"]             # ISO strings compare chronologically
-    day_strs = sorted({d for s in nav_cache.values() for d in s if lo <= d <= hi})
+    day_strs = sorted({d for s in nav_series.values() for d in s if lo <= d <= hi})
     nav_days = [date.fromisoformat(d) for d in day_strs][:maxd]
     if not nav_days:
         die(f"no trading days in window {lo}..{hi} (nav_cache: {paths['nav_cache']})")
@@ -293,8 +333,8 @@ def load_world(cfg: dict) -> World:
     # history enter from first NAV date + 21 days (spec CONFIG)
     cs_codes = {c for n in pool_rows for c in (n.get("common_support_codes") or [])}
     funds, base_codes, deferred, fund_org = {}, [], {}, {}
-    for code in sorted(nav_cache):
-        items = sorted(nav_cache[code].items())
+    for code in sorted(nav_series):
+        items = sorted(nav_series[code].items())
         dts = [date.fromisoformat(d) for d, _ in items]
         navs = [float(v) for _, v in items]
         n_before = bisect_left(dts, start)
@@ -326,6 +366,11 @@ def load_world(cfg: dict) -> World:
     w.guba = sig if isinstance(sig, dict) else {}
     w.nav_days, w.inputs_sha256, w.base_codes, w.deferred = nav_days, hashes, base_codes, deferred
     w.start, w.end, w.run_tag = start, end, run_tag
+    w.nav_synthetic, w.nav_source, w.nav_skipped = nav_synthetic, nav_label, nav_skipped
+    skip_txt = f"; skipped {len(nav_skipped)} non-fund nav_cache key(s) ({','.join(nav_skipped)})" if nav_skipped else ""
+    print(f"[world] loaded {len(funds)} funds ({len(base_codes)} base, {len(deferred)} deferred), "
+          f"{len(nav_days)} trading days, {len(agents)} agents, {len(orgs)} orgs, "
+          f"{len(pool_rows)} pool notes{skip_txt}")
     return w
 
 
@@ -364,8 +409,17 @@ def init_investors(world: World, cfg: dict) -> list:
     arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
     lvl = _mod_level_of(cfg)
     run_arm = cfg.get("modality_run_arm") or "TV"
+    force = cfg.get("force_arm")
+    cohort = world.agents[:n]
+    # DEFECT 2 (world half): agent-level arms use stratified block randomisation within each
+    # population cell via feed.assign_agent_arms(run_tag, [(agent_id, cell), ...], arms), so
+    # every cell is as balanced as its size allows (PREREG v1.3 B10). feed.arm_for_agent() is
+    # the UNBALANCED per-agent coin and stays only as the no-cohort fallback used when the map
+    # is unexpectedly missing an id; run-level and exposure-level behaviour is unchanged.
+    arm_map = ({} if (force or lvl != "agent") else
+               feed.assign_agent_arms(run_tag, [(rec.get("id"), rec.get("cell", "")) for rec in cohort], arms))
     out = []
-    for rec in world.agents[:n]:
+    for rec in cohort:
         tr = rec.get("traits") or {}
         try:
             frac = INVEST_SHARE_CASH[tr["invest_share"]]
@@ -411,12 +465,12 @@ def init_investors(world: World, cfg: dict) -> list:
         inv.w0 = cash + sum(u * cost[c] for c, u in hold.items()) + other   # == fin (identity check (d))
         inv.expo, inv.memory, inv.reflection, inv.beliefs = {}, [], {}, []
         inv.market_view = inv.risk_mood = 0
-        if cfg.get("force_arm"):
-            inv.arm = cfg["force_arm"]
+        if force:
+            inv.arm = force
         elif lvl == "run":
             inv.arm = run_arm
         elif lvl == "agent":
-            inv.arm = feed.arm_for_agent(run_tag, inv.id, arms)
+            inv.arm = arm_map.get(inv.id) or feed.arm_for_agent(run_tag, inv.id, arms)
         else:                                     # exposure: per-impression arms assigned in the loop
             inv.arm = "TV"
         inv.arm_tally = {a: 0 for a in arms}
@@ -604,7 +658,26 @@ def event_log_sha(path) -> str:
     return sha256_file(Path(path))
 
 
-# --- §7 invariants ----------------------------------------------------------------------------
+# --- §7 invariants ------------------------------------------------------------------------------
+# Registry of every invariant this engine defines: stable key -> one-line human description.
+# write_reports() writes ONE invariants_report.json entry per key in this registry (union with
+# anything check_invariants returned), so a check that did not run shows up as `skipped` with
+# a reason instead of being silently absent from the report.
+INVARIANTS = {
+    "a_lagged_signals_only": "day-t feed ranking consumes only signals frozen at end of day t-1 (no same-day leakage)",
+    "b_nonholder_never_redeems": "an agent never executes a redemption of a fund it does not hold (checkout refuses with no_holdings)",
+    "c_hard_block_never_subscribes": "a subscription never executes for an agent/post pair already hard-blocked at checkout",
+    "d_wealth_conservation": "per-agent identity cash + holdings@NAV + other + fees paid == w0 + realized + unrealized",
+    "e_all_cells_exposed": "every population cell appears in at least one impression over the run",
+    "f_post_ig_is_intent_group": "every post row carries ig in {I2, nonI2} consistent with its raw intent label",
+    "g_comments_lagged_only": "a displayed comment climate never contains a comment published on the display day itself",
+    "h_arm_balance": "modality arms are balanced: overall share within tolerance of 1/k and each cell as balanced as its size permits (per-impression shares at exposure level)",
+    "i_redeem_checkout_never_blocked": "redemption checkouts are never gated: oc for act=redeem may only be match or no_holdings",
+    "j_displayed_comment_matches_prev_day": "every displayed comment appears verbatim in that post's day-(t-1) comment set",
+    "k_dec_matches_active": "exactly one decision row exists per active agent per day",
+}
+
+
 def _agent_fees(a) -> float:
     """Cumulative fee paid by an agent row; 0.0 for legacy rows created before fees existed."""
     try:
@@ -627,7 +700,10 @@ def _jsonable(v):
 def check_invariants(state: dict, events_path, cfg: dict):
     """state contract: agents (rows carry fees; default 0 when absent so old states still pass),
     funds, end(iso), signal_audit[{t,used,live_end,prev_live_end,day_keys}], active_per_day{t:n},
-    agent_arms{i:arm}; funds maps code -> Fund for end-of-run pricing."""
+    agent_arms{i:arm}; funds maps code -> Fund for end-of-run pricing. Returns (checks, core):
+    checks carries one entry per invariant -- {"pass": bool, ...numeric detail} when it ran,
+    {"skipped": True, "reason": str} when it does not apply at this configuration; core is the
+    overall boolean and counts against the run only when an entry's "pass" is explicitly False."""
     agents = state.get("agents") or []
     funds = state.get("funds") or {}
     id2cell = {a.id: a.cell for a in agents}
@@ -682,7 +758,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
     checks["b_nonholder_never_redeems"] = {"pass": b_viol == 0, "violations": b_viol,
                                            "no_holdings_refusals": co_oc["no_holdings"]}
     checks["c_hard_block_never_subscribes"] = {"pass": c_viol == 0, "violations": c_viol,
-                                              "hard_block_checkouts": co_oc["hard_block"]}
+                                               "hard_block_checkouts": co_oc["hard_block"]}
     max_res, tol = 0.0, 1e-6 * max([1.0] + [a.w0 for a in agents])
     end = date.fromisoformat(state["end"]) if state.get("end") else None
     if end is not None:
@@ -724,14 +800,14 @@ def check_invariants(state: dict, events_path, cfg: dict):
             ok, rep = feed.check_arm_balance(state.get("agent_arms") or {}, id2cell, arms=arms)
             entry["pass"] = bool(ok)
             if isinstance(rep, dict) and rep:
-                entry["report"] = _jsonable(rep)
+                entry["report"] = _jsonable(rep)   # worst cases / tolerances reach the report file
         except Exception:
             entry["pass"] = False
             entry["error"] = "check_arm_balance raised"
         checks["h_arm_balance"] = entry
     elif lvl == "run":
-        checks["h_arm_balance"] = {"pass": True, "level": "run",
-                                   "note": "run-level arm: balance not applicable"}
+        checks["h_arm_balance"] = {"skipped": True, "level": "run", "arms": list(arms),
+                                   "reason": "run-level arms: every agent receives modality_run_arm; agent balance not applicable"}
     else:                                         # exposure: per-agent per-arm impression shares
         viol = checked = 0
         for i in sorted(imp_arms, key=str):
@@ -744,8 +820,13 @@ def check_invariants(state: dict, events_path, cfg: dict):
                 if abs(cnt.get(am, 0) / n_imp - 1.0 / len(arms)) > 0.03 + 1.0 / n_imp:
                     viol += 1
                     break
-        checks["h_arm_balance"] = {"pass": viol == 0, "level": "exposure", "arms": list(arms),
-                                   "agents_checked": checked, "violations": viol}
+        if checked == 0:
+            checks["h_arm_balance"] = {"skipped": True, "level": "exposure", "arms": list(arms),
+                                       "reason": "exposure-level arms: agent balance not applicable and no agent reached the 20-impression minimum for the per-impression share check"}
+        else:
+            checks["h_arm_balance"] = {"pass": viol == 0, "level": "exposure", "arms": list(arms),
+                                       "agents_checked": checked, "violations": viol,
+                                       "note": "per-impression arm shares (agent-level balance not applicable at exposure level)"}
     # (i) redemptions are never gated: a `co` row with act == "redeem" may carry match / no_holdings only.
     # Suitability (PREREG v1.3 §B9) and the QDII purchase block apply to subscriptions alone.
     gated = {"hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"}
@@ -756,17 +837,55 @@ def check_invariants(state: dict, events_path, cfg: dict):
     checks["k_dec_matches_active"] = {"pass": bool(active) and all(dec_day.get(t, 0) == n for t, n in active.items()),
                                       "days": len(active)}
     big = len(agents) >= 300                      # (e) fatal only at n_agents >= 300
-    core = [k for k, v in checks.items() if not v["pass"] and not (k == "e_all_cells_exposed" and not big)]
+    core = [k for k, v in checks.items() if v.get("pass") is False
+            and not (k == "e_all_cells_exposed" and not big)]
     return checks, bool(core)
 
 
 # --- §8 reports --------------------------------------------------------------------------------
+def _invariant_report(checks) -> tuple:
+    """Build the on-disk invariants report body: one entry per invariant the engine defines
+    (pass/fail with all numeric detail, or skipped+reason), plus a summary with counts. Registry
+    keys with no result from check_invariants are written as skipped so a check that did not run
+    can never be silently absent; extra keys arriving in `checks` are kept with a fallback
+    description. Returns (entries, summary)."""
+    checks = checks if isinstance(checks, dict) else {}
+    entries = {}
+    for key in sorted(set(INVARIANTS) | set(checks)):
+        src = checks.get(key)
+        ent = {"description": INVARIANTS.get(key)
+               or "unregistered invariant (add a description to world.INVARIANTS)"}
+        if isinstance(src, dict) and src.get("skipped"):
+            ent["skipped"] = True
+            ent["reason"] = str(src.get("reason") or "check not applicable for this run")
+        elif isinstance(src, dict):
+            ent["pass"] = bool(src.get("pass"))
+        elif src is None:
+            ent["skipped"] = True
+            ent["reason"] = "not evaluated: check_invariants produced no result for this run"
+        else:
+            ent["skipped"] = True
+            ent["reason"] = f"not evaluated: malformed check result ({type(src).__name__})"
+        if isinstance(src, dict):
+            for dk in sorted(src):
+                if dk not in ("pass", "skipped", "reason"):
+                    ent[dk] = _jsonable(src[dk])
+        entries[key] = ent
+    n_pass = sum(1 for v in entries.values() if v.get("pass") is True)
+    n_fail = sum(1 for v in entries.values() if v.get("pass") is False)
+    summary = {"total": len(entries), "passed": n_pass, "failed": n_fail,
+               "skipped": len(entries) - n_pass - n_fail, "all_passed": n_fail == 0}
+    return entries, summary
+
+
 def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, counters, elapsed) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     logp = out_dir / "event_log.jsonl"
+    inv_entries, inv_summary = _invariant_report(checks)
     dump(out_dir / "invariants_report.json",
-         {"checks": checks, "event_log_sha256": event_log_sha(logp) if logp.exists() else None})
+         {"summary": inv_summary, "checks": inv_entries,
+          "event_log_sha256": event_log_sha(logp) if logp.exists() else None})
     flows = state.get("flows") or {}
     dump(out_dir / "flows_family_quarter.json",
          {fam: {q: dict(v) for q, v in sorted(qs.items())} for fam, qs in sorted(flows.items())})
@@ -782,8 +901,11 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
     agents = state.get("agents") or []
     agent_arms = state.get("agent_arms") or {}
     fees_cfg = cfg.get("fees") if isinstance(cfg.get("fees"), dict) else {}
+    status_ok = inv_summary["failed"] == 0        # skipped checks never fail a run
     dump(out_dir / "run_meta.json", {
-        "engine": "v6", "cfg": cfg, "inputs_sha256": world.inputs_sha256,
+        "engine": "v6",
+        "synthetic_nav": bool(getattr(world, "nav_synthetic", False)),
+        "cfg": cfg, "inputs_sha256": world.inputs_sha256,
         "universe": {"base": world.base_codes, "deferred": world.deferred, "size": len(world.funds)},
         "funds": {c: {"r": f.r, "qdii": f.qdii, "family": f.family, "org": world.fund_org.get(c, dflt_org),
                       "active_from": str(f.active_from)} for c, f in sorted(world.funds.items())},
@@ -799,9 +921,10 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
         "checkout_oc": dict(sorted((state.get("checkout_oc") or {}).items())),
         "checkout_oc_cf": dict(sorted((state.get("checkout_oc_cf") or {}).items())),
         "elapsed_s": round(float(elapsed), 1),
-        "status": "ok" if all(v.get("pass", True) for v in checks.values()) else "invariant_failure"})
-    print(f"[world] reports written to {out_dir}; status="
-          f"{'ok' if all(v.get('pass', True) for v in checks.values()) else 'invariant_failure'}")
+        "status": "ok" if status_ok else "invariant_failure"})
+    print(f"[world] reports written to {out_dir}; status={'ok' if status_ok else 'invariant_failure'}"
+          f" (invariants: {inv_summary['passed']} pass, {inv_summary['failed']} fail,"
+          f" {inv_summary['skipped']} skipped, {inv_summary['total']} total)")
 
 
 # --- §9 self-test (zero API access) ------------------------------------------------------------
@@ -852,6 +975,23 @@ def self_test() -> int:
         invs = init_investors(world, cfg)
         chk("agents_eq_n_agents", len(invs) == int(cfg["n_agents"]) == 400)
         chk("orgs_eq_cfg", len(world.orgs) == len(cfg["orgs"]))
+        # DEFECT 2 (world half): agent-level arms come from feed.assign_agent_arms (stratified)
+        k_arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
+        arm_cnt = defaultdict(int)
+        for v in invs:
+            arm_cnt[v.arm] += 1
+        chk("agent_init_overall_share_within_0p01",
+            len(invs) > 0 and all(a in arm_cnt for a in k_arms)
+            and all(abs(arm_cnt[a] / len(invs) - 1.0 / len(k_arms)) <= 0.01 for a in k_arms))
+        cell_n, cell_arms = defaultdict(int), defaultdict(set)
+        for v in invs:
+            cell_n[v.cell] += 1
+            cell_arms[v.cell].add(v.arm)
+        chk("agent_init_no_single_armed_cell",
+            all(len(cell_arms[c]) >= min(len(k_arms), cell_n[c]) for c in cell_n))
+        chk("agent_init_matches_assign_agent_arms",
+            {v.id: v.arm for v in invs} == feed.assign_agent_arms(
+                cfg["run_tag"], [(rec.get("id"), rec.get("cell", "")) for rec in world.agents[:len(invs)]], k_arms))
         tot = sum(len(v) for v in world.pool.values())
         if tot == 200:
             chk("notes_50_per_org_frozen_pool", all(len(world.pool[o]) == 50 for o in world.orgs))
@@ -886,7 +1026,8 @@ def self_test() -> int:
         print(f"SKIP world checks: real data files not found (data_root={data_root}, research={research})")
         for nm in ("agents_eq_n_agents", "orgs_eq_cfg", "notes_50_per_org_frozen_pool", "funds_active_ge_140",
                    "nav_days_eq_60", "intent_probs_sum_to_1", "push_heavy_identical", "publish_no_repeat_within_10d",
-                   "publish_post_ig_is_intent_group"):
+                   "publish_post_ig_is_intent_group", "agent_init_overall_share_within_0p01",
+                   "agent_init_no_single_armed_cell", "agent_init_matches_assign_agent_arms"):
             skip(nm)
     # A2: compat rule arm_level -> modality_level (data-independent)
     c_compat = {"arm_level": "exposure"}
@@ -901,6 +1042,8 @@ def self_test() -> int:
     fw_dts = [date(2025, 1, 2) + timedelta(days=i) for i in range(320)]
     fw.funds = {"F00001": Fund("F00001", "R3", False, "FAM", fw_dts, [1.0] * len(fw_dts), date(2025, 1, 2))}
     fw.base_codes = ["F00001"]
+    fw.nav_days = [d for d in fw_dts if d >= date(2025, 10, 1)][:60]
+    fw.inputs_sha256, fw.deferred, fw.fund_org, fw.fund_meta = {}, {}, {}, {}
     fw.agents = [{"id": f"s{i:03d}", "cell": "C2", "risk_latent": "R3", "reported_C": "C2",
                   "wealth_wan": 10.0, "core": "", "strat_weight": 1.0, "entry_day": 0,
                   "traits": {"invest_share": "10_30pct", "n_funds": "5_10", "dca": "positive"}}
@@ -912,6 +1055,25 @@ def self_test() -> int:
     chk("three_arm_agent_init_all_arms", {v.arm for v in invs3} == {"T", "TC", "TV"})
     chk("three_arm_agent_init_tally_fees",
         all(v.arm_tally == {"T": 0, "TC": 0, "TV": 0} and v.fees == 0.0 for v in invs3))
+    cnt3 = defaultdict(int)
+    for v in invs3:
+        cnt3[v.arm] += 1
+    chk("three_arm_agent_init_balanced_within_one",
+        max(cnt3[a] for a in ("T", "TC", "TV")) - min(cnt3[a] for a in ("T", "TC", "TV")) <= 1)
+    cfg2 = dict(cfg3, run_tag="selftest|2arm", modality_arms=["T", "TV"])
+    invs2 = init_investors(fw, cfg2)
+    cnt2 = defaultdict(int)
+    for v in invs2:
+        cnt2[v.arm] += 1
+    chk("two_arm_agent_init_balanced_within_one",
+        set(cnt2) == {"T", "TV"} and abs(cnt2["T"] - cnt2["TV"]) <= 1)
+    chk("two_arm_agent_init_matches_assign_agent_arms",
+        {v.id: v.arm for v in invs2} == feed.assign_agent_arms(
+            cfg2["run_tag"], [(r["id"], r.get("cell", "")) for r in fw.agents], tuple(cfg2["modality_arms"])))
+    chk("agent_init_deterministic_same_inputs",
+        [v.arm for v in init_investors(fw, cfg3)] == [v.arm for v in invs3])
+    chk("agent_init_changes_with_run_tag",
+        [v.arm for v in init_investors(fw, dict(cfg3, run_tag="selftest|3arm|rot"))] != [v.arm for v in invs3])
     invs_run = init_investors(fw, dict(cfg3, modality_level="run", modality_run_arm="TC"))
     chk("run_level_init_uniform_arm", {v.arm for v in invs_run} == {"TC"})
     with tempfile.TemporaryDirectory() as td:
@@ -952,17 +1114,21 @@ def self_test() -> int:
         write_jsonl_atomic(bp, bad)
         cc, cf = check_invariants(st, cp, {"arm_level": "exposure"})
         bc, bf = check_invariants(st, bp, {"arm_level": "exposure"})
-        chk("invariants_clean_passes", cf is False and [k for k, v in cc.items() if not v["pass"]] == ["e_all_cells_exposed"])
+        chk("invariants_clean_passes",
+            cf is False and [k for k, v in cc.items() if not v.get("pass", True)] == ["e_all_cells_exposed"])
         chk("invariants_flag_redeem_block", bf is True and bc["i_redeem_checkout_never_blocked"]["pass"] is False)
         chk("invariants_flag_post_ig_not_group",
             bf is True and bc["f_post_ig_is_intent_group"]["pass"] is False
             and bc["f_post_ig_is_intent_group"]["violations"] == 2)
-        # A2: invariant (d) with fees; run-level (h) note
+        chk("h_exposure_below_min_impressions_marked_skipped",
+            cc["h_arm_balance"].get("skipped") is True
+            and isinstance(cc["h_arm_balance"].get("reason"), str) and cc["h_arm_balance"]["reason"] != "")
+        # A2: invariant (d) with fees; run-level (h) skip
         def _mk_agent(cash: float, fees=None):
             a = Inv()
             a.id, a.cell, a.rc = 7, "C1", "C1"
             a.cash, a.other, a.realized, a.w0 = cash, 0.0, 0.0, 100.0
-            a.hold, a.cost = {}, {}
+            a.hold, a.cost, a.entry = {}, {}, 0
             if fees is not None:
                 a.fees = fees
             return a
@@ -976,9 +1142,9 @@ def self_test() -> int:
         chk("invariant_d_passes_with_fees", c_fee["d_wealth_conservation"]["pass"] is True)
         chk("invariant_d_fails_when_fees_dropped", c_drop["d_wealth_conservation"]["pass"] is False)
         chk("invariant_d_legacy_rows_still_pass", c_old["d_wealth_conservation"]["pass"] is True)
-        chk("h_run_level_not_applicable",
-            c_fee["h_arm_balance"]["pass"] is True
-            and c_fee["h_arm_balance"].get("note") == "run-level arm: balance not applicable")
+        chk("h_run_level_marked_skipped_with_reason",
+            c_fee["h_arm_balance"].get("skipped") is True
+            and "not applicable" in str(c_fee["h_arm_balance"].get("reason", "")))
         # A2: exposure-level (h) per-agent share check
         def _imp_rows(n_t, n_tv):
             rows = []
@@ -999,6 +1165,84 @@ def self_test() -> int:
             c_e1["h_arm_balance"]["pass"] is True and c_e1["h_arm_balance"]["agents_checked"] == 1)
         chk("h_exposure_skewed_shares_flagged",
             c_e2["h_arm_balance"]["pass"] is False and c_e2["h_arm_balance"]["violations"] == 1)
+        # DEFECT 3: NAV mapping with a `_meta` block + two real codes must load without crashing
+        dts_syn = [date(2025, 1, 2) + timedelta(days=i) for i in range(300)]
+        navp = tdp / "nav_demo_meta.json"
+        dump(navp, {"_meta": {"synthetic": True, "generator": "data_pipeline/cn/make_demo_nav.py",
+                              "generated_at": "2026-01-05T09:00:00",
+                              "note": "synthetic demo series, not market data"},
+                    "000001": {d.isoformat(): round(1.0 + 0.0001 * i, 6) for i, d in enumerate(dts_syn)},
+                    "000002": {d.isoformat(): round(2.0 - 0.00005 * i, 6) for i, d in enumerate(dts_syn)}})
+        agp = tdp / "agents_mini.json"
+        dump(agp, [{"id": "m1", "cell": "45_60|high|fragile", "risk_latent": "R3", "reported_C": "C2",
+                    "wealth_wan": 10.0, "core": "", "strat_weight": 1.0, "entry_day": 0,
+                    "traits": {"invest_share": "10_30pct", "n_funds": "5_10", "dca": "positive"}},
+                   {"id": "m2", "cell": "45_60|high|robust", "risk_latent": "R2", "reported_C": "C3",
+                    "wealth_wan": 25.0, "core": "", "strat_weight": 1.0, "entry_day": 0,
+                    "traits": {"invest_share": "30_50pct", "n_funds": "10_15", "dca": "none"}}])
+        poolp = tdp / "pool_mini.jsonl"
+        write_jsonl_atomic(poolp, [{"org": "O0", "note_id": f"o0n{j:02d}", "intent": "I2", "images": []}
+                                   for j in range(8)]
+                           + [{"org": "O1", "note_id": f"o1n{j:02d}", "intent": "I3", "images": []}
+                              for j in range(8)])
+        gubap = tdp / "guba_empty.json"
+        dump(gubap, {"signal": {}})
+        metap = tdp / "fund_meta_mini.json"
+        dump(metap, {"000001": {"type": "hybrid", "name": "Demo Hybrid One", "org": "O0"},
+                     "000002": {"type": "equity", "name": "Demo Equity Two", "org": "O0"}})
+        cfg_nav = {"run_tag": "selftest|navmeta", "n_agents": 2, "orgs": ["O0"],
+                   "agents_file": str(agp), "content_pool": str(poolp), "nav_cache": str(navp),
+                   "guba_signal": str(gubap), "fund_meta_file": str(metap),
+                   "window": {"start": "2025-10-01", "end": "2025-12-31", "max_trading_days": 10}}
+        wnav = load_world(cfg_nav)
+        chk("nav_loader_skips_non_fund_keys_no_crash",
+            sorted(wnav.funds) == ["000001", "000002"] and sorted(wnav.base_codes) == ["000001", "000002"])
+        chk("nav_loader_counts_skips_and_flags_synthetic",
+            wnav.nav_synthetic is True and list(wnav.nav_skipped) == ["_meta"])
+        # DEFECT 1: invariants_report.json must carry every registered invariant with detail
+        cfg_rep = {"run_tag": "selftest|report", "orgs": ["O0"], "modality_level": "agent",
+                   "modality_arms": ["T", "TV"], "modality_run_arm": "TV",
+                   "fees": {"subscribe_rate": 0.0, "redeem_rate": 0.0}}
+        st_d = dict(base_st, agents=[_mk_agent(99.5)])          # fees dropped -> (d) must fail
+        c_d, _ = check_invariants(st_d, cp, cfg_rep)
+        rep_dir = tdp / "reports"
+        log_r = EventLog(rep_dir / "event_log.jsonl")
+        for row in clean:
+            log_r.emit(row["ev"], **{k: v for k, v in row.items() if k != "ev"})
+        log_r.close()
+        write_reports(rep_dir, st_d, cfg_rep, fw, c_d, {"attempts": 5, "decision_failures": 0}, 0.25)
+        rep = load_json(rep_dir / "invariants_report.json")
+        ent = rep.get("checks") or {}
+        chk("report_lists_every_registered_invariant",
+            set(ent) == set(INVARIANTS)
+            and all(isinstance(v, dict) and isinstance(v.get("description"), str) and v["description"]
+                    and (("pass" in v) != bool(v.get("skipped"))) for v in ent.values()))
+        sm = rep.get("summary") or {}
+        chk("report_summary_counts_add_up",
+            sm.get("total") == len(ent)
+            and sm.get("passed", -1) + sm.get("failed", -2) + sm.get("skipped", -3) == sm.get("total", -4)
+            and sm.get("all_passed") == (sm.get("failed") == 0) and sm.get("failed", 0) >= 1)
+        chk("report_broken_state_fails_right_invariant_key",
+            ent.get("d_wealth_conservation", {}).get("pass") is False
+            and ent.get("d_wealth_conservation", {}).get("max_abs_residual_cny") == 0.5
+            and ent.get("b_nonholder_never_redeems", {}).get("pass") is True)
+        chk("report_carries_event_log_sha256",
+            isinstance(rep.get("event_log_sha256"), str) and len(rep["event_log_sha256"]) == 64)
+        rm = load_json(rep_dir / "run_meta.json")
+        chk("run_meta_records_synthetic_nav_false", rm.get("synthetic_nav") is False)
+        # same writers over the synthetic-NAV world: run_meta must flag synthetic_nav=true,
+        # and a not-applicable check must be `skipped` with a reason, never absent
+        cc_run, _ = check_invariants(dict(st), cp, {"modality_level": "run"})
+        rep_dir2 = tdp / "reports_synth"
+        write_reports(rep_dir2, dict(st), dict(cfg_rep, modality_level="run"), wnav, cc_run, {}, 0.25)
+        rm2 = load_json(rep_dir2 / "run_meta.json")
+        rep2 = load_json(rep_dir2 / "invariants_report.json")
+        chk("run_meta_records_synthetic_nav_true", rm2.get("synthetic_nav") is True)
+        chk("report_marks_not_applicable_check_skipped",
+            rep2["checks"]["h_arm_balance"].get("skipped") is True
+            and bool(rep2["checks"]["h_arm_balance"].get("reason")))
+        chk("report_clean_run_failed_count",
+            rep2["summary"]["failed"] == 1 and rep2["checks"]["e_all_cells_exposed"]["pass"] is False)
     fails = sum(1 for _, ok in rows_out if ok is False)
     skips = sum(1 for _, ok in rows_out if ok is None)
     print("=" * 56)

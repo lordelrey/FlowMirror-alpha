@@ -33,6 +33,10 @@ audit list and the UTF-8 output files). No PIL is allowed here, so the
 "768 px max" contract is met by feeding pre-resized images
 (image_paths_resized / a resized images-root); an oversized payload only
 produces a console warning.
+
+The repo bootstrap below the imports lets the documented plain-script
+invocation run from any working directory, with or without an editable
+install (same idiom as make_demo_nav.py).
 """
 from __future__ import annotations
 
@@ -47,6 +51,17 @@ import time
 from datetime import datetime, timezone
 
 import requests
+
+# --- repo bootstrap (same idiom as data_pipeline/cn/make_demo_nav.py):
+# running this file as a plain script ("python data_pipeline/cn/
+# caption_frozen.py ...") puts data_pipeline/cn on sys.path[0], not the
+# repo root, so the flowmirror imports below fail with ModuleNotFoundError
+# without an editable install.  When imported as a module (__package__ is
+# set) the bootstrap is a no-op. ---------------------------------------------
+if __package__ in (None, ""):
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
 
 from flowmirror.agents.prompt import image_data_url
 from flowmirror.agents.runtime import _load_glm_config

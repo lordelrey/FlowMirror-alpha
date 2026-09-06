@@ -15,6 +15,10 @@ failure), then hands off to the engine entry point
 (flowmirror.engine.loop.main) and propagates its exit code. `tree` is
 generated from the installed package at run time, so it cannot rot.
 
+--dump-prompt (like every CLI-only runtime switch) is forwarded verbatim to
+the engine, which carries it in its RuntimeOpts object; it is never merged
+into the validated run config, whose schema rejects unknown keys by design.
+
 Exit codes: 0 success, 1 validation/usage failure, 2 engine argument error,
 3 engine failure or replay-check mismatch (propagated from the engine).
 """
@@ -167,7 +171,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.replay_check:
         argv.append("--replay-check")
     if args.dump_prompt:
-        # forwarded verbatim to the engine flag added by the --dump-prompt card
+        # Runtime-only switch: forwarded verbatim; the engine carries it in its
+        # RuntimeOpts object (card R2D) -- it must never be merged into the
+        # validated run config, whose schema (additionalProperties: false)
+        # rejects unknown keys on purpose.
         argv += ["--dump-prompt", args.dump_prompt]
     extras = " ".join(argv[1:]) or "(config defaults)"
     print(f"[flowmirror] run: {path} {extras}")
@@ -394,7 +401,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="AGENT@DAY|first",
         help=(
             "export the exact prompt for one agent-day to <out>/prompts/ "
-            "(side artifact; does not touch the event log or its hashes)"
+            "(side artifact; does not touch the event log or its hashes; "
+            "runtime-only flag, never a run-config key)"
         ),
     )
     p_run.set_defaults(func=_cmd_run)

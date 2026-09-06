@@ -119,11 +119,23 @@ def test_check_arm_balance_matches_reference_on_400_agent_cohort():
     for tag in ("armbal_000", "armbal_007", "rt_fixed"):
         arms = {a: fm_feed.arm_for_agent(tag, a) for a in ids}
         arms_ref = {a: sf.arm_for_agent(tag, a) for a in ids}
+        # The per-agent draw itself is still bit-identical to the frozen reference.
         assert arms == arms_ref
-        assert fm_feed.check_arm_balance(arms, cells) == sf.check_arm_balance(arms_ref, cells)
-    # A deliberately skewed assignment must fail identically on both sides.
+        # check_arm_balance DELIBERATELY diverges from the reference from 2026-09-06 on.
+        # The reference tolerance (|share - 1/k| <= 0.03 overall, <= 0.05 per cell) is not
+        # satisfiable by an independent coin at n=400 (35% of run tags failed it) and is
+        # mathematically impossible for cells of size 2. v7 checks what the pre-registered
+        # stratified block assignment can actually deliver, so it is STRICTER: it rejects
+        # the reference's own unbalanced draw. Parity for the pre-registered path is
+        # covered by tests/unit/test_arm_balance.py against feed.assign_agent_arms.
+        ok_v7, rep_v7 = fm_feed.check_arm_balance(arms, cells)
+        ok_ref, _rep_ref = sf.check_arm_balance(arms_ref, cells)
+        assert ok_ref is True and ok_v7 is False
+        assert rep_v7["n_agents"] == 400
+    # A deliberately skewed assignment must fail on both sides (the shared floor).
     bad = {a: ("TV" if i < 300 else "T") for i, a in enumerate(ids)}
-    assert fm_feed.check_arm_balance(bad, cells) == sf.check_arm_balance(bad, cells)
+    assert fm_feed.check_arm_balance(bad, cells)[0] is False
+    assert sf.check_arm_balance(bad, cells)[0] is False
 
 
 def test_rank_feed_matches_reference():

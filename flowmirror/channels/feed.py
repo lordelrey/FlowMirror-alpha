@@ -7,26 +7,43 @@ here is a pure function of its arguments: no file I/O, no printing outside
 self_test(), no global mutable state, and no sqlite3 (xhs_data.db is
 off-limits to sim code).
 
-Modality-arm contract (PREREG v1.5 A, generalizing the v1.3 two-arm B10):
-the DEFAULT is still the per-AGENT arm, arm_for_agent(), fixed for the whole
-run and derived from sha256(f"{run_tag}|arm|{agent_id}") so it is
-independent of every other RNG stream.  arms=("T","TV") (the default) keeps
-the exact v1.3 coin (random() < 0.5 -> "TV") so every pre-v1.5 config
-replays bit-for-bit; that frozen rule is also retained verbatim as
-_arm_for_agent_legacy(), the regression reference the self-tests assert
-against.  Any other arm set -- e.g. ("T","TC","TV") for the three-arm
-modality, where TC shows the note's OCR text / frozen caption instead of
-pixels -- draws int(rng.random()*k) on the SAME stream and indexes into
-arms in the order given.  assign_arms() (per-exposure, the
-modality_level == "exposure" sensitivity option) keeps the v1.3 greedy
-block balancing verbatim for the {T, TV} set; other arm sets use the same
-int(rng.random()*k) multinomial draws.  check_arm_balance() verifies
-invariant (h) generalized to k arms: every arm's share within 0.03 of 1/k
-AND, within each arm, a 36-cell distribution within 0.05 max-abs-diff of
-the overall cell distribution; the arm set is INFERRED from the values
-unless arms= is passed explicitly (the engine passes the configured set so
-an arm that received zero agents still fails), and the {T, TV} case
-reproduces the legacy report key-for-key.
+Modality-arm contract (PREREG v1.5 A; tolerances per the corrected v1.3
+B10): the PRE-REGISTERED agent-level assignment is assign_agent_arms(), a
+stratified block randomisation over the population cells.  Within each
+cell the agent ids are ordered by sha256(f"{run_tag}|arm|{agent_id}") and
+the arms are dealt round-robin down that order; the per-cell starting arm
+is the rotation int(sha256(f"{run_tag}|{cell}")[:16], 16) % k, and among
+the starting arms that leave the CELL equally balanced the one that also
+keeps the running global counts (cells are dealt in sorted cell order)
+closest to exact balance wins.  Every cell therefore comes out as
+balanced as its size allows (each arm receives floor(n_cell/k) or
+ceil(n_cell/k) agents, so no cell of size >= 2 is single-armed) and the
+overall share stays within one agent of 1/k for the project's k=2/k=3
+arm sets.  arm_for_agent() is the UNBALANCED per-agent coin on the same
+sha256(run_tag|arm|agent_id) stream: it is NOT the pre-registered
+assignment (an independent coin cannot meet the B10 tolerances at
+n=400) and survives only for callers that have no cohort (tests, the
+exposure path) and for bit-for-bit replay of pre-v1.5 two-arm configs --
+arms=("T","TV") keeps the exact v1.3 coin (random() < 0.5 -> "TV"),
+retained verbatim as _arm_for_agent_legacy(), the regression reference
+the self-tests assert against.  Any other arm set -- e.g.
+("T","TC","TV") for the three-arm modality, where TC shows the note's
+OCR text / frozen caption instead of pixels -- draws int(rng.random()*k)
+on the SAME stream and indexes into arms in the order given.
+assign_arms() (per-exposure, the modality_level == "exposure"
+sensitivity option) keeps the v1.3 greedy block balancing verbatim for
+the {T, TV} set; other arm sets use the same int(rng.random()*k)
+multinomial draws.  check_arm_balance() verifies invariant (h)
+generalized to k arms against what block randomisation can achieve:
+OVERALL every arm's share within 0.01 of 1/k, and WITHIN EACH CELL
+within _cell_tolerance(n_cell, k) of 1/k (exactly 1/(2*n_cell) + 1e-9
+for the two-arm set; the provable floor max(n mod k, k - n mod k)/(k*n)
+for k >= 3 when that is larger).  The arm set is INFERRED from the
+values unless arms= is passed explicitly (the engine passes the
+configured set so an arm that received zero agents still fails), and
+the report carries the observed worst cases (worst_overall_dev,
+worst_cell_dev, single_armed_cells) so the engine's richer invariants
+report can surface them.
 
 Runtime climate weighting (PREREG v1.2 B, kept in v1.3): climate_for()
 accepts weights (agent_id -> strat_weight) and counts each comment at
@@ -45,7 +62,8 @@ posts, ties broken by score DESC then post_id ASC.
 Determinism contract: the only hash used anywhere is hashlib.sha256
 (builtin hash() is PYTHONHASHSEED-dependent); every RNG is seeded as
 random.Random(int(sha256(f"{seed}|{tag}")[:16], 16)); no set is iterated
-without sorted().
+without sorted().  assign_agent_arms() uses no RNG at all -- it is pure
+sha256 ordering -- and iterates cells and ids in sorted order only.
 
 Lag contract: every social quantity consumed here (comments_prev,
 heat_prev, clim_prev) was produced on day t-1 or earlier.  This module
@@ -67,6 +85,7 @@ __all__ = [
     "climate_for",
     "top_comments",
     "assign_arms",
+    "assign_agent_arms",
     "arm_for_agent",
     "check_arm_balance",
     "fit",
@@ -208,13 +227,14 @@ def assign_arms(rng, k, tally, arms=("T", "TV")):
     """Per-exposure modality-arm randomization (PREREG v1.3 B10, v1.5 A).
 
     Used only when config modality_level == "exposure" (the sensitivity
-    option); the default modality level is the agent-level arm_for_agent().
+    option); the default modality level is the agent-level
+    assign_agent_arms().
 
     For the {T, TV} set the v1.3 greedy block balancing is kept VERBATIM:
     |TV - T| <= 1 at all times, which is what guarantees engine invariant
-    (h) for exposure-level two-arm runs (each agent's lifetime TV share
-    stays within +/-0.02 of 0.5 while individual exposures remain
-    randomized).  For any other arm set each draw is
+    (h)'s OVERALL clause for exposure-level two-arm runs (each agent's
+    lifetime TV share stays within +/-0.02 of 0.5 while individual
+    exposures remain randomized).  For any other arm set each draw is
     int(rng.random()*k) indexed into arms (PREREG v1.5 A): per-agent
     lifetime shares then drift within binomial noise, which the
     exposure-level sensitivity design accepts.  tally is mutated in place
@@ -255,13 +275,23 @@ def _arm_for_agent_legacy(run_tag, agent_id):
 
 
 def arm_for_agent(run_tag, agent_id, arms=("T", "TV")):
-    """Agent-level modality-arm assignment, fixed for the whole run.
+    """Agent-level modality-arm draw -- the UNBALANCED per-agent coin.
 
-    Derived from sha256(f"{run_tag}|arm|{agent_id}") so it is reproducible and
-    independent of every other RNG stream; the digest is fed through the same
-    hexdigest[:16] -> int seeding rule as _make_rng (note that
-    _make_rng(f"{run_tag}|arm", agent_id) hashes the IDENTICAL string, so the
-    stream is the same one the legacy draw used).
+    This is NOT the pre-registered assignment: keyed only on
+    sha256(f"{run_tag}|arm|{agent_id}") it is an independent coin per
+    agent, which cannot meet the (corrected) PREREG B10 tolerances -- the
+    SD of the two-arm overall share is 0.025 at n=400 (vs the 0.01
+    tolerance) and cells of size 2 can never be balanced by coin flips.
+    Callers that hold the cohort MUST use assign_agent_arms(); this
+    function is kept only for callers that have no cohort (tests, the
+    exposure path) and for bit-for-bit replay of pre-v1.5 two-arm
+    configs.
+
+    Derived from sha256(f"{run_tag}|arm|{agent_id}") so it is
+    reproducible and independent of every other RNG stream; the digest is
+    fed through the same hexdigest[:16] -> int seeding rule as _make_rng
+    (note that _make_rng(f"{run_tag}|arm", agent_id) hashes the IDENTICAL
+    string, so the stream is the same one the legacy draw used).
 
     arms defaults to the v1.3 two-arm set ("T","TV"); that case keeps the
     exact legacy coin (random() < 0.5 -> "TV") so existing runs are
@@ -277,10 +307,95 @@ def arm_for_agent(run_tag, agent_id, arms=("T", "TV")):
     return arms_t[min(int(rng.random() * n_arms), n_arms - 1)]
 
 
+def _agent_digest(run_tag, agent_id):
+    """sha256(f"{run_tag}|arm|{agent_id}") -- the frozen per-agent stream.
+
+    The same digest arm_for_agent() seeds its draw from;
+    assign_agent_arms() reuses it as the WITHIN-CELL sort key so the
+    pre-registered assignment and the cohort-less coin stay on one
+    auditable per-agent stream.
+    """
+    return hashlib.sha256(f"{run_tag}|arm|{agent_id}".encode()).hexdigest()
+
+
+def assign_agent_arms(run_tag, agents, arms=("T", "TV")):
+    """Stratified block randomisation of the agent-level arm (PREREG B10).
+
+    agents is a sequence of (agent_id, cell) pairs (cell is stringified
+    for grouping; duplicate agent ids are ignored after their first
+    occurrence; the returned dict is keyed by the agent_id objects as
+    passed, so int and str ids both round-trip).  Returns
+    {agent_id: arm} covering exactly the distinct agent ids.
+
+    Within each cell (cells are dealt in sorted cell order):
+      1. the ids are ordered by sha256(f"{run_tag}|arm|{agent_id}"), the
+         same per-agent stream arm_for_agent() draws on;
+      2. the arms are dealt round-robin down that order starting from the
+         rotation int(sha256(f"{run_tag}|{cell}")[:16], 16) % k, so the
+         remainder agents of odd-sized cells do not all land on the same
+         arm across cells;
+      3. every starting arm leaves the CELL equally balanced (a
+         round-robin deal always yields floor(n/k) / ceil(n/k) counts),
+         so the start is chosen among the rotation order
+         rot, rot+1, ..., rot+k-1 by which keeps the RUNNING GLOBAL
+         counts closest to exact balance.  This correction is what pins
+         the overall share to within one agent of 1/k for the project's
+         k=2 / k=3 arm sets; a pure per-cell coin rotation would leave
+         the odd-cell +/-1 remainders to chance and could not guarantee
+         the 0.01 overall tolerance.
+
+    Guarantees (k >= 2): each cell's counts are floor(n_cell/k) or
+    ceil(n_cell/k) -- so no cell of size >= 2 is single-armed -- and the
+    overall per-arm spread stays <= 1 agent (exact balance whenever k
+    divides the cohort size; e.g. 200/200 at n=400, k=2).  Deterministic
+    in all inputs (pure sha256, no RNG); changes with run_tag through
+    both the per-cell rotation and the digest sort order.
+    """
+    arms_t = _check_arms(arms)
+    k = len(arms_t)
+    by_cell = {}
+    seen = set()
+    for agent_id, cell in agents:
+        key = str(agent_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_cell.setdefault(str(cell), []).append(agent_id)
+    out = {}
+    counts = {arm: 0 for arm in arms_t}
+    for cell in sorted(by_cell):
+        ids = sorted(by_cell[cell], key=lambda a: _agent_digest(run_tag, a))
+        n_c = len(ids)
+        rot = int(
+            hashlib.sha256(f"{run_tag}|{cell}".encode()).hexdigest()[:16], 16
+        ) % k
+        best_start = rot
+        best_spread = None
+        for j in range(k):
+            start = (rot + j) % k
+            cand = dict(counts)
+            for i in range(n_c):
+                cand[arms_t[(start + i) % k]] += 1
+            spread = max(cand.values()) - min(cand.values())
+            if best_spread is None or spread < best_spread:
+                best_spread = spread
+                best_start = start
+        for i, agent_id in enumerate(ids):
+            arm = arms_t[(best_start + i) % k]
+            out[agent_id] = arm
+            counts[arm] += 1
+    return out
+
+
 # Frozen arm iteration/report order: TV before T keeps the two-arm {T, TV}
 # report key-for-key identical to the v1.3 implementation; TC follows; any
 # label outside the known modalities sorts after them (determinism).
 _ARM_ORDER = ("TV", "T", "TC")
+
+# Overall tolerance of invariant (h): every arm's share within this much
+# of 1/k.  Stratified block randomisation guarantees <= 1/n, far inside
+# this bound at cohort scale (1/400 = 0.0025 at n=400).
+_OVERALL_ARM_TOL = 0.01
 
 
 def _order_arms(arm_set):
@@ -290,20 +405,44 @@ def _order_arms(arm_set):
     return tuple(known + extra)
 
 
+def _cell_tolerance(n_cell, k):
+    """Per-cell share tolerance: as balanced as the cell size permits.
+
+    A round-robin deal gives every arm floor(n/k) or ceil(n/k) agents,
+    so the largest per-arm share deviation a PERFECT deal must still
+    allow is max(m, k-m)/(k*n) with m = n mod k (0 when k divides n).
+    For k=2 this is exactly 1/(2*n) -- the corrected PREREG B10 per-cell
+    tolerance.  For k>=3 it can exceed 1/(2*n): a 2-agent 3-arm cell is
+    necessarily (1,1,0) and its empty arm deviates by 1/3 > 1/4, so the
+    tolerance is the max of the two -- never failing a perfectly dealt
+    cell, never accepting one a deal could have balanced further.
+    """
+    m = n_cell % k
+    reach = max(m, k - m) if m else 0
+    return max(1.0 / (2.0 * n_cell), reach / (k * n_cell)) + 1e-9
+
+
 def check_arm_balance(agent_arms, agent_cells, arms=None):
-    """Verify arm invariant (h) over the agent set; returns (ok, report).
+    """Verify arm invariant (h) for stratified block randomisation; (ok, report).
+
+    Checks what block randomisation can actually achieve (PREREG B10 as
+    corrected): OVERALL, every arm's share is within _OVERALL_ARM_TOL
+    (0.01) of 1/k; WITHIN EACH CELL, every arm's share is within
+    _cell_tolerance(n_cell, k) of 1/k, i.e. as balanced as the cell size
+    permits (exactly |share - 1/2| <= 1/(2*n_cell) + 1e-9 for the
+    pre-registered two-arm set).
 
     The arm set is INFERRED from the values in agent_arms unless arms= is
-    passed explicitly (the engine passes the configured modality_arms so an
-    arm that received zero agents still fails).  ok iff every arm's share is
-    within 0.03 of 1/k AND, for each arm, the arm's cell distribution stays
-    within 0.05 (max absolute per-cell difference) of the overall cell
-    distribution.  A population carrying exactly {T, TV} reproduces the v1.3
-    two-arm report key-for-key (n_agents / n_tv / tv_share /
-    max_abs_diff_TV / max_abs_diff_T) so pre-v1.5 runs keep identical
-    report bytes.  report carries the numbers so the engine can log them
-    beside run_meta.  Iteration goes over sorted ids / sorted cells only
-    (determinism contract).
+    passed explicitly (the engine passes the configured modality_arms so
+    an arm that received zero agents still fails); values outside the arm
+    set fail via n_out_of_set.  report carries the observed numbers so
+    the engine's richer invariants report can surface them: n_agents /
+    n_arms / arms, per-arm n_<arm> and <arm>_share, overall_tolerance,
+    worst_overall_dev (+ worst_overall_arm), n_cells, worst_cell_dev (+
+    worst_cell + worst_cell_arm + worst_cell_tolerance),
+    single_armed_cells (cells of size >= 2 served by a single arm),
+    ok_overall, ok_cells, n_out_of_set.  Iteration goes over sorted ids /
+    sorted cells only (determinism contract).
     """
     ids = sorted(agent_arms)
     n = len(ids)
@@ -314,64 +453,80 @@ def check_arm_balance(agent_arms, agent_cells, arms=None):
     if n == 0 or k == 0:
         # Degenerate population/arm set: report a maximal violation instead
         # of dividing by zero.
-        report = {"n_agents": n}
+        report = {"n_agents": n, "n_arms": k, "arms": list(order), "n_cells": 0,
+                  "overall_tolerance": _OVERALL_ARM_TOL,
+                  "worst_overall_dev": 1.0, "worst_overall_arm": None,
+                  "worst_cell_dev": 1.0, "worst_cell": None,
+                  "worst_cell_arm": None, "worst_cell_tolerance": 0.0,
+                  "single_armed_cells": [], "n_out_of_set": 0,
+                  "ok_overall": False, "ok_cells": False}
         for arm in order:
+            report["n_" + arm.lower()] = 0
             report[arm.lower() + "_share"] = 0.0
-            report["max_abs_diff_" + arm] = 1.0
         return (False, report)
+
+    counts = {arm: 0 for arm in order}
+    n_out = 0
+    cell_arm = {}
     overall = {}
     for a in ids:
-        cell = str(agent_cells.get(a, "?"))
-        overall[cell] = overall.get(cell, 0) + 1
+        v = str(agent_arms[a])
+        if v in counts:
+            counts[v] += 1
+        else:
+            n_out += 1
+        c = str(agent_cells.get(a, "?"))
+        overall[c] = overall.get(c, 0) + 1
+        armc = cell_arm.setdefault(c, {})
+        armc[v] = armc.get(v, 0) + 1
     cells = sorted(overall)
-    if order == ("TV", "T"):
-        # Legacy {T, TV} path, kept verbatim from the v1.3 implementation
-        # (identical ok semantics and report keys) for replay identity.
-        tv_n = sum(1 for a in ids if agent_arms[a] == "TV")
-        tv_share = tv_n / n
-        report = {"n_agents": n, "n_tv": tv_n, "tv_share": tv_share}
-        ok = abs(tv_share - 0.5) <= 0.03
-        for arm in ("TV", "T"):
-            members = [a for a in ids if agent_arms[a] == arm]
-            if not members:
-                # An empty arm has no distribution to compare; a maximal
-                # deviation fails the invariant and keeps the report total.
-                report["max_abs_diff_" + arm] = 1.0
-                ok = False
-                continue
-            arm_counts = {c: 0 for c in cells}
-            for a in members:
-                arm_counts[str(agent_cells.get(a, "?"))] += 1
-            mad = max(abs(arm_counts[c] / len(members) - overall[c] / n)
-                      for c in cells)
-            report["max_abs_diff_" + arm] = mad
-            ok = ok and mad <= 0.05
-        return (ok, report)
-    # Generalized k-arm path (PREREG v1.5 A).
-    members_by_arm = {arm: [a for a in ids if str(agent_arms[a]) == arm]
-                      for arm in order}
-    report = {"n_agents": n}
-    ok = True
+
+    report = {"n_agents": n, "n_arms": k, "arms": list(order),
+              "n_cells": len(cells), "n_out_of_set": n_out}
+    ok_overall = n_out == 0
+    worst_overall_dev = 0.0
+    worst_overall_arm = None
     for arm in order:
-        n_arm = len(members_by_arm[arm])
+        n_arm = counts[arm]
         share = n_arm / n
+        dev = abs(share - 1.0 / k)
         report["n_" + arm.lower()] = n_arm
         report[arm.lower() + "_share"] = share
-        ok = ok and abs(share - 1.0 / k) <= 0.03
-    for arm in order:
-        members = members_by_arm[arm]
-        if not members:
-            report["max_abs_diff_" + arm] = 1.0
-            ok = False
-            continue
-        arm_counts = {c: 0 for c in cells}
-        for a in members:
-            arm_counts[str(agent_cells.get(a, "?"))] += 1
-        mad = max(abs(arm_counts[c] / len(members) - overall[c] / n)
-                  for c in cells)
-        report["max_abs_diff_" + arm] = mad
-        ok = ok and mad <= 0.05
-    return (ok, report)
+        if dev > worst_overall_dev:
+            worst_overall_dev, worst_overall_arm = dev, arm
+        ok_overall = ok_overall and dev <= _OVERALL_ARM_TOL
+    report["overall_tolerance"] = _OVERALL_ARM_TOL
+    report["worst_overall_dev"] = worst_overall_dev
+    report["worst_overall_arm"] = worst_overall_arm
+
+    ok_cells = True
+    worst_cell_dev = 0.0
+    worst_cell = None
+    worst_cell_arm = None
+    worst_cell_tol = 0.0
+    single_armed = []
+    for cell in cells:
+        n_c = overall[cell]
+        tol = _cell_tolerance(n_c, k)
+        armc = cell_arm[cell]
+        n_present = sum(1 for arm in order if armc.get(arm, 0) > 0)
+        if n_c >= 2 and n_present < 2:
+            single_armed.append(cell)
+        for arm in order:
+            dev = abs(armc.get(arm, 0) / n_c - 1.0 / k)
+            if dev > worst_cell_dev:
+                worst_cell_dev, worst_cell, worst_cell_arm = dev, cell, arm
+                worst_cell_tol = tol
+            ok_cells = ok_cells and dev <= tol
+    ok_cells = ok_cells and not single_armed
+    report["ok_overall"] = ok_overall
+    report["ok_cells"] = ok_cells
+    report["worst_cell_dev"] = worst_cell_dev
+    report["worst_cell"] = worst_cell
+    report["worst_cell_arm"] = worst_cell_arm
+    report["worst_cell_tolerance"] = worst_cell_tol
+    report["single_armed_cells"] = single_armed
+    return (ok_overall and ok_cells, report)
 
 
 def fit(agent_state, post):
@@ -519,7 +674,7 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
     # already placed by follow/fit, take the highest heat_prev; ties are
     # broken by score DESC, then post_id ASC (frozen deterministic order).
     k_trend_eff = k_trend + max(0, k_fit_eff - len(got))
-    got = _take(k_trend_eff, lambda r: (-r["heat"], -r["score"], r["sortkey"]), "trending") if False else _take(k_trend_eff, recs, lambda r: (-r["heat"], -r["score"], r["sortkey"]), "trending")
+    got = _take(k_trend_eff, recs, lambda r: (-r["heat"], -r["score"], r["sortkey"]), "trending")
     chosen += got
 
     # Final catch-all, only reachable when a stage was starved and
@@ -675,7 +830,7 @@ def self_test():
         empty_arms_raised = True
     record("assign_arms: empty arms raises ValueError", empty_arms_raised)
 
-    # --- arm_for_agent / check_arm_balance -------------------------------
+    # --- arm_for_agent (unbalanced cohort-less coin, kept for callers) ----
     a1 = [arm_for_agent("rt_fixed", "inv_%05d" % i) for i in range(10)]
     a2 = [arm_for_agent("rt_fixed", "inv_%05d" % i) for i in range(10)]
     vals = sorted({arm_for_agent("rt_fixed", "inv_%05d" % i) for i in range(40)})
@@ -720,69 +875,181 @@ def self_test():
     record("arm_for_agent: three-arm draw is int(rng.random()*3) on the frozen stream",
            idx_ok)
 
-    syn_ids = ["inv_%05d" % i for i in range(400)]
-    syn_cells = {a: "cell_%02d" % (i % 36) for i, a in enumerate(syn_ids)}
-    # arm_for_agent() is a fair per-agent coin, so |TV share - 0.5| has
-    # sd sqrt(0.25/400) = 0.025 and the 0.03 invariant bound is only a
-    # 1.2-sigma event (~77/100 run_tags) for the RAW coin stream.  The
-    # >=95/100 assertion below therefore runs on the block-balanced
-    # stream (|TV - T| <= 1 by construction, the same per-run guarantee
-    # assign_arms gives per agent); the raw-coin ok count is still
-    # reported and floored at 60/100 so a genuinely BIASED coin (e.g. a
-    # broken "< 0.4" threshold) cannot slip through unnoticed.
-    ok_runs = 0
-    coin_ok_runs = 0
-    for r in range(100):
-        rtag = "armbal_%03d" % r
-        arms_bal = dict(zip(
-            syn_ids, assign_arms(_make_rng(rtag, "balance"), 400, {"TV": 0, "T": 0})))
-        if check_arm_balance(arms_bal, syn_cells)[0]:
-            ok_runs += 1
-        arms_coin = {a: arm_for_agent(rtag, a) for a in syn_ids}
-        if check_arm_balance(arms_coin, syn_cells)[0]:
-            coin_ok_runs += 1
-    record("check_arm_balance: ok for >=95/100 run_tags (balanced stream)",
-           ok_runs >= 95, f"ok_runs={ok_runs}/100 coin_ok_runs={coin_ok_runs}/100")
-    record("check_arm_balance: raw coin arms within binomial noise",
-           coin_ok_runs >= 60, f"coin_ok_runs={coin_ok_runs}/100")
-    bad_arms = {a: ("TV" if i < 300 else "T") for i, a in enumerate(syn_ids)}
-    bad_ok, bad_rep = check_arm_balance(bad_arms, syn_cells)
+    # --- assign_agent_arms (stratified block randomisation) ----------------
+    # Synthetic cohort mirroring the frozen population's shape: 36 cells
+    # (2 of size 2, 12 of size 11, 22 of size 12 -> 400 agents), so the
+    # stratification guarantees are exercised on the real size mix.  The
+    # REAL cohort is covered by tests/unit/test_arm_balance.py (feed.py
+    # itself does no file I/O).
+    coh = []
+    _idx = 0
+    for _ci, _sz in enumerate([2, 2] + [11] * 12 + [12] * 22):
+        _cell = "cell_%02d" % _ci
+        for _ in range(_sz):
+            coh.append(("inv_%05d" % _idx, _cell))
+            _idx += 1
+    coh_cells = dict(coh)
+    coh_by_cell = {}
+    for _a, _c in coh:
+        coh_by_cell.setdefault(_c, []).append(_a)
+    two = ("T", "TV")
+    tags = ["sat_%02d" % r for r in range(24)]
+
+    m_0 = assign_agent_arms("sat_00", coh, two)
+    m_0r = assign_agent_arms("sat_00", list(reversed(coh)), two)
+    record("assign_agent_arms: deterministic, input-order insensitive",
+           m_0 == assign_agent_arms("sat_00", coh, two) == m_0r
+           and set(m_0) == set(coh_cells) and set(m_0.values()) == {"T", "TV"},
+           f"n={len(m_0)}")
+    try:
+        assign_agent_arms("sat_00", coh, ())
+        aa_raise = False
+    except ValueError:
+        aa_raise = True
+    record("assign_agent_arms: empty arms raise, empty cohort -> {}",
+           aa_raise and assign_agent_arms("sat_00", [], two) == {})
+
+    ok2 = 0
+    worst2 = 0.0
+    floor_ceil2 = True
+    single2 = 0
+    split2 = 0
+    maps2 = set()
+    for tag in tags:
+        amap = assign_agent_arms(tag, coh, two)
+        maps2.add(tuple(sorted(amap.items())))
+        ok, rep = check_arm_balance(amap, coh_cells)
+        ok2 += 1 if ok else 0
+        worst2 = max(worst2, rep["worst_overall_dev"])
+        extras = set()
+        for cell in sorted(coh_by_cell):
+            members = coh_by_cell[cell]
+            n_c = len(members)
+            n_tv = sum(1 for a in members if amap[a] == "TV")
+            if not (n_tv in (n_c // 2, n_c - n_c // 2)):
+                floor_ceil2 = False
+            if n_c >= 2 and n_tv in (0, n_c):
+                single2 += 1
+            if n_c % 2 == 1:
+                extras.add("TV" if n_tv > n_c - n_tv else "T")
+        if extras == {"T", "TV"}:
+            split2 += 1
+    record("assign_agent_arms: 2-arm invariant ok 24/24 tags, worst dev <= 0.01",
+           ok2 == len(tags) and worst2 <= 0.01,
+           f"ok={ok2}/{len(tags)} worst_overall_dev={worst2:.4f}")
+    record("assign_agent_arms: 2-arm cells floor/ceil, none single-armed",
+           floor_ceil2 and single2 == 0, f"single_armed_cells={single2}")
+    record("assign_agent_arms: 2-arm odd-cell remainders split across arms",
+           split2 == len(tags), f"tags_with_split={split2}/{len(tags)}")
+    record("assign_agent_arms: 2-arm maps distinct across run tags",
+           len(maps2) == len(tags), f"distinct={len(maps2)}/{len(tags)}")
+    m_1 = assign_agent_arms("sat_01", coh, two)
+    d01 = sum(1 for a in coh_cells if m_0[a] != m_1[a])
+    record("assign_agent_arms: assignment changes with run_tag",
+           d01 > 50, f"diff_agents={d01}/400")
+    tv0 = sum(1 for v in m_0.values() if v == "TV")
+    record("assign_agent_arms: 2-arm overall within one agent of exact",
+           abs(tv0 - (400 - tv0)) <= 1, f"TV={tv0} T={400 - tv0}")
+
+    ok3 = 0
+    worst3 = 0.0
+    floor_ceil3 = True
+    maps3 = set()
+    for tag in tags:
+        amap = assign_agent_arms(tag, coh, three)
+        maps3.add(tuple(sorted(amap.items())))
+        ok, rep = check_arm_balance(amap, coh_cells, arms=three)
+        ok3 += 1 if ok else 0
+        worst3 = max(worst3, rep["worst_overall_dev"])
+        for cell in sorted(coh_by_cell):
+            members = coh_by_cell[cell]
+            n_c = len(members)
+            cnts = [sum(1 for a in members if amap[a] == arm) for arm in three]
+            if not all(n_c // 3 <= c <= n_c // 3 + 1 for c in cnts):
+                floor_ceil3 = False
+    record("assign_agent_arms: 3-arm invariant ok 24/24 tags, worst dev <= 0.01",
+           ok3 == len(tags) and worst3 <= 0.01,
+           f"ok={ok3}/{len(tags)} worst_overall_dev={worst3:.4f}")
+    record("assign_agent_arms: 3-arm cells floor/ceil-balanced", floor_ceil3)
+    record("assign_agent_arms: 3-arm maps distinct across run tags",
+           len(maps3) == len(tags), f"distinct={len(maps3)}/{len(tags)}")
+    m3_0 = assign_agent_arms("sat_00", coh, three)
+    c3 = {arm: sum(1 for v in m3_0.values() if v == arm) for arm in three}
+    record("assign_agent_arms: 3-arm overall within one agent of exact",
+           max(c3.values()) - min(c3.values()) <= 1,
+           " ".join(f"{a}={c3[a]}" for a in sorted(c3)))
+
+    # --- check_arm_balance (achievable tolerances + numeric report) -------
+    coh_ids_sorted = sorted(coh_cells)
+    skew2 = {a: ("TV" if i < 300 else "T") for i, a in enumerate(coh_ids_sorted)}
+    okk, repk = check_arm_balance(skew2, coh_cells)
     record("check_arm_balance: rejects a skewed 75/25 assignment",
-           not bad_ok and abs(bad_rep["tv_share"] - 0.75) < 1e-12,
-           f"tv_share={bad_rep['tv_share']:.3f}")
+           not okk and abs(repk["tv_share"] - 0.75) < 1e-12
+           and repk["worst_overall_arm"] == "TV",
+           f"tv_share={repk['tv_share']:.3f}")
 
-    # Three-arm agent-level draws over 3,000 synthetic agents: the 1/k share
-    # bound (0.03 = ~3.5 sigma at n=3000) is a ~0.15% event per run_tag, so
-    # the assertion is >=28/30 tags (a skewed or broken k-arm draw fails it
-    # outright while binomial noise at the 1/k target cannot).
-    syn3_ids = ["inv_%05d" % i for i in range(3000)]
-    syn3_cells = {a: "cell_%02d" % (i % 36) for i, a in enumerate(syn3_ids)}
-    ok3_runs = 0
-    for r in range(30):
-        rtag3 = "mod3_%03d" % r
-        arms3 = {a: arm_for_agent(rtag3, a, arms=three) for a in syn3_ids}
-        if check_arm_balance(arms3, syn3_cells)[0]:
-            ok3_runs += 1
-    record("check_arm_balance: three-arm ok for >=28/30 tags over 3000 agents",
-           ok3_runs >= 28, f"ok_runs={ok3_runs}/30")
+    # An exactly-50/50 map that ignores stratification: every cell of the
+    # spread mapping holds ids of one parity only, so all 36 cells come out
+    # single-armed.  The old distribution-vs-overall check missed the fine
+    # print; the per-cell tolerance now fails it with named cells.
+    spread_cells = {a: "cell_%02d" % (i % 36) for i, a in enumerate(coh_ids_sorted)}
+    alt = {a: ("TV" if i % 2 == 0 else "T") for i, a in enumerate(coh_ids_sorted)}
+    okl, repl = check_arm_balance(alt, spread_cells)
+    record("check_arm_balance: per-cell check fails an unstratified 50/50 map",
+           not okl and repl["ok_overall"] and repl["tv_share"] == 0.5
+           and len(repl["single_armed_cells"]) == 36,
+           f"single_armed={len(repl['single_armed_cells'])}")
 
-    two_arm_vals = {a: ("TV" if i % 2 == 0 else "T") for i, a in enumerate(syn_ids)}
-    okm, repm = check_arm_balance(two_arm_vals, syn_cells, arms=("T", "TC", "TV"))
+    sab = dict(m_0)
+    for a in coh_cells:
+        if coh_cells[a] == "cell_02":
+            sab[a] = "TV"
+        elif coh_cells[a] == "cell_03":
+            sab[a] = "T"
+    oks, reps = check_arm_balance(sab, coh_cells)
+    record("check_arm_balance: flags deliberately single-armed cells",
+           not oks and not reps["ok_cells"]
+           and reps["single_armed_cells"] == ["cell_02", "cell_03"]
+           and reps["worst_cell_dev"] >= 0.5 - 1e-9,
+           f"cells={reps['single_armed_cells']} worst_cell_dev={reps['worst_cell_dev']:.3f}")
+
+    okm, repm = check_arm_balance(alt, spread_cells, arms=("T", "TC", "TV"))
     record("check_arm_balance: explicit 3 arms fails when TC got no agents",
-           not okm and repm.get("tc_share") == 0.0 and repm.get("max_abs_diff_TC") == 1.0,
+           not okm and repm.get("tc_share") == 0.0 and repm.get("n_out_of_set") == 0,
            f"tc_share={repm.get('tc_share')}")
-    okl, repl = check_arm_balance(two_arm_vals, syn_cells)
-    record("check_arm_balance: legacy two-arm report shape preserved",
-           okl and sorted(repl) == ["max_abs_diff_T", "max_abs_diff_TV", "n_agents",
-                                    "n_tv", "tv_share"] and repl["tv_share"] == 0.5,
-           f"keys={sorted(repl)}")
+
     skew3 = {a: ("T" if i < 180 else ("TC" if i < 320 else "TV"))
-             for i, a in enumerate(syn_ids)}
-    oks3, reps3 = check_arm_balance(skew3, syn_cells)
+             for i, a in enumerate(coh_ids_sorted)}
+    oks3, reps3 = check_arm_balance(skew3, coh_cells, arms=three)
     record("check_arm_balance: rejects a skewed 45/35/20 three-arm assignment",
            not oks3 and abs(reps3["t_share"] - 0.45) < 1e-12
            and abs(reps3["tv_share"] - 0.20) < 1e-12,
            f"T={reps3['t_share']:.2f} TC={reps3['tc_share']:.2f} TV={reps3['tv_share']:.2f}")
+
+    okp, repp = check_arm_balance(m_0, coh_cells)
+    record("check_arm_balance: passing report carries worst-case detail",
+           okp and isinstance(repp.get("worst_overall_dev"), float)
+           and isinstance(repp.get("worst_cell_dev"), float)
+           and repp.get("worst_cell") in set(coh_cells.values())
+           and repp.get("n_cells") == 36
+           and repp.get("single_armed_cells") == []
+           and repp.get("ok_overall") and repp.get("ok_cells"),
+           f"worst_cell={repp.get('worst_cell')} dev={repp.get('worst_cell_dev'):.4f}")
+
+    # The exposure-level greedy balancing (assign_arms) still satisfies the
+    # OVERALL clause by construction; its per-cell balance is by design not
+    # required at exposure level (invariant (h) is agent-level).
+    ok_runs = 0
+    for r in range(20):
+        rtag = "armbal_%03d" % r
+        arms_bal = dict(zip(coh_ids_sorted,
+                            assign_arms(_make_rng(rtag, "balance"), 400,
+                                        {"TV": 0, "T": 0})))
+        okb, repb = check_arm_balance(arms_bal, coh_cells)
+        if repb["ok_overall"] and repb["worst_overall_dev"] <= 0.01:
+            ok_runs += 1
+    record("check_arm_balance: exposure-balanced stream meets overall tol 20/20",
+           ok_runs == 20, f"ok_overall_runs={ok_runs}/20")
 
     # --- fit / climate_bonus ---------------------------------------------
     record("fit: bounded [0,1] heuristic values",
