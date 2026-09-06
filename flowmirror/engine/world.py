@@ -14,6 +14,13 @@ with the numeric detail the check produced, or skipped+reason when the check doe
 never silence; a top-level summary carries passed/failed/skipped counts and the overall
 boolean. event_log_sha256 is kept and the event log itself is untouched.
 
+INV-FIX: check results are consumed for real now, so every check compares like with like.
+(a) derives the expected guba week key from each audited day's date via datetime's
+isocalendar (the same ISO-week arithmetic the day loop's wk_prev rule uses) instead of
+comparing a week key against a date, and (b) seeds holdings from the agents' opening
+positions and clears a fund only when a redemption takes it to zero units. A check whose
+input rows are absent reports skipped+reason, never a silent vacuous pass.
+
 Arms: agent-level modality arms come from feed.assign_agent_arms() (stratified block
 randomisation within each population cell, PREREG v1.3 B10); feed.arm_for_agent() remains the
 unbalanced per-agent coin, kept only as the no-cohort fallback (exposure path, tests).
@@ -663,6 +670,9 @@ def event_log_sha(path) -> str:
 # write_reports() writes ONE invariants_report.json entry per key in this registry (union with
 # anything check_invariants returned), so a check that did not run shows up as `skipped` with
 # a reason instead of being silently absent from the report.
+# INV-FIX: every check below compares like-typed fields (week key vs week key, holdings vs
+# holdings seeded from opening positions, list lengths vs list lengths) and reports
+# skipped+reason when its input rows are absent, never a silent vacuous pass.
 INVARIANTS = {
     "a_lagged_signals_only": "day-t feed ranking consumes only signals frozen at end of day t-1 (no same-day leakage)",
     "b_nonholder_never_redeems": "an agent never executes a redemption of a fund it does not hold (checkout refuses with no_holdings)",
@@ -697,20 +707,63 @@ def _jsonable(v):
     return str(v)
 
 
+def _ag_get(a, key, default=None):
+    """Field accessor for agent rows that arrive either as Inv objects (live runs) or as plain
+    dicts (replayed/serialised states); Inv slots that were never set read as `default`."""
+    if isinstance(a, dict):
+        return a.get(key, default)
+    try:
+        return getattr(a, key, default)
+    except Exception:
+        return default
+
+
+def _expected_guba_week(d: date) -> str:
+    """ISO week key of the guba signal that may be consumed on trading day d: the most recent
+    week that ENDED strictly before d -- loop.py's wk_prev rule. The ISO year/week come from
+    datetime.date.isocalendar() (the stdlib ISO-week arithmetic the day loop builds on; week
+    math is never reimplemented here), and because the anchor is the Sunday strictly before d,
+    the week containing d itself can never be returned. Key format matches guba signal keys,
+    e.g. 2025-W41."""
+    anchor = d - timedelta(days=d.weekday() + 1)   # most recent Sunday strictly before d
+    iso_year, iso_week, _ = anchor.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
 def check_invariants(state: dict, events_path, cfg: dict):
-    """state contract: agents (rows carry fees; default 0 when absent so old states still pass),
-    funds, end(iso), signal_audit[{t,used,live_end,prev_live_end,day_keys}], active_per_day{t:n},
-    agent_arms{i:arm}; funds maps code -> Fund for end-of-run pricing. Returns (checks, core):
-    checks carries one entry per invariant -- {"pass": bool, ...numeric detail} when it ran,
-    {"skipped": True, "reason": str} when it does not apply at this configuration; core is the
-    overall boolean and counts against the run only when an entry's "pass" is explicitly False."""
+    """state contract: agents (Inv rows carrying fees, default 0 when absent so old states
+    still pass), hold0 ({agent_id: {fund_code: units}} -- each agent's OPENING holdings,
+    snapshotted by the loop before day 0; seeds the non-holder check, and when absent that
+    check skips rather than seed from anything else), funds, end(iso),
+    signal_audit[{t, used(guba ISO week key), live_end(day t ISO date), prev_live_end,
+    day_keys(list of day-level key strings)}], active_per_day{t:n}, agent_arms{i:arm}; funds maps
+    code -> Fund for end-of-run pricing. Returns (checks, core): checks carries one entry per
+    invariant -- {"pass": bool, ...numeric detail} when it ran, {"skipped": True, "reason": str}
+    when it does not apply at this configuration or its input rows are absent; core is the
+    run's decision and is True exactly when the run passed -- no entry's "pass" is explicitly
+    False."""
     agents = state.get("agents") or []
     funds = state.get("funds") or {}
-    id2cell = {a.id: a.cell for a in agents}
+    id2cell = {_ag_get(a, "id"): _ag_get(a, "cell", "") for a in agents}
     rows = load_jsonl(Path(events_path))
     co_oc, co_cf = defaultdict(int), defaultdict(int)
-    hard_p, holdings = set(), defaultdict(set)
-    b_viol, c_viol, f_viol, i_viol = 0, 0, 0, 0
+    hard_p = set()
+    pos_units = {}                       # FIX4 (b): (agent, fund) -> unit balance; presence in
+    hold0 = state.get("hold0")           # this dict IS holdings (a None value marks a holder of
+    for aid, holds in (hold0.items() if isinstance(hold0, dict) else []):  # unrecorded size, a
+        # missing key a non-holder). FIX4: seeded from state["hold0"] -- each agent's OPENING
+        # holdings, captured by the loop before day 0. The live Inv rows in state["agents"]
+        # carry CLOSING positions (inv.hold is updated in place during the run), so they must
+        # never seed this ledger.
+        for code, units in (holds.items() if isinstance(holds, dict) else []):
+            if isinstance(units, (int, float)) and not isinstance(units, bool):
+                if float(units) > 0.0:
+                    pos_units[(aid, code)] = float(units)
+            else:
+                pos_units[(aid, code)] = None      # opening position of unrecorded size
+    b_viol, c_viol, f_viol = 0, 0, 0
+    b_first, c_first = None, None
+    n_sub, n_redeem_act, n_posts = 0, 0, 0
     imp_arms, exposed = defaultdict(lambda: defaultdict(int)), set()
     dec_day, cmt_idx, clims = defaultdict(int), defaultdict(set), []
     for r in rows:
@@ -720,19 +773,44 @@ def check_invariants(state: dict, events_path, cfg: dict):
             exposed.add(id2cell.get(r.get("i")))
         elif ev == "act":
             i, fund, kind = r.get("i"), r.get("fund"), r.get("kind")
+            u = r.get("units")
+            u = abs(float(u)) if isinstance(u, (int, float)) and not isinstance(u, bool) else None
             if kind in ("subscribe", "dca"):
-                holdings[i].add(fund)
-            elif kind == "redeem" and fund not in holdings[i]:
-                b_viol += 1
+                n_sub += 1
+                if u is not None and pos_units.get((i, fund)) is not None:
+                    pos_units[(i, fund)] += u
+                elif u is not None and (i, fund) not in pos_units:
+                    pos_units[(i, fund)] = u            # fresh position, provable from this row
+                elif u is None and (i, fund) not in pos_units:
+                    pos_units[(i, fund)] = None         # holder, size not provable from this row
+            elif kind == "redeem":
+                n_redeem_act += 1
+                # FIX3 (b): a units ledger, not membership. A redemption violates (b) only
+                # when the balance beforehand is non-positive (small epsilon for float
+                # drift) or the agent never held the fund; a partial redemption just
+                # subtracts units and the fund stays in the ledger.
+                if (i, fund) not in pos_units:
+                    b_viol += 1
+                    if b_first is None:
+                        b_first = {"i": i, "fund": fund, "units_held": 0.0, "units_redeemed": u}
+                else:
+                    have = pos_units[(i, fund)]
+                    if have is not None and have <= 1e-9:
+                        b_viol += 1
+                        if b_first is None:
+                            b_first = {"i": i, "fund": fund, "units_held": have,
+                                       "units_redeemed": u}
+                    elif have is not None and u is not None:
+                        pos_units[(i, fund)] = have - u     # partial redemption: balance drops,
+                        # but the fund only leaves the ledger once the balance is exhausted
         elif ev == "co":
             oc = r.get("oc")
             co_oc[oc] += 1
             co_cf[r.get("oc_cf")] += 1
             if oc == "hard_block":
                 hard_p.add((r.get("i"), r.get("p")))
-            if r.get("act") == "redeem" and oc in ("hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"):
-                i_viol += 1
         elif ev == "post":                        # (f) post.ig is the intent GROUP {I2, nonI2}
+            n_posts += 1
             if r.get("ig") not in _IG_GROUPS or (r.get("ig") == "I2") != (r.get("intent") == "I2"):
                 f_viol += 1
         elif ev == "dec":
@@ -741,63 +819,162 @@ def check_invariants(state: dict, events_path, cfg: dict):
             cmt_idx[(r.get("p"), r.get("t"))].add(r.get("text"))
         elif ev == "clim":
             clims.append(r)
-    for r in rows:                                # second pass: hard_block must never precede a subscribe
-        if r.get("ev") == "act" and r.get("kind") == "subscribe" and (r.get("i"), r.get("p")) in hard_p:
+    for r in rows:                                # second pass: a hard_block must never precede a subscribe
+        if (r.get("ev") == "act" and r.get("kind") == "subscribe"
+                and (r.get("i"), r.get("p")) in hard_p):
             c_viol += 1
+            if c_first is None:
+                c_first = {"i": r.get("i"), "p": r.get("p")}
     checks = {}
+    # (a) INV-FIX: `used` is a guba ISO WEEK key. Derive the expected key from day t's date
+    # (each entry's live_end) with the same rule the engine uses to pick wk_prev -- the most
+    # recent week that ENDED strictly before day t -- and compare key to key. day_keys is a
+    # LIST of day-level keys: record how many existed, never int() the list itself.
     audit = state.get("signal_audit") or []
-    a_ok = len(audit) > 0
-    for e in audit[1:]:
-        if e.get("used") != e.get("prev_live_end"):
-            a_ok = False
-    for e in audit:
-        if e.get("live_end") == e.get("used") and int(e.get("day_keys", 0)) > 0:
-            a_ok = False
-    checks["a_lagged_signals_only"] = {"pass": a_ok, "days_audited": len(audit),
-                                       "mechanism": "day t ranking input sha == end-of-(t-1) live sha"}
-    checks["b_nonholder_never_redeems"] = {"pass": b_viol == 0, "violations": b_viol,
-                                           "no_holdings_refusals": co_oc["no_holdings"]}
-    checks["c_hard_block_never_subscribes"] = {"pass": c_viol == 0, "violations": c_viol,
-                                               "hard_block_checkouts": co_oc["hard_block"]}
-    max_res, tol = 0.0, 1e-6 * max([1.0] + [a.w0 for a in agents])
+    if not audit:
+        checks["a_lagged_signals_only"] = {"skipped": True, "reason":
+                                           "signal_audit is empty: this run recorded no guba ranking days"}
+    else:
+        a_matched, a_bad, dk_total, a_first = 0, 0, 0, None
+        for e in audit:
+            if not isinstance(e, dict):
+                a_bad += 1
+                if a_first is None:
+                    a_first = {"t": None, "date": None, "used": None, "expected": None,
+                               "reason": f"malformed audit entry ({type(e).__name__})"}
+                continue
+            keys = e.get("day_keys")
+            if isinstance(keys, (list, tuple, set)):
+                dk_total += len(keys)
+            elif isinstance(keys, int) and not isinstance(keys, bool):
+                dk_total += max(keys, 0)          # legacy integer shape, tolerated
+            used, dstr = e.get("used"), e.get("live_end")
+            try:
+                expected = _expected_guba_week(date.fromisoformat(str(dstr)))
+            except (TypeError, ValueError):
+                a_bad += 1
+                if a_first is None:
+                    a_first = {"t": e.get("t"), "date": dstr, "used": used, "expected": None,
+                               "reason": "audit entry carries no parseable live_end date"}
+                continue
+            if used == expected:
+                a_matched += 1
+            elif a_first is None:
+                a_first = {"t": e.get("t"), "date": dstr, "used": used, "expected": expected}
+        checks["a_lagged_signals_only"] = {
+            "pass": a_first is None, "days_audited": len(audit), "matched": a_matched,
+            "unparseable_entries": a_bad, "first_mismatch": a_first, "day_keys_total": dk_total,
+            "mechanism": "day t consumes the ISO week that ended strictly before day t "
+                         "(expected key derived from live_end via date.isocalendar, the wk_prev rule)"}
+    # (b) FIX4: a pure units ledger seeded from state["hold0"] (opening holdings captured by
+    # the loop before day 0); subscribe/dca add units, redeem subtracts. A violation is a
+    # redemption whose balance beforehand is non-positive (epsilon for float drift) or a fund
+    # the agent never held. First offender is reported with agent id, fund, units held and
+    # units redeemed. When hold0 is absent the check is SKIPPED -- closing positions must
+    # never silently seed it.
+    if n_redeem_act == 0:
+        checks["b_nonholder_never_redeems"] = {"skipped": True, "redeem_rows": 0, "reason":
+                                               "no redemption act rows in the event log"}
+    elif hold0 is None:
+        checks["b_nonholder_never_redeems"] = {"skipped": True, "redeem_rows": n_redeem_act,
+                                               "reason": "opening positions not supplied: "
+                                                         "state['hold0'] is absent and closing "
+                                                         "positions must never seed this check"}
+    else:
+        checks["b_nonholder_never_redeems"] = {"pass": b_viol == 0, "violations": b_viol,
+                                               "first_violation": b_first, "redeem_rows": n_redeem_act,
+                                               "no_holdings_refusals": co_oc["no_holdings"]}
+    if co_oc["hard_block"] == 0:
+        checks["c_hard_block_never_subscribes"] = {"skipped": True, "reason":
+                                                   "no hard_block checkout rows in the event log"}
+    else:
+        checks["c_hard_block_never_subscribes"] = {"pass": c_viol == 0, "violations": c_viol,
+                                                   "first_violation": c_first,
+                                                   "hard_block_checkouts": co_oc["hard_block"],
+                                                   "subscribe_rows": n_sub}
+    max_res, tol = 0.0, 1e-6 * max([1.0] + [_ag_get(a, "w0", 0.0) for a in agents])
     end = date.fromisoformat(state["end"]) if state.get("end") else None
-    if end is not None:
+    if not agents or end is None:
+        checks["d_wealth_conservation"] = {"skipped": True, "reason":
+                                           ("no agent rows in state" if not agents else
+                                            "state carries no end date") + "; wealth identity not evaluable"}
+    else:
         for a in agents:                          # (d) cash+units*nav+other+fees == w0+realized+unrealized
+            hold = _ag_get(a, "hold", None) or {}
+            cost = _ag_get(a, "cost", None) or {}
             holdv = costv = 0.0
-            for c, u in a.hold.items():
-                nv = funds[c].nav_at(end) if c in funds else a.cost.get(c, 0.0)
+            for c, u in hold.items():
+                nv = funds[c].nav_at(end) if c in funds else cost.get(c, 0.0)
                 holdv += u * nv
-                costv += u * a.cost.get(c, 0.0)
-            res = (a.cash + holdv + a.other + _agent_fees(a)) - (a.w0 + a.realized + (holdv - costv))
+                costv += u * cost.get(c, 0.0)
+            res = ((_ag_get(a, "cash", 0.0) + holdv + _ag_get(a, "other", 0.0) + _agent_fees(a))
+                   - (_ag_get(a, "w0", 0.0) + _ag_get(a, "realized", 0.0) + (holdv - costv)))
             max_res = max(max_res, abs(res))
-    checks["d_wealth_conservation"] = {"pass": max_res <= tol, "max_abs_residual_cny": max_res, "tolerance": tol}
+        checks["d_wealth_conservation"] = {"pass": max_res <= tol, "max_abs_residual_cny": max_res,
+                                           "tolerance": tol, "agents_checked": len(agents)}
     cells = sorted(set(id2cell.values()))
-    n_exp = sum(1 for c in cells if c in exposed)
-    checks["e_all_cells_exposed"] = {"pass": len(cells) > 0 and n_exp == len(cells),
-                                     "cells_exposed": n_exp, "cells_total": len(cells)}
-    checks["f_post_ig_is_intent_group"] = {"pass": f_viol == 0, "violations": f_viol,
-                                           "ig_domain": list(_IG_GROUPS)}
+    if not cells:
+        checks["e_all_cells_exposed"] = {"skipped": True, "reason":
+                                         "no agent rows in state; cell exposure not applicable"}
+    else:
+        n_exp = sum(1 for c in cells if c in exposed)
+        checks["e_all_cells_exposed"] = {"pass": n_exp == len(cells),
+                                         "cells_exposed": n_exp, "cells_total": len(cells)}
+    if n_posts == 0:
+        checks["f_post_ig_is_intent_group"] = {"skipped": True, "reason":
+                                               "no post rows in the event log"}
+    else:
+        checks["f_post_ig_is_intent_group"] = {"pass": f_viol == 0, "violations": f_viol,
+                                               "posts_scanned": n_posts, "ig_domain": list(_IG_GROUPS)}
     g_viol = j_viol = 0
+    g_first = j_first = None
+    clim_nonseed = clim_seed = entries_checked = 0
     for r in clims:
         if r.get("source") == "guba_seed":        # exogenous day-1 seed, exempt from cmt matching
+            clim_seed += 1
             continue
+        clim_nonseed += 1
         t, p = int(r.get("t", 0)), r.get("p")
         prior = {txt for (pp, tt), tx in cmt_idx.items() for txt in tx if pp == p and tt < t}
         exact = {txt for (pp, tt), tx in cmt_idx.items() for txt in tx if pp == p and tt == t - 1}
         for ent in (r.get("top") or []):
             txt = ent.get("text") if isinstance(ent, dict) else str(ent)
+            entries_checked += 1
             if txt not in prior:
                 g_viol += 1
+                if g_first is None:
+                    g_first = {"t": t, "p": p, "text": txt}
             if txt not in exact:
                 j_viol += 1
-    checks["g_comments_lagged_only"] = {"pass": g_viol == 0, "violations": g_viol}
-    checks["j_displayed_comment_matches_prev_day"] = {"pass": j_viol == 0, "violations": j_viol}
+                if j_first is None:
+                    j_first = {"t": t, "p": p, "text": txt}
+    if entries_checked == 0:
+        checks["g_comments_lagged_only"] = {"skipped": True, "clim_rows_nonseed": clim_nonseed,
+                                            "clim_rows_guba_seed": clim_seed, "reason":
+                                            "no displayed comment entries to verify (no non-seed climate row carried a top list)"}
+        checks["j_displayed_comment_matches_prev_day"] = {"skipped": True, "clim_rows_nonseed": clim_nonseed,
+                                                          "clim_rows_guba_seed": clim_seed, "reason":
+                                                          "no displayed comment entries to match against day-(t-1) comment sets"}
+    else:
+        checks["g_comments_lagged_only"] = {"pass": g_viol == 0, "violations": g_viol,
+                                            "first_violation": g_first,
+                                            "entries_checked": entries_checked,
+                                            "clim_rows_nonseed": clim_nonseed}
+        checks["j_displayed_comment_matches_prev_day"] = {"pass": j_viol == 0, "violations": j_viol,
+                                                          "first_violation": j_first,
+                                                          "entries_checked": entries_checked,
+                                                          "comment_days_indexed": len(cmt_idx)}
     arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
     lvl = _mod_level_of(cfg)
-    if lvl == "agent":
-        entry = {"pass": True, "level": "agent", "arms": list(arms)}
+    agent_arms_map = state.get("agent_arms") or {}
+    if lvl == "agent" and not agent_arms_map:
+        checks["h_arm_balance"] = {"skipped": True, "level": "agent", "arms": list(arms), "reason":
+                                   "no per-agent arm assignments in state; agent-level balance not evaluable"}
+    elif lvl == "agent":
+        entry = {"pass": True, "level": "agent", "arms": list(arms),
+                 "agents_assigned": len(agent_arms_map)}
         try:
-            ok, rep = feed.check_arm_balance(state.get("agent_arms") or {}, id2cell, arms=arms)
+            ok, rep = feed.check_arm_balance(agent_arms_map, id2cell, arms=arms)
             entry["pass"] = bool(ok)
             if isinstance(rep, dict) and rep:
                 entry["report"] = _jsonable(rep)   # worst cases / tolerances reach the report file
@@ -830,16 +1007,95 @@ def check_invariants(state: dict, events_path, cfg: dict):
     # (i) redemptions are never gated: a `co` row with act == "redeem" may carry match / no_holdings only.
     # Suitability (PREREG v1.3 §B9) and the QDII purchase block apply to subscriptions alone.
     gated = {"hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"}
-    i_viol = sum(1 for r in rows if isinstance(r, dict) and r.get("ev") == "co"
-                 and r.get("act") == "redeem" and r.get("oc") in gated)
-    checks["i_redeem_checkout_never_blocked"] = {"pass": i_viol == 0, "violations": i_viol}
+    n_redeem_co = i_viol = 0
+    i_first = None
+    for r in rows:
+        if isinstance(r, dict) and r.get("ev") == "co" and r.get("act") == "redeem":
+            n_redeem_co += 1
+            if r.get("oc") in gated:
+                i_viol += 1
+                if i_first is None:
+                    i_first = {"i": r.get("i"), "p": r.get("p"), "oc": r.get("oc")}
+    if n_redeem_co == 0:
+        checks["i_redeem_checkout_never_blocked"] = {"skipped": True, "reason":
+                                                     "no redemption checkout rows in the event log"}
+    else:
+        checks["i_redeem_checkout_never_blocked"] = {"pass": i_viol == 0, "violations": i_viol,
+                                                     "first_violation": i_first,
+                                                     "redeem_checkouts": n_redeem_co}
     active = state.get("active_per_day") or {}
-    checks["k_dec_matches_active"] = {"pass": bool(active) and all(dec_day.get(t, 0) == n for t, n in active.items()),
-                                      "days": len(active)}
+    if not active:
+        checks["k_dec_matches_active"] = {"skipped": True, "reason":
+                                          "no active-per-day counts in state; decision/day matching not applicable"}
+    else:
+        k_first = None
+        for t in sorted(active, key=str):
+            if dec_day.get(t, 0) != active[t] and k_first is None:
+                k_first = {"t": t, "expected_dec_rows": active[t], "dec_rows": dec_day.get(t, 0)}
+        k_mism = sum(1 for t in active if dec_day.get(t, 0) != active[t])
+        k_extra = sorted(set(dec_day) - set(active), key=str)
+        checks["k_dec_matches_active"] = {"pass": k_first is None and not k_extra,
+                                          "days": len(active), "mismatches": k_mism,
+                                          "first_mismatch": k_first,
+                                          "dec_rows_on_inactive_days": k_extra,
+                                          "dec_rows_total": sum(dec_day.values())}
     big = len(agents) >= 300                      # (e) fatal only at n_agents >= 300
-    core = [k for k, v in checks.items() if v.get("pass") is False
-            and not (k == "e_all_cells_exposed" and not big)]
-    return checks, bool(core)
+    failed = [k for k, v in checks.items() if v.get("pass") is False
+              and not (k == "e_all_cells_exposed" and not big)]
+    # FIX4: return the run's DECISION, not the failure list -- True when the run passed
+    # (no core check explicitly failed), False when at least one did.
+    return checks, not failed
+
+
+def _selftest_invariants_decision():
+    """FIX4: assert check_invariants' second element both ways -- a clean state returns True
+    (run passed), a state with one planted failing check returns False (run failed)."""
+    import json
+    import tempfile
+    from pathlib import Path
+    nav = [date.fromordinal(date(2025, 1, 2).toordinal() + i) for i in range(320)]
+    fund = Fund("000001", "R3", False, "FAM", nav, [2.0] * len(nav), date(2025, 1, 2))
+    ag = Inv()
+    ag.id, ag.cell, ag.rc = "A1", "C2", "C2"
+    ag.cash, ag.other, ag.realized, ag.fees = 0.0, 0.0, 0.0, 0.0
+    ag.hold, ag.cost, ag.entry = {"000001": 50.0}, {"000001": 2.0}, 0
+    ag.w0 = 100.0
+    state = {"agents": [ag], "hold0": {"A1": {"000001": 50.0}},  # opening snapshot, exactly as
+             "funds": {"000001": fund}, "end": "2025-12-31",     # the loop captures before day 0
+             "active_per_day": {0: 1}, "agent_arms": {}, "signal_audit": []}
+    dec = {"ev": "dec", "t": 0, "d": "2025-10-01", "i": "A1", "p": "00000", "prompt_sha": "x",
+           "raw_sha": "y", "cache_hit": False, "attempts": 1, "status": "ok", "arm": "T",
+           "mood": 0, "reason": "r", "violations": []}
+    post = {"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00000", "intent": "I2",
+            "ig": "I2", "fund": None, "img": False}
+    imp = {"ev": "imp", "t": 0, "d": "2025-10-01", "i": "A1", "p": "00000", "arm": "T", "slot": 0,
+           "source": "random"}
+    co = {"ev": "co", "t": 0, "d": "2025-10-01", "i": "A1", "p": "00000", "fund": "000001",
+          "ig": "I2", "act": "redeem", "oc": "match", "oc_cf": "match", "amt": 40.0}
+    good = {"ev": "act", "t": 0, "d": "2025-10-01", "i": "A1", "p": "00000", "kind": "redeem",
+            "fund": "000001", "amt": 40.0, "units": 20.0, "nav": 2.0}
+    bad = dict(good, fund="000002", units=10.0, amt=20.0)   # plant: a fund A1 never held
+
+    def _run(rows):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "events.jsonl"
+            with open(p, "w", encoding="utf-8", newline="\n") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+            return check_invariants(state, p, {"modality_level": "run"})
+
+    _, ok_clean = _run([post, imp, dec, co, good])
+    assert ok_clean is True, "clean state must yield the decision True (run passed)"
+    checks_bad, ok_bad = _run([post, imp, dec, co, bad])
+    assert ok_bad is False, "one planted failing check must yield the decision False (run failed)"
+    assert checks_bad["b_nonholder_never_redeems"]["pass"] is False
+    print("selftest check_invariants decision polarity: clean->True, planted->False [ok]")
+
+
+if __name__ == "__main__":            # FIX4: run the decision assertions under --self-test; a
+    import sys                        # guard placed beside the fix so the contract stays
+    if "--self-test" in sys.argv:     # asserted wherever this sits relative to the main block
+        _selftest_invariants_decision()
 
 
 # --- §8 reports --------------------------------------------------------------------------------
@@ -1089,10 +1345,26 @@ def self_test() -> int:
             and list(back[0].keys())[0] == "ev" and back[1]["text"] == "caf\u00e9"
             and '": ' not in raw and ", " not in raw)
         chk("event_log_sha_hex64", len(event_log_sha(tdp / "events.jsonl")) == 64)
-        st = {"agents": [], "funds": {}, "end": "2025-12-31", "active_per_day": {0: 1},
-              "agent_arms": {}, "agent_cells": {},
-              "signal_audit": [{"t": 0, "used": "aa", "live_end": "bb", "prev_live_end": None, "day_keys": 2},
-                               {"t": 1, "used": "bb", "live_end": "cc", "prev_live_end": "bb", "day_keys": 1}]}
+
+        def _mk_agent(cash: float, fees=None):
+            a = Inv()
+            a.id, a.cell, a.rc = 7, "C1", "C1"
+            a.cash, a.other, a.realized, a.w0 = cash, 0.0, 0.0, 100.0
+            a.hold, a.cost, a.entry = {}, {}, 0
+            if fees is not None:
+                a.fees = fees
+            return a
+
+        # INV-FIX: realistic signal_audit -- `used` is a guba ISO week key (2025-10-01/02 sit in
+        # W40; the week that ended strictly before them is 2025-W39, ended Sun 2025-09-28) and
+        # day_keys is a LIST of day-level keys. st also carries a fee-bearing agent so (d) runs
+        # non-vacuously and (b) has an agent row to seed holdings from.
+        st = {"agents": [_mk_agent(99.5, 0.5)], "funds": {}, "end": "2025-12-31",
+              "active_per_day": {0: 1}, "agent_arms": {}, "agent_cells": {},
+              "signal_audit": [{"t": 0, "used": "2025-W39", "live_end": "2025-10-01",
+                                "prev_live_end": "2025-09-30", "day_keys": ["2025-09-22", "2025-09-26"]},
+                               {"t": 1, "used": "2025-W39", "live_end": "2025-10-02",
+                                "prev_live_end": "2025-10-01", "day_keys": []}]}
         clean = [{"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00000", "intent": "I2",
                   "ig": "I2", "fund": None, "img": False},
                  {"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00001", "intent": "I1",
@@ -1105,7 +1377,9 @@ def self_test() -> int:
                  {"ev": "co", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "fund": "000001", "ig": "I2",
                   "act": "subscribe", "oc": "match", "oc_cf": "match", "amt": 100.0},
                  {"ev": "act", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "kind": "subscribe",
-                  "fund": "000001", "amt": 100.0, "units": 50.0, "nav": 2.0}]
+                  "fund": "000001", "amt": 100.0, "units": 50.0, "nav": 2.0},
+                 {"ev": "act", "t": 0, "d": "2025-10-01", "i": 1, "p": "00000", "kind": "redeem",
+                  "fund": "000001", "amt": 40.0, "units": 20.0, "nav": 2.0}]
         bad = [dict(clean[4], i=2, p="00002", act="redeem", oc="hard_block", oc_cf="hard_block", amt=0.0),
                dict(clean[0], intent="I3", ig="I3"),        # ig outside the group domain (old bug)
                dict(clean[1], intent="I1", ig="I2")]        # group inconsistent with the raw intent
@@ -1123,16 +1397,22 @@ def self_test() -> int:
         chk("h_exposure_below_min_impressions_marked_skipped",
             cc["h_arm_balance"].get("skipped") is True
             and isinstance(cc["h_arm_balance"].get("reason"), str) and cc["h_arm_balance"]["reason"] != "")
+        # INV-FIX defect 1: (a) must compare week key to derived week key and catch the leak of
+        # the week CONTAINING day t (2025-10-01 lies in 2025-W40; the legal key is 2025-W39).
+        leak = dict(st, signal_audit=[dict(st["signal_audit"][0], used="2025-W40")])
+        lc, lf = check_invariants(leak, cp, {"arm_level": "exposure"})
+        chk("invariant_a_flags_week_containing_day_t",
+            lf is True and lc["a_lagged_signals_only"]["pass"] is False
+            and lc["a_lagged_signals_only"]["first_mismatch"]["used"] == "2025-W40"
+            and lc["a_lagged_signals_only"]["first_mismatch"]["expected"] == "2025-W39"
+            and lc["a_lagged_signals_only"]["matched"] == 0
+            and lc["a_lagged_signals_only"]["days_audited"] == 1)
+        ec, _ = check_invariants(dict(st, signal_audit=[]), cp, {"arm_level": "exposure"})
+        chk("invariant_a_empty_audit_skipped_with_reason",
+            ec["a_lagged_signals_only"].get("skipped") is True
+            and isinstance(ec["a_lagged_signals_only"].get("reason"), str)
+            and ec["a_lagged_signals_only"]["reason"] != "")
         # A2: invariant (d) with fees; run-level (h) skip
-        def _mk_agent(cash: float, fees=None):
-            a = Inv()
-            a.id, a.cell, a.rc = 7, "C1", "C1"
-            a.cash, a.other, a.realized, a.w0 = cash, 0.0, 0.0, 100.0
-            a.hold, a.cost, a.entry = {}, {}, 0
-            if fees is not None:
-                a.fees = fees
-            return a
-
         base_st = {"funds": {}, "end": "2025-12-31", "active_per_day": {0: 1}, "agent_arms": {},
                    "signal_audit": list(st["signal_audit"])}
         run_cfg = {"modality_level": "run"}
@@ -1145,6 +1425,42 @@ def self_test() -> int:
         chk("h_run_level_marked_skipped_with_reason",
             c_fee["h_arm_balance"].get("skipped") is True
             and "not applicable" in str(c_fee["h_arm_balance"].get("reason", "")))
+        # INV-FIX defect 2: (b) seeds holdings from the agent rows' opening `hold`; the clean
+        # log redeems 20 of 50 opening units (partial, still held) and the bad log adds a
+        # redemption of a fund the agent never held, which must be caught with the offender.
+        a_hold = _mk_agent(0.0)
+        a_hold.hold, a_hold.cost, a_hold.w0 = {"000001": 50.0}, {"000001": 2.0}, 100.0
+        b_rows = [r for r in clean if r.get("ev") == "act"]
+        bok_p, bbad_p = tdp / "b_clean.jsonl", tdp / "b_bad.jsonl"
+        write_jsonl_atomic(bok_p, b_rows)
+        write_jsonl_atomic(bbad_p, b_rows + [{"ev": "act", "t": 1, "d": "2025-10-02", "i": 7, "p": "00001",
+                                              "kind": "redeem", "fund": "000002", "amt": 20.0,
+                                              "units": 10.0, "nav": 2.0}])
+        st_b = dict(base_st, agents=[a_hold])
+        cb1, _ = check_invariants(st_b, bok_p, {"modality_level": "run"})
+        cb2, _ = check_invariants(st_b, bbad_p, {"modality_level": "run"})
+        chk("invariant_b_opening_and_partial_redemptions_clean",
+            cb1["b_nonholder_never_redeems"]["pass"] is True
+            and cb1["b_nonholder_never_redeems"]["violations"] == 0
+            and cb1["b_nonholder_never_redeems"]["redeem_rows"] == 1)
+        # FIX3 Defect 3 pin: two successive PARTIAL redemptions of an opening position
+        # that never reaches zero units must not flag (the null-policy t=3/t=4 case).
+        b2_rows = b_rows + [{"ev": "act", "t": 1, "d": "2025-10-02", "i": 7, "p": "00001",
+                             "kind": "redeem", "fund": "000001", "amt": 30.0,
+                             "units": 15.0, "nav": 2.0}]
+        b2p = tdp / "b_two_partial.jsonl"
+        write_jsonl_atomic(b2p, b2_rows)
+        cb3, _ = check_invariants(st_b, b2p, {"modality_level": "run"})
+        chk("invariant_b_two_partial_redemptions_clean",
+            cb3["b_nonholder_never_redeems"]["pass"] is True
+            and cb3["b_nonholder_never_redeems"]["violations"] == 0
+            and cb3["b_nonholder_never_redeems"]["redeem_rows"] == 2)
+        chk("invariant_b_flags_nonholder_redeem_with_offender",
+            cb2["b_nonholder_never_redeems"]["pass"] is False
+            and cb2["b_nonholder_never_redeems"]["violations"] == 1
+            and cb2["b_nonholder_never_redeems"]["first_violation"] == {"i": 7, "fund": "000002",
+                                                                        "units_held": 0.0,
+                                                                        "units_redeemed": 10.0})
         # A2: exposure-level (h) per-agent share check
         def _imp_rows(n_t, n_tv):
             rows = []

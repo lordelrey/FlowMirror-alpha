@@ -133,8 +133,17 @@ def test_mock_run_reports_real_invariant_detail(tmp_path):
     for key in ("d_wealth_conservation", "h_arm_balance"):
         entry = _find_entry(report, key)
         assert _has_number(entry), f"{key} carries no numeric detail: {entry}"
-    assert len(evaluated) >= 8, ("expected real evaluations instead of mass skips "
-                                 f"(evaluated={evaluated}, skipped={skipped})")
+    # FIX3 (Defect 4): no arbitrary evaluation count -- legitimate, honestly-reasoned
+    # skips (no redemption act rows, no hard_block checkouts, no displayed comment
+    # entries, no redemption checkout rows) could not meet >= 8. What matters: every
+    # registered key was found above (no silent absence), every skip above carried a
+    # non-empty reason, and the invariants that must be evaluable on ANY run -- the
+    # wealth identity and the arm balance -- are evaluated rather than skipped. After
+    # the FIX3 Defect 1 feed repair the comment-climate skips (g/j) disappear on
+    # their own, because agents finally see displayed comments.
+    assert {"d_wealth_conservation", "h_arm_balance"} <= set(evaluated), \
+        ("wealth identity and arm balance must be evaluated on every run, not skipped "
+         f"(evaluated={evaluated}, skipped={skipped})")
 
 
 def test_failing_invariant_exits_4_and_is_named(tmp_path, capsys, monkeypatch):

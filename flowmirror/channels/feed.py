@@ -143,6 +143,21 @@ def hot_score(likes, saves, comments, age_days, gamma=1.8):
     return math.log10(weighted) / ((age + 1.0) ** gamma)
 
 
+def _cmt_field(c, primary, alias, default=None):
+    """Resolve a comment field across the two record shapes in circulation.
+
+    The engine's day record (loop.py) stores comments under short keys
+    (i, p, fam, ...), while this channel's own fixtures and older tests use
+    the long names (agent_id, post_id, fam_level). FIX3 Defect 1: the channel
+    read only the long names, so every real comment was invisible and every
+    climate came back no_signal. Read `primary` first, then `alias`; return
+    `default` when neither key carries a value."""
+    v = c.get(primary)
+    if v is None:
+        v = c.get(alias)
+    return default if v is None else v
+
+
 def climate_for(post_id, comments_prev, min_n=4, weights=None):
     """Aggregate day-(t-1) comment stances for one post into a climate label.
 
@@ -163,7 +178,7 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None):
     """
     counts = {"bullish": 0, "bearish": 0, "watching": 0}
     for c in comments_prev or []:
-        if c.get("post_id") != post_id:
+        if _cmt_field(c, "post_id", "p") != post_id:
             continue
         stance = c.get("stance")
         if stance in counts:  # no_comment rows never appear here, but stay defensive
@@ -172,7 +187,7 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None):
             else:
                 # Unknown commenters count at 1.0 so a missing agent_id
                 # cannot silently zero out a thread's climate.
-                counts[stance] += float(weights.get(c.get("agent_id"), 1.0))
+                counts[stance] += float(weights.get(_cmt_field(c, "agent_id", "i"), 1.0))
     total = counts["bullish"] + counts["bearish"] + counts["watching"]
     if total < min_n:
         return ("no_signal", counts)
@@ -199,9 +214,44 @@ def top_comments(post_id, comments_prev, k=3, weights=None):
     the engine before calling this function, so weights never alters the
     ranking here.
     """
-    pool = [c for c in comments_prev or [] if c.get("post_id") == post_id]
-    pool.sort(key=lambda c: (-int(c.get("fam_level") or 0), str(c.get("agent_id") or "")))
+    pool = [c for c in comments_prev or [] if _cmt_field(c, "post_id", "p") == post_id]
+    pool.sort(key=lambda c: (-int(_cmt_field(c, "fam_level", "fam") or 0),
+                             str(_cmt_field(c, "agent_id", "i") or "")))
     return pool[: max(0, k)]
+
+
+if __name__ == "__main__":       # FIX3 Defect 1 regression check -- runs under python -m
+    # The shipped self-test only ever fed this channel its own idealised shape
+    # (post_id/agent_id/fam_level), which is exactly how three key-name
+    # mismatches against the ENGINE record survived. Exercise the engine's
+    # real record shape too: {i, p, stance, text, w, fam, fam_phrase}.
+    _cmts = [
+        {"i": "inv_001", "p": "P1", "stance": "bullish", "text": "b1", "w": 1.0,
+         "fam": 2, "fam_phrase": "often"},
+        {"i": "inv_002", "p": "P1", "stance": "watching", "text": "w1", "w": 1.0,
+         "fam": 0, "fam_phrase": ""},
+        {"i": "inv_003", "p": "P1", "stance": "bullish", "text": "b2", "w": 1.0,
+         "fam": 1, "fam_phrase": "rare"},
+        {"i": "inv_004", "p": "P1", "stance": "bullish", "text": "b3", "w": 1.0,
+         "fam": 3, "fam_phrase": "often"},
+        {"i": "inv_005", "p": "P1", "stance": "bullish", "text": "b4", "w": 1.0,
+         "fam": 2, "fam_phrase": "often"},
+        {"i": "inv_009", "p": "P2", "stance": "bearish", "text": "x", "w": 1.0,
+         "fam": 4, "fam_phrase": "often"},
+    ]
+    _lbl, _cnt = climate_for("P1", _cmts)
+    _wlbl, _wcnt = climate_for("P1", _cmts, weights={"inv_001": 2.0})
+    _top = top_comments("P1", _cmts, k=3)
+    _order = [c["i"] for c in _top]
+    _ok = (_lbl == "bullish_majority"
+           and _cnt == {"bullish": 4, "bearish": 0, "watching": 1}
+           and _wlbl == "bullish_majority" and _wcnt["bullish"] == 5.0
+           and _order == ["inv_004", "inv_001", "inv_005"])
+    print(f"[feed] engine-record-shape self-test: {'PASS' if _ok else 'FAIL'} "
+          f"(label={_lbl}, counts={_cnt}, weighted_counts={_wcnt}, top_order={_order})")
+    if not _ok:
+        raise SystemExit("feed self-test: climate_for/top_comments cannot read the "
+                         "engine comment record shape (keys i/p/fam)")
 
 
 def _check_arms(arms):

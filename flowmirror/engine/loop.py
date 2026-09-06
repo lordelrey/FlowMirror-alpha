@@ -740,6 +740,10 @@ def run_simulation(cfg, rt=None):
     W = load_world(cfg)
     rng_platform = random.Random(cfg["seed"])
     invs = sorted(init_investors(W, cfg), key=lambda x: x.id)
+    hold0 = {inv.id: dict(inv.hold or {}) for inv in invs}   # FIX4: each agent's OPENING
+    # holdings, snapshotted before any day runs (inv.hold mutates in place during the run, so
+    # this is a copy, never the live dict). The run-bundle exporter reuses this exact key and
+    # {agent_id: {fund_code: units}} shape.
     for inv in invs:        # fees slot ships with the A2 world card; stay runnable without it
         if not hasattr(inv, "fees"):
             try:
@@ -804,7 +808,7 @@ def run_simulation(cfg, rt=None):
         if dump_target is not None and not dump_done:
             print("prompt dump: no prompt matched the requested agent/day; nothing written")
         elog.close()
-        state = {"agents": invs, "funds": W.funds, "end": last_d.isoformat(),
+        state = {"agents": invs, "hold0": hold0, "funds": W.funds, "end": last_d.isoformat(),
                  "signal_audit": signal_audit, "agent_arms": {i.id: i.arm for i in invs},
                  "active_per_day": dict(active_per_day), "flows": flows,
                  "snapshots": snapshots, "checkout_oc": dict(checkout_oc),
@@ -870,7 +874,7 @@ def run_simulation(cfg, rt=None):
             qdii_blk = _qdii_blocked_set(cfg, dstr)
             navday = {c: f.nav_at(dt_cur) for c, f in sorted(FUNDS.items())
                       if f.active_from <= dt_cur and f.nav_at(dt_cur) is not None}
-            wk_prev = _week_key(dt_cur - ONE_DAY)   # lagged signal week (t=0 -> pre-window day)
+            wk_prev = _week_key(dt_cur - ONE_DAY * (dt_cur.weekday() + 1))   # FIX3 Defect 2: lagged signal week = the ISO week that ENDED strictly before day t (anchor: the Sunday closing the week before dt_cur's own week), never the week containing dt_cur. Feeds both guba_seed_label call sites; matches world._expected_guba_week exactly.
             for inv in invs:                       # (1) clock: P&L refresh, attention decay
                 for code in sorted(inv.hold):
                     nav, cst = navday.get(code), inv.cost.get(code, 0.0)
