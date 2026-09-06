@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/run.schema.json",
   "title": "FlowMirror run configuration (M0+)",
-  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from). CLI-only runtime switches are deliberately NOT schema keys: --dump-prompt travels in the engine's separate runtime-options object (flowmirror.engine.loop.RuntimeOpts, card R2D) and never through this validated config, so a literal 'dump_prompt' key handwritten into a run config is rejected on purpose (additionalProperties: false).",
+  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), images_root and image_pick (optional image keys, Card IMG: images_root is a machine-local directory holding the pre-resized creative images, one file per image_id, verified against the pool's image_sha256 before any pixel is attached -- null (default) means text-only and the TV arm degrades to text; image_pick selects which of a note's own images the TV arm shows, first|random), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from). CLI-only runtime switches are deliberately NOT schema keys: --dump-prompt travels in the engine's separate runtime-options object (flowmirror.engine.loop.RuntimeOpts, card R2D) and never through this validated config, so a literal 'dump_prompt' key handwritten into a run config is rejected on purpose (additionalProperties: false).",
   "type": "object",
   "properties": {
     "run_tag": {
@@ -252,6 +252,24 @@
         "TC",
         "TV"
       ]
+    },
+    "images_root": {
+      "description": "Optional (Card IMG, default null). Directory holding the pre-resized creative images, one file per image_id from the content pool (flat, 0-based). The engine joins <images_root>/<image_id> and verifies the file's sha256 against the pool's image_sha256 before attaching pixels on the TV arm; a missing file or hash mismatch attaches nothing and records an image_missing / image_sha_mismatch prompt note. null means text-only: the engine prints a WARNING at run start, TV degrades to text (byte-identical to T), and the m_tv_arm_carries_images invariant is skipped with that reason. The pool deliberately ships no image paths; images never enter the repo, so this must point OUTSIDE the repository. The only sanctioned absolute path in a tracked config is the machine-local example in runs/demo_three_arm_images.json.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "default": null
+    },
+    "image_pick": {
+      "description": "Optional (Card IMG, default \"first\"). Which of a note's OWN images is displayed on the TV arm: \"first\" = the note's first image (the intended original behaviour); \"random\" = one of the note's own images drawn per impression from the agent's deterministic RNG stream (stable under --replay-check). Both hold the text, the landing fund and the institution constant, so \"random\" is a clean within-stimulus randomisation for later image-property work. The chosen index is logged as img_idx on the imp row.",
+      "type": "string",
+      "enum": [
+        "first",
+        "random"
+      ],
+      "default": "first"
     },
     "fees": {
       "description": "Subscription/redemption fee rates in [0, 0.1].",

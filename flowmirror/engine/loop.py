@@ -9,8 +9,10 @@ world:   init_investors(W, cfg) -> [Inv]; publish_day(W, cfg, t, recent,
          rng_platform, log=EventLog) -> [{post_id, org, intent, intent_group,
          note, code, img, t_pub}] (it emits the "post" rows itself);
          guba_seed_label(W, code, week) -> label|None; check_invariants(state,
-         events_path, cfg); write_reports(out_dir, state, cfg, W, checks,
-         counters, elapsed); quarter_of(date) -> str; event_log_sha(path).
+         events_path, cfg) -> (checks, core) (card R2F: the loop must UNPACK the
+         tuple; core is the run's invariant decision); write_reports(out_dir,
+         state, cfg, W, checks, counters, elapsed); quarter_of(date) -> str;
+         event_log_sha(path).
 runtime: decide(agent_view, feed_cards, cfg, cache, governor, llm, shown) and
          reflect(agent_view, cfg, cache, governor, llm); records carry parsed,
          violations, parser_status, prompt_sha, raw_sha256, image_shas,
@@ -64,6 +66,15 @@ E1:     --dump-prompt <agent_id>@<day> | first writes
          live branch of _make_llm forwards the caller's model kwarg and only
          falls back to cfg["llm"]["model"] (decide passes the vision model,
          reflect the text model); tests/unit/test_live_path.py pins that.
+R2F:    check_invariants returns (checks, core) and _finish UNPACKS it (a
+         malformed return raises TypeError -- never a silent pass); the run's
+         invariant decision is core AND-ed with the engine-side extra checks,
+         each failing invariant key is printed with its detail, and an
+         invariant failure exits 4 (2 = cap stop, 3 = decision_failure_halt /
+         --replay-check mismatch keep their codes).  The old >=300-agent
+         recheck that wrote arm balance under the bogus key "e_arm_balance"
+         is gone: arm balance is registry key h_arm_balance, which
+         check_invariants already evaluates for every cohort size.
 """
 from __future__ import annotations
 
@@ -88,8 +99,8 @@ from flowmirror.agents.null_policy import NullPolicyLLM
 from flowmirror.agents.prompt import build_decision_messages
 from flowmirror.agents.runtime import (BudgetGovernor, CapStop, LLMCache, MockLLM,
                                        call_glm, decide, reflect, run_parallel)
-from flowmirror.channels.feed import (assign_arms, check_arm_balance, climate_for,
-                                      hot_score, rank_feed, top_comments)
+from flowmirror.channels.feed import (assign_arms, climate_for, hot_score,
+                                      rank_feed, top_comments)
 from flowmirror.config.loader import deep_merge, load_config, resolve_paths
 from flowmirror.config.validate import ConfigError, validate
 from flowmirror.engine.world import (DEFAULT_CONFIG, EventLog, check_invariants,
@@ -465,6 +476,27 @@ def _last_meta(out_dir):
         return {}
 
 
+def _report_entry(report, key):
+    """Depth-first lookup of `key` in a parsed invariants_report.json (card R2F).
+
+    Tolerant of the nesting write_reports chooses -- flat mapping, nested under
+    an "invariants" key, or a list of {key/name: ...} rows -- so callers (the
+    self-test, tests/unit/test_invariant_wiring.py) do not pin its layout."""
+    stack = [report]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            hit = cur.get(key)
+            if isinstance(hit, dict):
+                return hit
+            if cur.get("key") == key or cur.get("name") == key:
+                return cur
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
 def _adapt_record(rec, shown, inv):
     """Map the parser's decision JSON (flowmirror.agents.prompt schema) onto the flat fields
     apply_decision reads: likes/saves (pids), follows (orgs), aff {org: delta}, comments [{p,stance,text}],
@@ -681,7 +713,10 @@ def apply_decision(inv, rec, shown, day, fees=None):
 
 
 def run_simulation(cfg, rt=None):
-    """One simulation pass; returns 0 ok, 2 cap_stopped, 3 halt / invariant failure.
+    """One simulation pass; returns 0 ok, 2 cap_stopped, 3 decision_failure_halt,
+    4 invariant failure (card R2F-loop: the run's invariant decision -- world
+    check_invariants' core flag AND-ed with any engine-side extra check -- came
+    out false; a --replay-check mismatch at the main() level stays 3).
 
     rt carries CLI-only runtime switches (RuntimeOpts, card R2D) that must NOT
     be laundered through cfg: cfg is re-validated against run.schema.json
@@ -774,21 +809,56 @@ def run_simulation(cfg, rt=None):
                  "active_per_day": dict(active_per_day), "flows": flows,
                  "snapshots": snapshots, "checkout_oc": dict(checkout_oc),
                  "checkout_oc_cf": dict(checkout_oc_cf)}
-        checks = check_invariants(state, os.path.join(out_dir, "event_log.jsonl"), cfg)
-        if not isinstance(checks, dict):
-            checks = {"core": {"pass": bool(checks)}}
+        # Card R2F-loop: check_invariants returns (checks, core). The old code
+        # asked isinstance(checks, dict) -- always False for that 2-tuple -- and
+        # fell into {"core": {"pass": bool(<tuple>)}}; bool() of a non-empty
+        # tuple is always True, so every per-invariant result was discarded
+        # before write_reports and the console printed PASS no matter what.
+        # Unpack, guard the contract hard, never coerce a malformed result
+        # into a pass.
+        raw = check_invariants(state, os.path.join(out_dir, "event_log.jsonl"), cfg)
+        if not (isinstance(raw, tuple) and len(raw) == 2
+                and isinstance(raw[0], dict) and isinstance(raw[1], bool)):
+            raise TypeError(
+                "check_invariants(state, events_path, cfg) must return "
+                "(checks: dict, core: bool); got " + type(raw).__name__
+                + (f" of length {len(raw)}" if isinstance(raw, tuple) else ""))
+        checks, core = raw
         checks = {str(k): (v if isinstance(v, dict) else {"pass": bool(v)})
                   for k, v in checks.items()}
-        if len(invs) >= 300:
-            ok, rep = check_arm_balance({i.id: i.arm for i in invs},
-                                        {i.id: i.cell for i in invs})
-            checks["e_arm_balance"] = {"pass": bool(ok), "report": _jsonable(rep)}
-        for k, v in (extra_checks or {}).items():
-            checks[k] = v
+        extras = {str(k): (v if isinstance(v, dict) else {"pass": bool(v)})
+                  for k, v in (extra_checks or {}).items()}
+        checks.update(extras)
+        # The run's invariant decision: the world's core flag AND-ed with the
+        # engine-side extra checks merged above (decision_failure_halt,
+        # cap_stop, a_midday_signal_mutation). Skipped registry entries carry
+        # no "pass" key and count as neither pass nor failure. (The stale
+        # >=300-agent arm-balance recheck under the bogus key "e_arm_balance"
+        # is gone: h_arm_balance is the registry key and world.check_invariants
+        # already evaluates it for every cohort size.)
+        ok = bool(core) and all(bool(v.get("pass", True)) for v in extras.values())
         elapsed = time.time() - t0
         write_reports(out_dir, state, cfg, W, checks, {k: S[k] for k in sorted(S)}, elapsed)
-        _print_summary(cfg, dict(S), checks, days, elapsed, checkout_oc, checkout_oc_cf)
-        return rc if rc else (0 if all(v.get("pass", True) for v in checks.values()) else 3)
+        _print_summary(cfg, dict(S), checks, days, elapsed, checkout_oc, checkout_oc_cf, ok)
+        fails = [k for k, v in sorted(checks.items()) if not v.get("pass", True)]
+        if rc:
+            # Existing failure kinds keep their own exit codes and printed
+            # labels so they stay distinguishable from invariant failures:
+            # 2 = budget cap stop, 3 = decision_failure_halt (engine halts,
+            # reported through the same checks path but never as code 4).
+            label = {2: "budget cap stop (cap_stop check above)",
+                     3: "decision_failure_halt (engine halt; NOT an invariant "
+                        "failure)"}.get(rc, "halt")
+            print(f"engine exit code {rc}: {label}; invariant failures exit 4")
+            return rc
+        if ok:
+            return 0
+        # Fail loudly (card R2F-loop item 3): every failing invariant key was
+        # already printed with its detail by _print_summary; the run exits 4,
+        # distinct from --replay-check mismatches (3, main() level).
+        print("engine exit code 4: invariant failure"
+              + ("s: " if len(fails) != 1 else ": ") + ", ".join(fails))
+        return 4
 
     snapshot("init", last_d.isoformat())
     t = -1
@@ -1029,7 +1099,21 @@ def run_simulation(cfg, rt=None):
         elog.close()
 
 
-def _print_summary(cfg, counters, checks, days, elapsed, checkout_oc, checkout_oc_cf):
+def _check_detail_line(key, check):
+    """One ASCII console line carrying a failing check's full detail (card
+    R2F-loop item 3: the printed summary must show WHY each invariant failed,
+    not just that the run failed)."""
+    try:
+        body = json.dumps(_jsonable(check), ensure_ascii=True, sort_keys=True)
+    except (TypeError, ValueError):
+        body = str(check)
+    if len(body) > 400:
+        body = body[:397] + "..."
+    return f"invariant FAIL {key}: {body}"
+
+
+def _print_summary(cfg, counters, checks, days, elapsed, checkout_oc, checkout_oc_cf,
+                   ok=None):
     n = max(int(counters.get("decisions", 0)), 1)
     print("=== flowmirror.engine.loop summary ===")
     print(f"run_tag={cfg.get('run_tag')} days={days} agents={cfg.get('n_agents')} "
@@ -1041,8 +1125,23 @@ def _print_summary(cfg, counters, checks, days, elapsed, checkout_oc, checkout_o
     print(f"fees_cny={round(float(counters.get('fees_cny', 0.0) or 0.0), 2)} "
           f"factor_switches={counters.get('factor_switches', 0)} "
           f"elapsed_s={round(elapsed, 1)}")
-    fails = [k for k, v in sorted(checks.items()) if not v.get("pass", True)]
-    print("invariants=PASS" if not fails else "invariants=FAIL(" + ",".join(fails) + ")")
+    # Card R2F-loop: `ok` is the run's invariant decision handed in by _finish
+    # (world core AND-ed with the extra checks); bool(<opaque tuple>) is gone.
+    # A skipped entry ({"skipped": True, "reason": ...}) has no "pass" key, so
+    # it is neither a pass nor a failure here.
+    if ok is None:                    # legacy callers: derive from the checks themselves
+        ok = all(v.get("pass", True) for v in checks.values())
+    fails = [(k, v) for k, v in sorted(checks.items()) if not v.get("pass", True)]
+    if ok and not fails:
+        print("invariants=PASS")
+        return
+    print("invariants=FAIL(" + ",".join(k for k, _ in fails) + ")")
+    for k, v in fails:                # every failing invariant key, each with its detail
+        print(_check_detail_line(k, v))
+    if not fails:                     # core=False while no entry failed: say so explicitly
+        print(_check_detail_line("core", {"core": False,
+                                          "note": "core=False but no individual check "
+                                                  "entry is failing"}))
 
 
 def _load_cfg(path):
@@ -1243,13 +1342,30 @@ def _self_test():
         print("SKIP: no runs/mock_10x3.json under FLOWMIRROR_DATA_ROOT/FLOWMIRROR_RESEARCH_ROOT")
         return 0 if ok else 1
     cfg = _load_cfg(cfg_path)
-    cfg.update({"mock_llm": True, "n_agents": 8, "out_dir": tempfile.mkdtemp(prefix="fm_loop_st_")})
-    cfg["window"]["max_trading_days"] = 2
+    # Card R2F-loop: the engine now honors REAL invariant outcomes, so the
+    # end-to-end fixture mirrors the acceptance run's shape (mock_10x3.json,
+    # 40 agents x 5 days) -- cohort-scale-sensitive checks like cell exposure
+    # are only guaranteed at the sizes the acceptance card validates.
+    cfg.update({"mock_llm": True, "n_agents": 40,
+                "out_dir": tempfile.mkdtemp(prefix="fm_loop_st_")})
+    cfg["window"]["max_trading_days"] = 5
     logp = os.path.join(cfg["out_dir"], "event_log.jsonl")
     rc = run_simulation(cfg)
     chk("mock_end_to_end_rc0", rc == 0)
     if rc != 0:
         return 1
+    # Card R2F-loop: the report must carry real per-invariant results -- the
+    # discarded (checks, core) tuple used to leave every registered invariant
+    # as "skipped: not evaluated" plus one bogus "core: pass".
+    with open(os.path.join(cfg["out_dir"], "invariants_report.json"),
+              encoding="utf-8") as fh:
+        inv_rep = json.load(fh)
+    ent_d = _report_entry(inv_rep, "d_wealth_conservation")
+    ent_h = _report_entry(inv_rep, "h_arm_balance")
+    chk("invariants_report_has_real_wealth_and_arm_balance_entries",
+        ent_d is not None and ent_h is not None
+        and not ent_d.get("skipped") and not ent_h.get("skipped")
+        and bool(ent_d.get("pass")) and bool(ent_h.get("pass")))
     rows = list(iter_jsonl(logp))
     evs = {row.get("ev") for row in rows}
     chk("required_event_kinds", {"post", "imp", "dec", "clim"} <= evs)
@@ -1267,9 +1383,9 @@ def _self_test():
     # object), never in cfgd -- the run schema rejects a literal dump_prompt
     # key, which is exactly what made the flag unreachable before.
     cfgd = _load_cfg(cfg_path)
-    cfgd.update({"mock_llm": True, "n_agents": 8,
+    cfgd.update({"mock_llm": True, "n_agents": 40,
                  "out_dir": tempfile.mkdtemp(prefix="fm_loop_dmp_")})
-    cfgd["window"]["max_trading_days"] = 2
+    cfgd["window"]["max_trading_days"] = 5
     rcd = run_simulation(cfgd, RuntimeOpts(dump_prompt="first"))
     pdir = os.path.join(cfgd["out_dir"], "prompts")
     txts = sorted(f for f in os.listdir(pdir) if f.endswith(".txt")) \
@@ -1305,9 +1421,10 @@ def _self_test():
         except ConfigError:
             print("SKIP: mock_10x3_3arm.json not accepted by the active schema yet")
         if cfg3 is not None:
-            cfg3.update({"mock_llm": True, "n_agents": 8,
+            # R2F: acceptance shape for the 3-arm config (60 agents x 5 days).
+            cfg3.update({"mock_llm": True, "n_agents": 60,
                          "out_dir": tempfile.mkdtemp(prefix="fm_loop_st3_")})
-            cfg3["window"]["max_trading_days"] = 2
+            cfg3["window"]["max_trading_days"] = 5
             try:
                 rc3 = run_simulation(cfg3)
             except (ConfigError, SystemExit) as exc:

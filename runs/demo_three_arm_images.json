@@ -1,0 +1,84 @@
+{
+  "_what": "DEMO (needs the LOCAL image store -- deliberately NOT part of the offline demo set; flowmirror demo never runs it): runs/demo_three_arm.json plus images_root/image_pick, proving the three arms genuinely differ. The TV arm resolves <images_root>/<image_id> and attaches the file only after its sha256 matches the pool's image_sha256 (missing file -> image_missing note, hash mismatch -> image_sha_mismatch note; both degrade that impression to text); T stays pure text, TC stays OCR + frozen caption with no pixels; TV impressions log img_idx on the imp row. images_root below is the one sanctioned machine-local absolute path in a tracked run config: it points at the pre-resized image store inside the sibling fundmarket-sim checkout (sim/content_pool_v1/images -- flat, 0-based, 801 files; every pool image_id resolves there with an exact sha256 match, all 801 verified). Edit it to wherever that store lives on your machine; never copy images into this repo. Synthetic NAVs as in runs/demo_three_arm.json -- demonstration only, never for empirical claims. Example: python -m flowmirror.engine.loop runs/demo_three_arm_images.json --mock --days 5 --agents 60 --out runs/out/imgs --replay-check",
+  "run_tag": "demo_three_arm_images",
+  "seed": 2027,
+  "mock_llm": true,
+  "window": {
+    "start": "2025-10-01",
+    "end": "2025-12-31",
+    "max_trading_days": 3
+  },
+  "n_agents": 10,
+  "agents_file": "data/population/agents_seed2027.json",
+  "orgs": [
+    "广发基金",
+    "鹏华基金",
+    "国联基金",
+    "汇添富基金"
+  ],
+  "content_pool": "data/creatives/cn/content_pool_v1_masked.jsonl",
+  "images_root": "D:/Desktop/ABM paper/fundmarket-sim/sim/content_pool_v1/images",
+  "image_pick": "first",
+  "posts_per_org_per_day": 2,
+  "no_repeat_days": 10,
+  "nav_cache": "data/funds/nav_demo_2025q4.json",
+  "guba_signal": "data/attention/guba_signal_v1.json",
+  "suitability": true,
+  "strategy_mix": "measured",
+  "ranking": "three_source",
+  "arm_level": "agent",
+  "modality_level": "agent",
+  "modality_arms": [
+    "T",
+    "TC",
+    "TV"
+  ],
+  "fees": {
+    "subscribe_rate": 0.0012,
+    "redeem_rate": 0.005
+  },
+  "p_image": 0.5,
+  "climate_weighting": true,
+  "memory": true,
+  "social": true,
+  "channels": {
+    "feed": true,
+    "experience": true,
+    "trend": false,
+    "social": true,
+    "news": true,
+    "direct": false
+  },
+  "feed": {
+    "K": 6,
+    "slots": {
+      "follow": 2,
+      "fit": 2,
+      "trending": 2
+    },
+    "w_trust": 1.0,
+    "w_fit": 1.0,
+    "w_heat": 1.0,
+    "w_soc": 0.5,
+    "eps": 0.05,
+    "gamma": 1.8
+  },
+  "p_active": 1.0,
+  "memory_days": 5,
+  "reflection_every_days": 5,
+  "llm": {
+    "model": "glm-4.6v",
+    "text_model": "glm-4.6v",
+    "workers": 4,
+    "max_attempts": 3,
+    "decision_failure_halt": 0.02,
+    "cache": "runs/out/demo_three_arm_images/llm_cache.jsonl",
+    "max_tokens_start": 6144
+  },
+  "mock_options": {
+    "force_c2_r4_click": true,
+    "malformed_rate": 0.05
+  },
+  "out_dir": "runs/out/demo_three_arm_images",
+  "fund_meta_file": "data/flows/flow_panel_v2.json"
+}

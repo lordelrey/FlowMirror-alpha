@@ -33,6 +33,24 @@ modality_arms:
   - "T"
   - "TV"
 modality_run_arm: "TV"
+# Card IMG (config surface): TV-arm image resolution. images_root points at
+# the LOCAL store of pre-resized creatives (one file per image_id, flat,
+# 0-based); null (default) means text-only -- the engine prints a WARNING at
+# run start, the TV arm degrades to text (byte-identical to T), and the
+# m_tv_arm_carries_images invariant is skipped with that reason. Files are
+# sha256-verified against the pool's image_sha256 before any pixel is
+# attached. Images are never copied into the repo and this must never point
+# inside it; the only tracked absolute path is the machine-local example in
+# runs/demo_three_arm_images.json.
+images_root: null
+# Which of a note's OWN images the TV arm shows: "first" (the note's first
+# image; the intended original behaviour) or "random" (one of the note's own
+# images drawn per impression from the agent's deterministic RNG stream, so
+# the same agent-day-post picks the same image on replay). Both hold the
+# text, the landing fund and the institution constant, which makes "random" a
+# clean within-stimulus randomisation for later image-property work. The
+# chosen index is logged as img_idx on the imp row.
+image_pick: "first"
 fees:
   subscribe_rate: 0.0
   redeem_rate: 0.0
