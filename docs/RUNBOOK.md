@@ -412,3 +412,48 @@ diagnosis, not a new gate; changing the gate would be a pre-registration
 change. The identity `transport + model == decision_failures` holds on every
 run. If a halt fires with `transport` equal to the whole count, fix the
 credential or the rate limit; the model was never the problem.
+
+## 14. The replay viewer
+
+The repository now ships a replay interface: native ES modules under `web/`, with no
+build step, no framework, and no CDN. It routes across seven pages via the URL hash.
+The contract lives in `docs/WEB_CONTRACT_2026-09-07.md` — read it before changing
+anything about the interface. The acceptance record lives in
+`docs/WEB_ACCEPTANCE_2026-09-08.md`.
+
+### Three ways to open it
+
+| Mode | Command | What you get |
+|---|---|---|
+| Local mini-server | `python web/server.py [--port 8765] [--images-root <local image store>]` | Everything. Binds 127.0.0.1 only. Lists the runs under `runs/out/`; can launch a run from the page and stream engine stdout; with `--images-root` it serves real images (sha256 re-computed and compared on every request) |
+| Any static server | `python -m http.server 8765 --bind 127.0.0.1`, then open `http://127.0.0.1:8765/web/?run=<tag>` | All read-only pages work; the run-launch controls are disabled and the equivalent command is shown |
+| GitHub Pages | — | The repository distributes exactly one sample bundle, `web/samples/demo_three_arm/`, so the page shows a real run even without `?run=` (three arms T/TC/TV, 42 investors × 12 trading days, synthetic equity, institution names anonymized) |
+
+### The seven pages, one sentence each
+
+| Page | Sentence |
+|---|---|
+| Home | What this instrument is, what the three modality arms are, and the checkout vocabulary |
+| Configure & run | Launch a run, five-step ladder plus raw engine stdout; fully disabled with the equivalent command shown when no local server is present |
+| Replay | The population field (age on the horizontal axis, assets on the vertical, three risk-tolerance bands per cell), the day's posts, an inspector panel, transport controls, a diffusion heatmap, and the suitability checkout table. Space toggles play/pause; left/right arrows step |
+| Investor | A day-by-day timeline of one investor across the whole run: decisions, commentary, trades, checkouts, familiarity changes |
+| Modality comparison | The same post as it appeared under each arm that actually occurred in this run. Two arms means two columns; no empty slots |
+| Audit | Invariants one by one, the honesty panel (data scale, synthetic equity, mock/live, agent policy, image counts, input hashes), and every notice raised during load |
+| Data & scenarios | The list of runs that can be opened, and which files assemble this sandbox |
+
+### Four things to know
+
+1. **`export-bundle` comes before the viewer**: to see per-arm card copy, opening
+   positions, or day-by-day agent records, run
+   `python -m flowmirror.analysis.export_bundle runs/out/<tag>` beforehand. Runs
+   without an export bundle still open; the interface states plainly that only raw
+   artifacts are present and card copy is unavailable.
+2. **The "local-only" badge**: appears only when you are on your own machine and the
+   server was started with `--images-root`. Images never enter the repository and
+   never ship with an export bundle; the bundle carries only their sha256.
+3. **The interface never accepts credentials**: credentials are resolved inside the
+   engine (`config/api.yaml` → environment variables → legacy key file); the server
+   answers a single boolean "is one configured", and the browser never touches them.
+4. **One console 404 is guaranteed in static mode**: the page probes whether
+   `/api/runs` exists, and a static server has no such endpoint. That is the probe
+   itself, not an error.

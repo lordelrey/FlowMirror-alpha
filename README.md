@@ -13,6 +13,15 @@ rule-based null simulator ships alongside the LLM agents as a control.
 FlowMirror is a research instrument for studying how distribution shapes retail fund
 flows. It is not a forecast of any real market, and **this pre-alpha contains no results**.
 
+## Try it in a browser
+
+Run `python web/server.py` for the local server, or `python -m http.server 8765 --bind 127.0.0.1`
+and open `http://127.0.0.1:8765/web/?run=<run tag>` for read-only replay of an existing
+run; the GitHub Pages site carries one sample run that ships with the repository. That
+sample's card copy is redacted real public marketing notes with institution names
+anonymized -- it exists to demonstrate the interface and must not be used for any
+analysis or redistribution. See section 14 of `docs/RUNBOOK.md` for the full walkthrough.
+
 ## What is different about it
 
 | | |

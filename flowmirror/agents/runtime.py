@@ -30,8 +30,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 import requests
 import yaml
 
-from flowmirror.agents.prompt import (RETRY_SUFFIX, build_decision_messages,
-                                      build_reflection_messages, extract_decision, parse_reflection)
+from flowmirror.agents.prompt import (REFLECTION_PROMPT_ZH, RETRY_SUFFIX,
+                                      build_decision_messages, build_reflection_messages,
+                                      extract_decision, parse_reflection)
 from flowmirror.io.hashing import rng_seed_from, sha256_text
 
 try:
@@ -663,9 +664,19 @@ def _first_shown_r4(text, codes):
     return sorted(shown)[0] if shown and "R4" in text else None
 
 
+# Reflection prompts are recognized by a verbatim slice of REFLECTION_PROMPT_ZH, the fixed
+# instruction block that build_reflection_messages always ends with. Never sniff for words
+# like "复盘"/"反思"/"reflection": creatives OCR copy contains them (e.g. "理财笔记 复盘7"),
+# and only the TC arm embeds OCR text into decision prompts, so word sniffing silently reroutes
+# TC decisions into reflection JSON (schema:missing:reads) -- a material-dependent, non-random
+# loss that also counts toward decision_failure_halt.
+_REFLECTION_MARKER = REFLECTION_PROMPT_ZH[:40]
+
+
 def _looks_like_reflection(text):
-    head = (text or "")[:512]
-    return "复盘" in (text or "") or "反思" in head or "reflection" in head.lower()
+    if not text:
+        return False
+    return _REFLECTION_MARKER in text
 
 
 class MockLLM:

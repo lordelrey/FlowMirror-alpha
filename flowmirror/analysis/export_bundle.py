@@ -562,6 +562,12 @@ def export_bundle(run_dir, out_dir=None, anonymise_orgs=False, max_bytes=MAX_BYT
         "anonymised_orgs": bool(anonymise_orgs),
         "pseudonyms": sorted(pseudo.values()) if anonymise_orgs else [],
         "redactions": dict(counts),
+        # Bundles get copied around without the repo README, so the redistribution notice has to travel inside the artefact.
+        "redistribution": (
+            "文案为遮蔽后的真实公开营销笔记，机构名已匿名；仅供界面演示，不得用于任何分析或再分发。"
+            if anonymise_orgs
+            else "文案为遮蔽后的真实公开营销笔记，机构名未匿名；仅供界面演示，不得用于任何分析或再分发。"
+        ),
         "fidelity": [
             "card `likes` is the day-(t-1) heat score, which the event log does not carry "
             "(per-post likes are never logged), so every exported card renders it as 0",
