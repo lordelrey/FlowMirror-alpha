@@ -102,6 +102,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from flowmirror.agents.null_policy import NullPolicyLLM
+from flowmirror.agents.prompt import MIME as PROMPT_MIME
 from flowmirror.agents.prompt import build_decision_messages
 from flowmirror.agents.runtime import (BudgetGovernor, CapStop, LLMCache, MockLLM,
                                        call_glm, decide, reflect, run_parallel)
@@ -227,7 +228,19 @@ def _guba_line(W, code, row):
         mult = float(row.get("ratio_vs_baseline"))
     except (TypeError, ValueError):
         mult = 1.0
-    return {"name": _fund_name(W, code), "mult": mult, "bull_ratio": None}
+    # Decision 4: read the field rather than hardcoding None, so the stance-labelling
+    # output (guba_signal_v2.json) becomes visible the day it lands with no code change.
+    # The shipped v1 file carries no bull_ratio -- its own _meta says no stance is
+    # computed there -- so this is None today, and prompt.render_news then omits the
+    # stance clause instead of asserting an unmeasured 5:5 split.
+    try:
+        br = row.get("bull_ratio")
+        br = None if br is None or isinstance(br, bool) else float(br)
+        if br is not None and not 0.0 <= br <= 1.0:
+            br = None                     # out of range is not a ratio
+    except (TypeError, ValueError):
+        br = None
+    return {"name": _fund_name(W, code), "mult": mult, "bull_ratio": br}
 
 
 def _holdings_1d(hold, prev_navdays):
@@ -362,6 +375,13 @@ def _resolve_tv_image(note, images_root, policy, rng):
     path = os.path.join(images_root, ids[idx])
     if not os.path.isfile(path):
         return (None, None, idx, "image_missing")
+    # prompt.build_decision_messages will refuse an extension outside its MIME table and
+    # record image_unsupported instead of attaching. Checking the same table here keeps
+    # run_meta.images.attached meaning "pixels reached the agent" rather than "the file
+    # resolved" -- otherwise the counter the acceptance criteria trust could be non-zero
+    # while every prompt carried no image at all.
+    if os.path.splitext(path)[1].lower() not in PROMPT_MIME:
+        return (None, None, idx, "image_unsupported")
     got = sha256_file(path)
     want = shas[idx] if idx < len(shas) else None
     if want and got.lower() != str(want).strip().lower():
@@ -394,9 +414,9 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
     # what --dump-prompt and the replay check rely on.  image is None for T and TC and
     # for every run without an images_root, and then this block produces exactly the
     # pre-card bytes: no path, no digest, no extra key.
-    image_path = image_sha = None
+    image_path = image_sha = image_status = None
     if arm == "TV" and image is not None:
-        image_path, image_sha = image[0], image[1]
+        image_path, image_sha, image_status = image[0], image[1], image[3]
     card = {"post_id": pid, "org": post.get("org"),
             "title": note.get("title") or note.get("display_title") or "",
             "caption": (note.get("caption_masked") or note.get("caption")
@@ -405,6 +425,11 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
             "arm": arm, "image_path": image_path,
             # the REAL digest of the attached bytes; this used to hash the path string
             "image_sha": image_sha,
+            # contract 2.5 item 4: why a TV impression carried no pixels, so a prompt
+            # dump distinguishes an unsynced store (image_missing) from a corrupted one
+            # (image_sha_mismatch). Absent on success and on the text arms, so a run
+            # that attaches everything is unchanged.
+            **({"image_status": image_status} if image_status else {}),
             "comments_prev": [{"stance": c.get("stance"), "text": c.get("text"),
                                "fam_phrase": c.get("fam_phrase", "")}
                               for c in (top_prev.get(pid) or []) if isinstance(c, dict)],
@@ -419,7 +444,8 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
 
 
 def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba_view,
-                last_trade, declined, prev_navdays=(), index_5d=None):
+                last_trade, declined, prev_navdays=(), index_5d=None,
+                index_label=None):
     """Frozen pre-LLM agent state with exactly the keys prompt.py reads.
 
     prev_navdays is (navday_{t-1}, navday_{t-2}) -- the only extra input holdings_1d
@@ -454,7 +480,8 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             # covers this day; render_news skips an absent key, which is the honest
             # degradation. The value is a RETURN -- the series is a fund NAV proxy for
             # 上证综指, not index points, so its level would be meaningless.
-            **({"index_5d": index_5d} if index_5d is not None else {}),
+            **({"index_5d": index_5d, "index_label": index_label}
+               if index_5d is not None else {}),
             "guba": {c: ln for c, row in sorted(guba_view.items())
                      if (ln := _guba_line(W, c, row)) is not None
                      if c in inv.hold or c in codes},
@@ -488,10 +515,12 @@ def _make_llm(cfg):
         # runs/*.json sets. The old top-level mock_force_c2_r4 / mock_malformed_rate
         # names exist in no schema and no config, so force_c2_r4_click: true has been
         # silently dead and the acceptance runs never reached the suitability-confirmation
-        # branch they claim to cover. Fallbacks are the schema's declared defaults.
+        # branch they claim to cover. The fallbacks equal config/engine_defaults.yaml,
+        # which is what actually supplies them after the merge -- the schema declares no
+        # default for either, and the old 0.05 literal disagreed with the file it cited.
         mock_opts = cfg.get("mock_options") or {}
         return MockLLM(bool(mock_opts.get("force_c2_r4_click", False)),
-                       float(mock_opts.get("malformed_rate", 0.05)))
+                       float(mock_opts.get("malformed_rate", 0.0)))
     llm_cfg = cfg["llm"]
     # E9: temperature and the provider-side retry budget are experiment parameters and
     # belong in the run config, not in runtime.TEMP / runtime.MAX_ATTEMPTS. runtime.call_glm
@@ -990,8 +1019,25 @@ def run_simulation(cfg, rt=None):
     # default (data/market/ is gitignored third-party data), and a configured-but-
     # unreadable path raises rather than silently producing a text-only market line.
     _mkt = cfg.get("market") or {}
-    benchmark = load_benchmark(_mkt.get("benchmark_path"))
+    # Decision 6: a configured benchmark MUST carry its disclosing label, because the
+    # label is what the agent-facing line names. Refusing to run without one is the only
+    # way the disclosure cannot be forgotten; the alternative is a prompt that calls a
+    # fund NAV proxy an index.
+    if _mkt.get("benchmark_path") and not str(_mkt.get("benchmark_label") or "").strip():
+        raise ConfigError(
+            "market.benchmark_path is set without market.benchmark_label: the label is "
+            "rendered into the agent's news line and must disclose the proxy, e.g. "
+            "上证综指ETF（510760）单位净值（上证综指的代理）")
+    # Resolved against the repo root the way world._abs() resolves every sibling
+    # input, so the relative path the RUNBOOK prints works from any working directory.
+    # (Note: _load_cfg calls resolve_paths(cfg, ROOT) and DISCARDS its return -- that
+    # call is dead, which is why this has to be done here rather than upstream.)
+    _bpath = _mkt.get("benchmark_path")
+    if _bpath and not os.path.isabs(_bpath):
+        _bpath = os.path.join(ROOT, _bpath)
+    benchmark = load_benchmark(_bpath)
     benchmark_days = sorted_dates(benchmark)
+    benchmark_label = str(_mkt.get("benchmark_label") or "").strip() or None
     if benchmark:
         print(f"[world] benchmark: {len(benchmark_days)} observations "
               f"{benchmark_days[0]}..{benchmark_days[-1]} "
@@ -1001,7 +1047,8 @@ def run_simulation(cfg, rt=None):
     if images_root:
         _isum = image_pool_summary(W.pool, images_root)
         print(f"[world] images: {_isum.get('resolvable', 0)} resolvable under {images_root}")
-    elif "TV" in modality_arms:
+    elif "TV" in (( (cfg.get("modality_level") or cfg.get("arm_level") or "agent") == "run"
+                    and {cfg.get("modality_run_arm")} ) or set(modality_arms)):
         print("[world] WARNING: no images_root configured -- the TV arm degrades to "
               "text-only; the modality comparison measures nothing.")
     # E6 / decision 10: qdii_blocked reaches the schema this round, which is what makes
@@ -1194,10 +1241,17 @@ def run_simulation(cfg, rt=None):
             # stance label. The label is still the climate seed above (clim.source stays
             # "guba_seed" wherever it fired) -- these are two different consumers of the
             # same week key, so both call sites keep reading wk_prev.
+            # Codes worth a news line: today's candidate posts AND anything anyone
+            # holds. Post codes alone left the channel silent on the real corpus (12 of
+            # 341 funds carry signal, so a post rarely lands on one), while
+            # _agent_view's own filter has always read `c in inv.hold or c in codes`.
             guba_view = {}
-            for post in cand:
-                code = post.get("code")
-                if code and code in guba_codes and code not in guba_view:
+            held_codes = {c for inv in invs for c in inv.hold if c}
+            # a post with no landing fund contributes no code, and None must not reach
+            # sorted() alongside the strings
+            post_codes = {p.get("code") for p in cand if p.get("code")}
+            for code in sorted(post_codes | held_codes):
+                if code in guba_codes and code not in guba_view:
                     row = _guba_row(W, code, wk_prev)
                     if row is not None:
                         guba_view[code] = row
@@ -1213,6 +1267,14 @@ def run_simulation(cfg, rt=None):
                     continue
                 S["active_days"] += 1
                 astate = {"id": inv.id, "persona": persona.get(inv.id), "risk": inv.risk,
+                          # feed.fit() reads risk_latent/core and rank_feed's trust term
+                          # reads trust. Supplying "risk"/"fam"/"flag" instead left fit()
+                          # returning exactly 0.5 for every (agent, post) pair and the
+                          # trust term at 0, so the three-source recommender's MATCH slot
+                          # was not personalised at all -- it degenerated to heat plus
+                          # climate, and stage 2's (-fit, -score) primary key was a no-op.
+                          "risk_latent": inv.risk, "core": getattr(inv, "core", None),
+                          "trust": dict(inv.aff),
                           "cell": inv.cell, "beliefs": inv.beliefs,
                           "follow": sorted(inv.follow), "fam": dict(inv.fam),
                           "flag": dict(inv.flag), "attention": dict(inv.attention),
@@ -1274,7 +1336,7 @@ def run_simulation(cfg, rt=None):
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined,
                                    prev_navdays=(prev_navday, prev2_navday),
-                                   index_5d=idx_5d)
+                                   index_5d=idx_5d, index_label=benchmark_label)
                 jobs.append({"inv": inv, "shown": shown, "cards": cards, "view": view,
                              "llm": _make_llm(cfg)})
             active_per_day[t] = len(jobs)

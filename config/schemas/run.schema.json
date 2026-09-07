@@ -507,6 +507,18 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "fit_band_narrow": {
+          "description": "Optional (E13). feed.fit()'s narrow adjustment: the core-type term (chaser on an I2 post, allocator on a nonI2 post). Default 0.15, which is the literal the function carried before it was configurable.",
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 0.5
+        },
+        "fit_band_wide": {
+          "description": "Optional (E13). feed.fit()'s wide adjustment: the risk-latency term on an I2 post (tolerant up, fragile down). Default 0.25, the pre-existing literal.",
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 0.5
         }
       }
     },

@@ -111,11 +111,21 @@ def test_mock_options_nested_keys_reach_mockllm(tmp_path):
     assert off.force_c2_r4 is False and off.malformed_rate == pytest.approx(0.0)
 
 
-def test_mock_options_absent_falls_back_to_schema_defaults():
-    """A mock config without mock_options keeps run.schema.json's declared defaults."""
+def test_mock_options_absent_falls_back_to_engine_defaults():
+    """A mock config without mock_options falls back to config/engine_defaults.yaml.
+
+    The literal used to be 0.05 and the docstring credited it to run.schema.json, which
+    declares no default for either key -- engine_defaults.yaml does, and it says 0.0. A
+    fallback that disagrees with the file it cites is the same silent-drift class as the
+    original defect, so the two now agree.
+    """
     llm = loop_mod._make_llm({"mock_llm": True})
     assert isinstance(llm, rt.MockLLM)
-    assert llm.force_c2_r4 is False and llm.malformed_rate == pytest.approx(0.05)
+    assert llm.force_c2_r4 is False and llm.malformed_rate == pytest.approx(0.0)
+    from flowmirror.engine.world import DEFAULT_CONFIG
+    assert llm.malformed_rate == pytest.approx(
+        (DEFAULT_CONFIG.get("mock_options") or {}).get("malformed_rate")), \
+        "the bare fallback must equal what the defaults file supplies after the merge"
 
 
 def test_dead_top_level_mock_keys_are_ignored():
@@ -123,7 +133,7 @@ def test_dead_top_level_mock_keys_are_ignored():
     reading them again would resurrect the same silent-drift bug (root cause 1)."""
     llm = loop_mod._make_llm({"mock_llm": True, "mock_force_c2_r4": True,
                               "mock_malformed_rate": 0.9})
-    assert llm.force_c2_r4 is False and llm.malformed_rate == pytest.approx(0.05)
+    assert llm.force_c2_r4 is False and llm.malformed_rate == pytest.approx(0.0)
 
 
 @needs_demo

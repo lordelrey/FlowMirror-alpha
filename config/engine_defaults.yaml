@@ -36,7 +36,8 @@ modality_run_arm: "TV"
 # Card IMG (config surface): TV-arm image resolution. images_root points at
 # the LOCAL store of pre-resized creatives (one file per image_id, flat,
 # 0-based); null (default) means text-only -- the engine prints a WARNING at
-# run start, the TV arm degrades to text (byte-identical to T), and the
+# run start, the TV arm degrades to text -- NOT byte-identical to T, which prints
+# its own 配图不展示。 line, so such a run is not a T==TV null baseline -- and the
 # m_tv_arm_carries_images invariant is skipped with that reason. Files are
 # sha256-verified against the pool's image_sha256 before any pixel is
 # attached. Images are never copied into the repo and this must never point

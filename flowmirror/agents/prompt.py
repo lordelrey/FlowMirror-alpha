@@ -241,7 +241,16 @@ def render_news(view):
     ONLY when stance data exists -- which it does not until the labelling task runs.
     """
     lines = []
-    for key, stem in (("index_5d", "大盘指数近五个交易日累计"), ("holdings_1d", "你持有的基金昨日整体")):
+    # The benchmark's subject comes from market.benchmark_label, never a hardcoded
+    # 大盘指数: the shipped series is a fund NAV standing in for an index (decision 6),
+    # and naming it an index in the stimulus would be the one disclosure failure that
+    # reaches the model itself. loop.py refuses a configured benchmark with no label,
+    # so index_label is present whenever index_5d is.
+    idx_stem = str(view.get("index_label") or "").strip()
+    for key, stem in ((("index_5d", idx_stem + "近五个交易日累计") if idx_stem else (None, None)),
+                      ("holdings_1d", "你持有的基金昨日整体")):
+        if key is None:
+            continue
         v = view.get(key)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             lines.append(f"{stem}{'上涨' if float(v) >= 0 else '下跌'} {_pctu(v)}。")

@@ -145,7 +145,9 @@ image_sha256 : list[str] | str   # 与 image_ids 平行的 64 位十六进制摘
 ```
 
 池里**没有** `image_path` / `image` / `cover`——现状 `_feed_card` 读的正是这三个键，
-所以 `image_path` 恒为 None，TV 臂与 T 臂逐字节相同。
+所以 `image_path` 恒为 None，TV 臂看不到任何像素。**但它与 T 臂并非逐字节相同**：
+`render_card` 会给 T 卡印一行 `配图不展示。`，TV 卡从不印这一行。所以无图运行不是
+T==TV 的空基线，在这种运行上测出的 T/TV 差异测的是那一句话的有无。
 
 解析规则：
 

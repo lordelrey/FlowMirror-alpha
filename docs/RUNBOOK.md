@@ -112,7 +112,7 @@ attachment on the TV arm:
 
 | key | meaning |
 |-----|---------|
-| `images_root` | Directory holding the pre-resized creative images, one file per `image_id` (flat, 0-based names like `68f06272000000000503bd5b_0.jpg`). `null` (default) = text-only: the engine prints `[world] WARNING: no images_root configured -- TV arm degrades to text-only; the modality comparison measures nothing.` at run start, TV is byte-identical to T, and the `m_tv_arm_carries_images` invariant is skipped with that reason. |
+| `images_root` | Directory holding the pre-resized creative images, one file per `image_id` (flat, 0-based names like `68f06272000000000503bd5b_0.jpg`). `null` (default) = text-only: the engine prints `[world] WARNING: no images_root configured -- TV arm degrades to text-only; the modality comparison measures nothing.` at run start. TV is then text-only but **not** byte-identical to T: `render_card` gives the T card its own `配图不展示。` line, which a TV card never receives, so a text-only run is NOT a T==TV null baseline and a T/TV contrast measured on one measures the presence of that sentence. `m_tv_arm_carries_images` reports the case in its `reason`. |
 | `image_pick` | Which of a note's OWN images to show: `"first"` (default; the note's first image) or `"random"` (one of the note's own images, drawn per impression from a DEDICATED derived stream, `rng_for(run_tag, "img", agent_id, day, post_id)` -- deliberately **not** the agent's own `inv.rng`, because consuming that stream would shift every later draw for that investor and make a TV agent diverge from a T agent for reasons having nothing to do with the picture). The same agent-day-post therefore picks the same image on replay. Both policies hold the text, the landing fund and the institution constant, so `"random"` is a clean within-stimulus randomisation for later image-property work. |
 
 Mechanics: the engine joins `<images_root>/<image_id>` and verifies the
@@ -307,8 +307,8 @@ supply either.
 | key | default | note |
 |-----|---------|------|
 | `dynamics.fam_decay` | `0.2` | familiarity EMA decay. **Changed** from an unreachable 0.1. |
-| `dynamics.lambda_attention` | `0.8` | attention adstock retention. **Changed**: attention used to share one constant with familiarity decay, so no run could vary them independently. |
-| `dynamics.beta_guba` | `0.0` | coefficient on the lagged week's `z_abnormal` in the attention update. The pipeline is wired and the coefficient is **zero by decision**, so the term is present and inert; enabling the channel later is a one-value change. Do not set 0.1. |
+| `dynamics.lambda_attention` | `0.8` | attention adstock retention. **Changed**: attention used to share one constant with familiarity decay, so no run could vary them independently. Same caveat as `beta_guba`: nothing reads `inv.attention` yet. |
+| `dynamics.beta_guba` | `0.0` | coefficient on the lagged week's `z_abnormal` in the attention update. The coefficient is **zero by decision** and the arithmetic is in place. **But `inv.attention` currently has no reader**: `rank_feed` scores on trust, fit, heat and climate, so raising this value changes the attention series and nothing an agent sees. Giving attention a consumer is a recommender change and needs an owner decision -- until then this is plumbing, not a switch. Do not set 0.1. |
 | `dynamics.lambda_trust` | `0.9` | institution-trust adstock |
 | `dynamics.fam_threshold` | `1.0` | exposure/affinity stock at which familiarity reaches level 1 |
 | `dca.pct` | `0.02` | monthly plan ticket as a share of cash |

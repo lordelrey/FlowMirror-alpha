@@ -32,6 +32,13 @@ RUNS_DIR = os.path.join(ROOT, "runs")
 
 # Input path keys of a run config.  family_file and images_root are optional
 # and are only checked when the config actually sets them to a path.
+# Nested input paths the guard must also follow. market.benchmark_path names a file
+# under gitignored data/market/, so a config that sets it has to be allow-listed like
+# any other non-shipping config -- without this the guard's stated guarantee ("every
+# input path key resolves to a tracked file") would quietly stop covering everything a
+# run config can name.
+NESTED_INPUT_KEYS = (("market", "benchmark_path"),)
+
 INPUT_KEYS = ("agents_file", "content_pool", "nav_cache", "guba_signal",
               "fund_meta_file", "family_file", "images_root")
 
@@ -81,8 +88,14 @@ def _git_tracked(path):
 def _input_problems(cfg):
     """[(key, raw_value, why)] for every input that does not ship with the repo."""
     problems = []
-    for key in INPUT_KEYS:
-        val = cfg.get(key)
+    pairs = [(k, cfg.get(k)) for k in INPUT_KEYS]
+    # follow nested input paths too, so the guard's promise covers every input a run
+    # config can name rather than only the top-level ones
+    for outer, inner in NESTED_INPUT_KEYS:
+        block = cfg.get(outer)
+        if isinstance(block, dict):
+            pairs.append((f"{outer}.{inner}", block.get(inner)))
+    for key, val in pairs:
         if not val:
             continue
         if not isinstance(val, str):

@@ -40,7 +40,22 @@ REGISTRY = (
     "d_wealth_conservation", "e_all_cells_exposed", "f_post_ig_is_intent_group",
     "g_comments_lagged_only", "h_arm_balance", "i_redeem_checkout_never_blocked",
     "j_displayed_comment_matches_prev_day", "k_dec_matches_active",
+    # report-only entries (always pass, carry facts in `reason`): they state whether
+    # pixels reached the TV arm and how one-sided the opening environment is
+    "m_tv_arm_carries_images", "m_env_valence_warning",
 )
+
+
+def test_registry_mirror_has_not_drifted():
+    """This tuple is the repo's only detector of drift between world.INVARIANTS and the
+    wiring, and it had itself drifted: 11 mirrored keys against a registry of 13, with
+    a comment promising it would fail loudly. Asserting set equality makes the promise
+    true, so the next key added to the registry lands here too."""
+    from flowmirror.engine import world
+    assert set(REGISTRY) == set(world.INVARIANTS), (
+        "mirror drift: "
+        f"missing here {sorted(set(world.INVARIANTS) - set(REGISTRY))}, "
+        f"stale here {sorted(set(REGISTRY) - set(world.INVARIANTS))}")
 
 
 def _cfg_path(name="mock_10x3.json"):

@@ -555,15 +555,25 @@ def init_investors(world: World, cfg: dict) -> list:
             # in its P&L, and E11 would stop being one manipulation. Left on the derived stream,
             # switching mode moves the cost bases and nothing else.
             tprng = rng_for(run_tag, "initial_pnl", inv.id) if ipnl["mode"] == "target" else None
+        # Both modes consume inv.rng IDENTICALLY. The lookback offset is drawn (and in
+        # target mode discarded) so that switching mode moves the cost bases and nothing
+        # else: inv.rng also drives the daily p_active coin, rank_feed's tie-break and
+        # exposure-level arm draws, so a mode that consumed one fewer draw per held fund
+        # would shift every one of those and E11 would stop being one manipulation.
             for code in inv.rng.sample(world.base_codes, nh):
                 f = world.funds[code]
                 i0 = bisect_right(f.dates, world.start - timedelta(days=1)) - 1
-                if tprng is None:                 # lookback: the pre-card call, verbatim -- the
-                    # bounds are config keys whose defaults ARE 60 and 250, so the randint call,
-                    # its arguments and its place in the stream are unchanged (decision 13 keeps
-                    # every demo config on this branch, so their event-log hashes cannot move).
-                    ci = max(i0 - inv.rng.randint(ipnl["lookback_days_min"],
-                                                  ipnl["lookback_days_max"]), 0)   # clamped
+                # Drawn in BOTH modes. The lookback bounds are config keys whose defaults
+                # ARE 60 and 250, so this randint call, its arguments and its position in
+                # the stream are exactly the pre-card ones (decision 13 keeps every demo
+                # config on the lookback branch, so their hashes cannot move). Target mode
+                # discards the value: consuming one fewer draw per held fund would shift
+                # every later inv.rng draw -- the daily p_active coin, rank_feed's
+                # tie-break, exposure-level arm draws -- and E11 would then confound the
+                # opening-P&L manipulation with who was active and how feeds were ordered.
+                off = inv.rng.randint(ipnl["lookback_days_min"], ipnl["lookback_days_max"])
+                if tprng is None:                 # lookback: the pre-card behaviour, verbatim
+                    ci = max(i0 - off, 0)         # clamped
                 else:
                     ci, missed = _target_cost_index(f.navs, max(i0, 0),
                                                     max(i0 - ipnl["lookback_days_max"], 0),
@@ -1357,8 +1367,10 @@ def check_invariants(state: dict, events_path, cfg: dict):
              "tv_impressions": imp_tv, "tv_impressions_with_image": imp_tv_img, **tally}
     if not img_root:
         m_ent["reason"] = ("no image library configured (images_root is null): the TV arm "
-                           "degrades to text-only and is byte-identical to T, so this run's "
-                           "modality comparison measures nothing")
+                           "degrades to text-only, so this run's modality comparison "
+                           "measures nothing. Note it is NOT a T==TV null either: "
+                           "render_card prints 配图不展示。on a T card and never on a TV "
+                           "card, so a T/TV contrast here measures that one sentence")
     elif "TV" not in run_arms:
         m_ent["reason"] = (f"no TV arm in this run (arms {sorted(run_arms)} at modality_level "
                            f"{lvl}): image attachment does not apply")

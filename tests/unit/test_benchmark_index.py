@@ -172,9 +172,35 @@ def test_a_configured_benchmark_reaches_the_prompt(tmp_path):
 
 def test_an_unreadable_benchmark_path_stops_the_run(tmp_path):
     cfg = build_demo_cfg(tmp_path / "run", agents=10, days=3)
-    cfg["market"] = {"benchmark_path": str(tmp_path / "nope.json"), "benchmark_label": None}
+    # the label is mandatory whenever a path is set, so supply one: this test is about
+    # the unreadable PATH, not about the missing label (covered separately below)
+    cfg["market"] = {"benchmark_path": str(tmp_path / "nope.json"),
+                     "benchmark_label": "测试代理序列"}
     with pytest.raises(FileNotFoundError):
         L.run_simulation(cfg, L.RuntimeOpts())
+
+
+def test_a_benchmark_without_a_disclosing_label_is_refused(tmp_path):
+    """Decision 6: the label is what the agent-facing line names, so a configured
+    benchmark with no label would render the series as an unnamed market index -- the
+    one disclosure failure that reaches the model itself. The run refuses instead."""
+    from flowmirror.config.validate import ConfigError
+    series = _series(start="2025-08-01", n=90, step=0.004)
+    cfg = build_demo_cfg(tmp_path / "run", agents=10, days=3)
+    cfg["market"] = {"benchmark_path": _write(tmp_path, series), "benchmark_label": None}
+    with pytest.raises(ConfigError):
+        L.run_simulation(cfg, L.RuntimeOpts())
+
+
+def test_the_rendered_market_line_names_the_proxy_not_an_index(tmp_path):
+    """The stimulus text must never call the series 上证指数 or a bare 大盘指数."""
+    from flowmirror.agents.prompt import render_news
+    label = "上证综指ETF（510760）单位净值（上证综指的代理）"
+    lines = render_news({"index_5d": 0.0123, "index_label": label, "guba": {}})
+    assert lines and label in lines[0]
+    assert "上证指数近" not in lines[0] and "大盘指数" not in lines[0]
+    # and with no label there is no line at all, rather than an undisclosed one
+    assert render_news({"index_5d": 0.0123, "guba": {}}) == []
 
 
 def test_the_shipped_proxy_file_is_internally_sane():
