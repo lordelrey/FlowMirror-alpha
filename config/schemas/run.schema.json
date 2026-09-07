@@ -519,6 +519,12 @@
           "type": "number",
           "minimum": 0.0,
           "maximum": 0.5
+        },
+        "w_att": {
+          "description": "Optional (owner decision 17, default 0.0). Weight on the agent's per-fund attention stock in the feed score, bounded by tanh like w_trust. At 0.0 -- the default -- attention has no effect and runs are byte-identical to before the key existed, which is what makes dynamics.beta_guba a real switch: raising both enables the guba attention channel end to end without a code change.",
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 5.0
         }
       }
     },

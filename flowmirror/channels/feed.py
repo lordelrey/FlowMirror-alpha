@@ -691,12 +691,20 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
 
     follow_orgs = set(_state_get(agent_state, "follow", None) or set())
     trust = _state_get(agent_state, "trust", None) or {}
+    attention = _state_get(agent_state, "attention", None) or {}
     # Restored from the v1.1 revision (dropped by the v1.3 rewrite): weights
     # are read once per call so eps stays a SMALL, explicit tie-break.
     w_trust = _f(cfg.get("w_trust", 1.0), 1.0)
     w_fit = _f(cfg.get("w_fit", 1.0), 1.0)
     w_heat = _f(cfg.get("w_heat", 1.0), 1.0)
     w_soc = _f(cfg.get("w_soc", 0.5), 0.5)
+    # Owner decision 17. inv.attention had no reader anywhere, so dynamics.beta_guba and
+    # dynamics.lambda_attention changed a series nothing consumed -- decision 3's promise
+    # that the guba channel is "wired, only the coefficient is zero" was not true of the
+    # ranker. Default 0.0 keeps every current run byte-identical, and one config value
+    # now genuinely enables the channel. tanh bounds it the way the trust term is bounded,
+    # so a fund with a long exposure history cannot dominate the score.
+    w_att = _f(cfg.get("w_att", 0.0), 0.0)
     eps = _f(cfg.get("eps", 0.05), 0.05)
     # E13: read alongside the weights so the fit prior is scored with one
     # fixed pair of bands per call, never re-resolved per candidate.  Same
@@ -720,6 +728,7 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
             + w_fit * f
             + w_heat * heat
             + w_soc * climate_bonus(clim_prev.get(pid, "no_signal"))
+            + w_att * math.tanh(_f(attention.get(post.get("code"), 0.0)))
             + eps * rng.random()
         )
         recs.append({

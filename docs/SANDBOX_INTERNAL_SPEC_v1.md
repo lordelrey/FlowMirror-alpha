@@ -133,7 +133,8 @@
 | T | "配图不展示" | 无 |
 | TC | OCR 文本 + 冻结提示生成的一句中性描述（离线生成，存内容池 `image_caption_frozen`） | 信息内容 |
 | TV | 真实图片像素（≤768px，data-URI，每卡 ≤1 张，每日 ≤3 张） | 信息 + 呈现 |
-- 随机化：`modality_level=agent`（每人整场固定，p 各 1/3）或 `run`（整场同臂）；平衡不变量：|份额 − 1/3| ≤ 0.03，臂内 36 格分布最大绝对差 ≤ 0.05。
+- 随机化：`modality_level=agent`（每人整场固定，p 各 1/3）或 `run`（整场同臂）；平衡不变量（决策 16，对齐实现）：整体 |份额 − 1/k| ≤ 0.01；格内容差
+  max(1/(2·n_cell), max(m, k−m)/(k·n_cell))，m = n_cell mod k。
 - 出处：picture superiority / vividness / 广告视觉注意 `[REF ?]`；VLM 作消费者 `[REF ?]`。
 - `[待对齐]` 三臂 vs 两臂（预算 ×1.5）；TC 描述提示的措辞（必须中性、不含评价词）。
 

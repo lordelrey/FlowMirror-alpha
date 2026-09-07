@@ -32,7 +32,10 @@ modality_level: agent
 modality_arms:
   - "T"
   - "TV"
-modality_run_arm: "TV"
+# Decision 19: deliberately NOT set here. It only applies when modality_level is
+# "run", where the engine defaults it to the first configured arm; an unconditional
+# default made every arm set that omits TV fail validation, including agent-level runs
+# where this key does nothing at all.
 # Card IMG (config surface): TV-arm image resolution. images_root points at
 # the LOCAL store of pre-resized creatives (one file per image_id, flat,
 # 0-based); null (default) means text-only -- the engine prints a WARNING at
@@ -83,6 +86,15 @@ feed:
   w_fit: 1.0
   w_heat: 1.0
   w_soc: 0.5
+  # Decision 17: weight on the per-fund attention stock. 0.0 keeps every run
+  # byte-identical to before attention had any reader at all; raising it together
+  # with dynamics.beta_guba enables the guba attention channel end to end.
+  w_att: 0.0
+  # E13: feed.fit()'s two adjustment bands, equal to the literals the function carried
+  # before they were configurable -- narrow is the core-type term, wide the risk-latency
+  # term on an I2 post.
+  fit_band_narrow: 0.15
+  fit_band_wide: 0.25
   eps: 0.05
   gamma: 1.8
   # Decision 1: the margin |bullish-bearish|/total must clear before a post's
@@ -157,7 +169,11 @@ initial_pnl:
   mode: lookback
   lookback_days_min: 60
   lookback_days_max: 250
-  share_at_loss: 0.05
+  # Decision 18: share_at_loss has NO default on purpose. Its old 0.05 was exactly
+  # the one-sided environment target mode exists to escape (the real NAV series leaves
+  # ~4.9% of openings at a loss), so a research config that asked for target mode and
+  # forgot the share silently reproduced the pathology it was reaching for. Target mode
+  # now refuses to run without it.
   tolerance: 0.02
 # Decision 6: the market benchmark behind the view's index_5d. Default null
 # means the key is absent from the agent view, which is today's behaviour, so

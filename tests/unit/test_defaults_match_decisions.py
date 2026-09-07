@@ -133,9 +133,14 @@ def test_qdii_blocked_has_no_default():
     (("dca", "min_ticket"), 100.0),
     (("initial_pnl", "lookback_days_min"), 60),
     (("initial_pnl", "lookback_days_max"), 250),
-    # target-mode only (decision 13); no literal exists today, these ARE the values
-    (("initial_pnl", "share_at_loss"), 0.05),
+    # target-mode only (decision 13); no literal exists today, this IS the value
     (("initial_pnl", "tolerance"), 0.02),
+    # decision 17: attention finally has a reader, and 0.0 keeps every run
+    # byte-identical to before the key existed
+    (("feed", "w_att"), 0.0),
+    # E13: the fit bands, equal to the literals feed.fit() carried
+    (("feed", "fit_band_narrow"), 0.15),
+    (("feed", "fit_band_wide"), 0.25),
 ])
 def test_inert_default_equals_todays_literal(path, expected):
     node = DEFAULT_CONFIG
@@ -180,7 +185,7 @@ def test_every_new_key_is_accepted_by_the_schema():
                        "lambda_attention": 0.8, "beta_guba": 0.0}
     cfg["dca"] = {"pct": 0.02, "min_ticket": 100.0}
     cfg["initial_pnl"] = {"mode": "target", "lookback_days_min": 60,
-                          "lookback_days_max": 250, "share_at_loss": 0.05,
+                          "lookback_days_max": 250,
                           "tolerance": 0.02}
     cfg["market"] = {"benchmark_path": "data/market/benchmark.json",
                      "benchmark_label": "SSE Composite ETF (510760) unit NAV, a proxy"}
@@ -235,3 +240,67 @@ def test_dec_row_without_failure_kind_still_validates():
     ev = {"ev": "dec", "t": 540, "d": "2025-10-09", "i": "inv_00001",
           "prompt_sha": "0" * 64, "status": "ok", "arm": "TV"}
     validate(ev, "event")
+
+
+# --------------------------------------------------- owner decisions 15-19
+
+def test_share_at_loss_has_no_default_on_purpose():
+    """Decision 18. Its old 0.05 was exactly the one-sided environment target mode
+    exists to escape, so inheriting it would silently reproduce the pathology."""
+    ipnl = DEFAULT_CONFIG.get("initial_pnl") or {}
+    assert "share_at_loss" not in ipnl, (
+        "a mode whose purpose is to CONTROL the loss share must not inherit one")
+    assert ipnl.get("mode") == "lookback"
+
+
+def test_target_mode_refuses_to_run_without_its_manipulation(tmp_path):
+    """Decision 18: state the share, or do not ask for target mode."""
+    from flowmirror.engine import world as W
+    with pytest.raises(SystemExit):
+        W._initial_pnl_cfg({"initial_pnl": {"mode": "target"}})
+    got = W._initial_pnl_cfg({"initial_pnl": {"mode": "target", "share_at_loss": 0.5}})
+    assert got["share_at_loss"] == pytest.approx(0.5)
+    # out of range is refused too
+    with pytest.raises(SystemExit):
+        W._initial_pnl_cfg({"initial_pnl": {"mode": "target", "share_at_loss": 1.4}})
+    # lookback never reads it, so it stays runnable with the key absent
+    assert W._initial_pnl_cfg({"initial_pnl": {"mode": "lookback"}})["mode"] == "lookback"
+
+
+def test_no_unconditional_modality_run_arm_default():
+    """Decision 19. The old "TV" default sat in every merged config and validation then
+    required it to appear in modality_arms at ANY level, so a reference cell running
+    only T/TC was rejected -- with an error naming the user's arms, not the default."""
+    assert "modality_run_arm" not in DEFAULT_CONFIG
+
+
+def _modality_cfg(tmp_path, **over):
+    """A COMPLETE run config -- validate_config runs the whole run schema -- with only
+    the modality keys varied."""
+    from tests.conftest import build_demo_cfg
+    cfg = build_demo_cfg(tmp_path / "cfg", agents=10, days=3)
+    cfg.pop("modality_run_arm", None)
+    cfg.update(over)
+    return cfg
+
+
+def test_an_arm_set_without_tv_is_accepted_at_agent_level(tmp_path):
+    from flowmirror.engine import world as W
+    cfg = _modality_cfg(tmp_path, modality_arms=["T", "TC"], modality_level="agent")
+    W.validate_config(cfg)                     # must not raise
+    assert "modality_run_arm" not in cfg, "an agent-level run carries no run arm"
+
+
+def test_run_level_defaults_the_arm_to_the_first_configured_one(tmp_path):
+    from flowmirror.engine import world as W
+    cfg = _modality_cfg(tmp_path, modality_arms=["TC", "TV"], modality_level="run")
+    W.validate_config(cfg)
+    assert cfg["modality_run_arm"] == "TC"
+    # a run arm outside the configured set is still refused at run level
+    with pytest.raises(SystemExit):
+        W.validate_config(_modality_cfg(tmp_path, modality_arms=["T", "TC"],
+                                        modality_level="run", modality_run_arm="TV"))
+    # a misspelling is caught even where the key is inert, so a typo cannot sit in run_meta
+    with pytest.raises(SystemExit):
+        W.validate_config(_modality_cfg(tmp_path, modality_arms=["T", "TV"],
+                                        modality_level="agent", modality_run_arm="TX"))

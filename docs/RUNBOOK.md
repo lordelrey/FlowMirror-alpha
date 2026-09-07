@@ -307,23 +307,27 @@ supply either.
 | key | default | note |
 |-----|---------|------|
 | `dynamics.fam_decay` | `0.2` | familiarity EMA decay. **Changed** from an unreachable 0.1. |
-| `dynamics.lambda_attention` | `0.8` | attention adstock retention. **Changed**: attention used to share one constant with familiarity decay, so no run could vary them independently. Same caveat as `beta_guba`: nothing reads `inv.attention` yet. |
-| `dynamics.beta_guba` | `0.0` | coefficient on the lagged week's `z_abnormal` in the attention update. The coefficient is **zero by decision** and the arithmetic is in place. **But `inv.attention` currently has no reader**: `rank_feed` scores on trust, fit, heat and climate, so raising this value changes the attention series and nothing an agent sees. Giving attention a consumer is a recommender change and needs an owner decision -- until then this is plumbing, not a switch. Do not set 0.1. |
+| `dynamics.lambda_attention` | `0.8` | attention adstock retention. **Changed**: attention used to share one constant with familiarity decay, so no run could vary them independently. |
+| `dynamics.beta_guba` | `0.0` | coefficient on the lagged week's `z_abnormal` in the attention update. **Zero by decision**, and since decision 17 the channel is genuinely end to end: `feed.w_att` gives the attention stock a reader, so raising both values enables it with no code change. Do not set 0.1. |
 | `dynamics.lambda_trust` | `0.9` | institution-trust adstock |
 | `dynamics.fam_threshold` | `1.0` | exposure/affinity stock at which familiarity reaches level 1 |
-| `dca.pct` | `0.02` | monthly plan ticket as a share of cash |
+| `dca.pct` | `0.02` | monthly plan ticket as a share of cash. **Known limitation**: the plan fires on `dt_cur.day == 1`, i.e. only when the calendar first of a month is itself a trading day, so a month whose 1st falls on a weekend or inside a holiday is skipped entirely (2025-11-01 is a Saturday; the real calendar's 1-8 October break skips October too). A real plan rolls to the next trading day. Changing this alters the number of instalments and the flow panel, so it is an open mechanism question rather than a bug fix. |
 | `dca.min_ticket` | `100.0` | below this the plan skips and counts `dca_skipped` |
+| `modality_run_arm` | **unset** | decision 19. Only meaningful at `modality_level: "run"`, where the engine defaults it to the first configured arm and requires it to be one of `modality_arms`. It used to default to `"TV"` unconditionally, which made every arm set omitting TV fail validation -- including agent-level runs, where the key does nothing. |
 | `feed.climate_margin` | `1/6` | comment-climate majority margin. **Changed** from a hardcoded 1/3, which was twice as strict as decided. |
-| `fees.subscribe_rate` | `0.0012` | **Changed** from 0.0; `act.fee` is non-zero now and the wealth identity already carried the fee term |
+| `fees.subscribe_rate` | `0.0012` | **Changed** from 0.0; `act.fee` is non-zero now and the wealth identity already carried the fee term. Since decision 15 a plan (`kind="dca"`) instalment pays it too -- it was the one purchase channel exempt. |
 | `fees.redeem_rate` | `0.005` | **Changed** from 0.0 |
 | `llm.temperature` | `0.3` | equals the old module constant, and now reaches `run_meta.json` -- a published experiment has to record its own sampling temperature |
 | `llm.max_provider_attempts` | `5` | physical HTTP retries. Distinct from `llm.max_attempts`, the macro retry switch; the two used to share a name in different namespaces. |
 | `initial_pnl.mode` | `"lookback"` | `"lookback"` reproduces the historical behaviour exactly and is what every demo uses. `"target"` aims at a P&L DISTRIBUTION instead, for research configs -- see below. |
 | `initial_pnl.lookback_days_min` / `_max` | `60` / `250` | the old literals |
-| `initial_pnl.share_at_loss` | `0.05` | `"target"` mode only |
+| `initial_pnl.share_at_loss` | **none** | `"target"` mode only, and **required** there (decision 18). Its old 0.05 default was exactly the ~4.9% one-sided environment target mode exists to escape, so a config that asked for the mode and forgot the share silently reproduced the pathology. `lookback` never reads it. |
 | `initial_pnl.tolerance` | `0.02` | `"target"` mode only; misses count as `investors.initial_pnl_misses` |
 | `qdii_blocked` | unset | `{"YYYY-MM-DD": {"codes": [...]}}`. In the schema so the suspension path is reachable; **no shipped config sets it**, because a real suspension calendar is a data task. A configured calendar with no QDII fund in the universe prints a note. |
-| `market.benchmark_path` / `_label` | `null` | see section 12 |
+| `feed.w_att` | `0.0` | decision 17. Weight on the agent's per-fund attention stock in the feed score, bounded by `tanh` like `w_trust`. At 0.0 attention has no effect and runs are byte-identical to before the key existed. |
+| `feed.fit_band_narrow` / `_wide` | `0.15` / `0.25` | `feed.fit()`'s two adjustments, equal to the literals it carried before. |
+| `market.benchmark_path` | `null` | see section 12 |
+| `market.benchmark_label` | `null` | **required whenever `benchmark_path` is set** (decision 6): it is the subject of the agent-facing market line, so it must disclose the proxy. A configured path with no label is refused. |
 
 ### Why `initial_pnl` has a target mode
 

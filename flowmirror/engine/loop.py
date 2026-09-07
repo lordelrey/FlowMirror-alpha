@@ -1402,6 +1402,13 @@ def run_simulation(cfg, rt=None):
                 # those literals, so a config omitting the block is byte-identical.
                 dca_pct = float((cfg.get("dca") or {}).get("pct", 0.02))
                 dca_min = float((cfg.get("dca") or {}).get("min_ticket", 100.0))
+                # Owner decision 15: a plan instalment IS a subscription, so it pays
+                # fees.subscribe_rate exactly as apply_decision's subscribe branch does.
+                # It was the only purchase channel exempt from decision 8, which left
+                # every kind="dca" row at fee 0.0 while the RUNBOOK said act.fee is
+                # non-zero -- and decision 7 had just made this channel reachable for the
+                # roughly half of the cohort that opens with no holdings.
+                dca_fee_rate = float((cfg.get("fees") or {}).get("subscribe_rate", 0.0))
                 for inv in invs:
                     # Audit E7 / decision 7: the guard used to require inv.hold, so a
                     # plan could only TOP UP an existing position -- an investor flagged
@@ -1417,17 +1424,25 @@ def run_simulation(cfg, rt=None):
                         if not code or amt < dca_min or not nav:
                             S["dca_skipped"] += 1
                             continue
-                        units = amt / nav
+                        # Same arithmetic as the subscribe branch: the fee comes out of
+                        # the ticket, so units and the cost basis are on amt - fee while
+                        # cash falls by the full amt. With held == 0 the average-cost
+                        # formula reduces to nav, which is what an opening purchase gets.
+                        fee = amt * dca_fee_rate
+                        units = (amt - fee) / nav
                         held = float(inv.hold.get(code, 0.0))   # 0.0 on an OPENING purchase
-                        inv.cost[code] = (held * inv.cost.get(code, nav) + amt) \
+                        inv.cost[code] = (held * inv.cost.get(code, nav) + (amt - fee)) \
                             / (held + units)
                         inv.hold[code] = held + units
                         inv.cash -= amt
+                        _bump_fees(inv, fee)
                         S["dca_n"] += 1
                         S["dca_cny"] += amt
+                        S["fees_cny"] += fee
                         flows[FUNDS[code].family][quarter_of(dt_cur)]["sub"] += amt
                         logd("act", t=t, d=dstr, i=inv.id, p=None, kind="dca", fund=code,
-                             amt=round(amt, 2), units=round(units, 6), nav=nav, fee=0.0)
+                             amt=round(amt, 2), units=round(units, 6), nav=nav,
+                             fee=round(fee, 2))
             if heat != heat_prev:                  # would mean mid-day signal mutation (inv a)
                 inv_a_ok = False
             for inv in invs:                       # (8) lagged updates, visible from t+1 only

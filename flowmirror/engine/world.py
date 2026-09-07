@@ -155,8 +155,14 @@ if DEFAULT_CONFIG.get("modality_level") not in _MOD_LEVELS:
 _ma = DEFAULT_CONFIG.get("modality_arms")
 if not isinstance(_ma, list) or not _ma or any(a not in _MOD_ARMS for a in _ma):
     DEFAULT_CONFIG["modality_arms"] = list(_FALLBACK_ARMS)
-if DEFAULT_CONFIG.get("modality_run_arm") not in _MOD_ARMS:
-    DEFAULT_CONFIG["modality_run_arm"] = "TV"
+# Decision 19: no unconditional modality_run_arm default. Forcing "TV" here put it in
+# every merged config, and validate_config then required it to appear in modality_arms
+# regardless of level -- so a reference cell running only T/TC was rejected outright,
+# with an error pointing at the user's modality_arms rather than at this default. It is
+# defaulted at run level only, where it is the only thing that means anything.
+if (DEFAULT_CONFIG.get("modality_run_arm") is not None
+        and DEFAULT_CONFIG.get("modality_run_arm") not in _MOD_ARMS):
+    DEFAULT_CONFIG.pop("modality_run_arm", None)
 try:
     _mf = DEFAULT_CONFIG.get("fees")
     _mf = _mf if isinstance(_mf, dict) else {}
@@ -194,14 +200,21 @@ def _validate_modality(cfg: dict) -> None:
         die(f"config: modality_arms entries must be T|TC|TV (got {arms})")
     if len(set(arms)) != len(arms):
         die(f"config: modality_arms must not repeat an arm (got {arms})")
+    # Decision 19: modality_run_arm only means something at run level, so only there is
+    # it defaulted and only there must it be one of modality_arms. At agent or exposure
+    # level a stray value is still checked for spelling (a typo should not sit unnoticed
+    # in run_meta) but never gates the run.
     run_arm = cfg.get("modality_run_arm")
-    if run_arm is None:
-        run_arm = DEFAULT_CONFIG.get("modality_run_arm") or "TV"
-        cfg["modality_run_arm"] = run_arm
-    if run_arm not in _MOD_ARMS:
+    if _mod_level_of(cfg) == "run":
+        if run_arm is None:
+            run_arm = arms[0]
+            cfg["modality_run_arm"] = run_arm
+        if run_arm not in _MOD_ARMS:
+            die(f"config: modality_run_arm must be T|TC|TV (got {run_arm!r})")
+        if run_arm not in arms:
+            die(f"config: modality_run_arm {run_arm!r} must be one of modality_arms {arms}")
+    elif run_arm is not None and run_arm not in _MOD_ARMS:
         die(f"config: modality_run_arm must be T|TC|TV (got {run_arm!r})")
-    if run_arm not in arms:
-        die(f"config: modality_run_arm {run_arm!r} must be one of modality_arms {arms}")
     fees = cfg.get("fees")
     if fees is None:
         fees = dict(DEFAULT_CONFIG.get("fees") or _FALLBACK_FEES)
@@ -439,8 +452,13 @@ def rng_for(run_tag: str, *parts) -> random.Random:
 # init_investors is also called with hand-built configs (the self-test's, the unit suite's)
 # that never went through the defaults merge; every value equals the literal it replaces, so a
 # config carrying no initial_pnl block behaves exactly as the pre-card tree did.
+# Decision 18: share_at_loss has NO default. Its old 0.05 was exactly the one-sided
+# environment target mode exists to escape (~4.9% of openings at a loss on the real NAV
+# series), so a research config that asked for target mode and forgot the share silently
+# reproduced the pathology it was reaching for. Target mode now requires it explicitly;
+# lookback mode never reads it, so every demo is unaffected.
 _IPNL_DEFAULTS = {"mode": "lookback", "lookback_days_min": 60, "lookback_days_max": 250,
-                  "share_at_loss": 0.05, "tolerance": 0.02}
+                  "tolerance": 0.02}
 
 
 def _initial_pnl_cfg(cfg: dict) -> dict:
@@ -455,8 +473,23 @@ def _initial_pnl_cfg(cfg: dict) -> dict:
         die(f"config: initial_pnl.mode must be lookback|target (got {out['mode']!r})")
     out["lookback_days_min"] = int(out["lookback_days_min"])
     out["lookback_days_max"] = int(out["lookback_days_max"])
-    out["share_at_loss"] = float(out["share_at_loss"])
     out["tolerance"] = float(out["tolerance"])
+    # Decision 18: the manipulation must be stated, not inherited.
+    sal = raw.get("share_at_loss")
+    if out["mode"] == "target":
+        if sal is None or isinstance(sal, bool):
+            die("config: initial_pnl.mode is 'target' but share_at_loss is not set. "
+                "Target mode exists to CONTROL the share of openings that start at a "
+                "loss, so it has no default: inheriting one would silently reproduce the "
+                "~4.9% one-sided environment the mode was added to escape. State the "
+                "share the experiment intends, e.g. initial_pnl.share_at_loss: 0.5")
+        out["share_at_loss"] = float(sal)
+        if not 0.0 <= out["share_at_loss"] <= 1.0:
+            die(f"config: initial_pnl.share_at_loss must be in [0, 1] "
+                f"(got {out['share_at_loss']})")
+    else:
+        # lookback never reads it; carry a value only so downstream formatting is simple
+        out["share_at_loss"] = float(sal) if sal is not None and not isinstance(sal, bool) else None
     # Reported rather than left to raise: with min > max the lookback branch's randint(min, max)
     # dies inside the stdlib with "empty range", which names neither the config key nor the run.
     if out["lookback_days_min"] > out["lookback_days_max"]:
