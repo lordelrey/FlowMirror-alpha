@@ -16,3 +16,5 @@ data/funds/nav_cache.json
 !data/funds/nav_demo_2025q4.json
 *.bak_*
 runs/out/
+# Third-party benchmark series (qieman). Regenerate; never redistribute.
+data/market/

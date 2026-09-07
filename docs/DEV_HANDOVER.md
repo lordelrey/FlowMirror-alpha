@@ -151,6 +151,10 @@ python -m flowmirror.analysis.modality runs/out/demo_three-arm
 
 ## 8. 交给业主拍板的事项
 
+> **2026-09-07 更新**：审计方案 `docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md` §五 的 **14 项已全部由业主裁定**，那张表是执行时的唯一权威——代码与之相悖以裁定为准，执行模型不得自行改默认值。其中下面第 4 条（预注册容差）已定为 `|份额 − 1/k| ≤ 1/(2·n_cell)`。要点：β_guba=0（管道通、系数零）、止损只拆诊断计数不动阈值、`qdii_blocked` 只进 schema 不设值、`initial_pnl` 研究配置用 target 而三个 demo 保持 lookback、`N_FUNDS_K` 冻结不入配置、`beliefs` 只前馈进下次决策提示。基准指数：上证指数 000001 在且慢 MCP 不可得，已改用 `510760 上证综指ETF` 单位净值作**代理**（243 交易日已落 `data/market/`，该目录已 gitignore），提示与论文必须写"代理"。
+>
+> 下列 5 条是**不同层面**的事项（数据发布与吞吐），仍待处理。
+
 1. **内容池未遮蔽全文**。`content_pool_v1_masked.jsonl` 同时保留 200 条营销笔记的 `caption`/`ocr_text` 原文与 `note_id`，公开即逐字转载并可反查原帖。建议只发遮蔽版。
 2. **窗口后素材**。`pre_window` 字段存在但无任何代码读取，窗口后素材照进主实验。建议只用窗口前素材，以保住样本外对齐这条贡献。
 3. **TC 是否分 short/full 两档**。建议只在参考格加，主网格保持三臂。
@@ -168,3 +172,49 @@ python -m flowmirror.analysis.modality runs/out/demo_three-arm
 - **数据库红线**：`xhs_data.db` / `xhs_images.db` 只读，只能用 `mode=ro`。
 - **图片永不进仓库**，密钥永不入库（`config/api.yaml` 已 gitignore，git 全历史零命中）。
 - 后台调研任务用 Haiku 或 GLM，不用主模型。
+
+---
+
+## 10. 2026-09-06 13:30 增补
+
+### 已完成（本次追加）
+
+- **不变量接线修复已提交**（`717fc21`）。`check_invariants` 返回 `(checks, core)` 却被当字典接收，`bool(非空元组)` 恒真 → 所有逐条结果一直被丢弃、控制台恒打印 PASS。现已正确解包，失败时以独立退出码 4 终止，并删除了以错误注册键 `e_arm_davance` 重算臂平衡的僵尸代码。
+- **图片配置面已落盘**：`images_root`、`image_pick`（`first|random`）进 run schema 与 `engine_defaults.yaml`，`imp.img_idx` 进 event schema，新增 `runs/demo_three_arm_images.json`。**引擎侧解析仍未落地**（IMG-A 卡待重跑）。
+- **TC 描述生成器已修好**：此前 `DEFAULT_MODEL=glm-4.6v` 是推理型模型而 `MAX_TOKENS=96`，token 全部消耗在 `reasoning_content`，`content` 恒为空——生成器从未成功产出过一条描述。现改为 `glm-5.3-flash` 并加推理通道兜底与逐图 sha256 校验。801 张图待跑一次批量。
+- **提交历史已去除助手署名**：`git filter-branch` 重写全部 17 个提交，作者与提交者只剩 `lordelrey`，全库零残留。
+
+### 强制推送失败的原因与解法
+
+`git filter-branch` 会连同本地的远端跟踪引用 `refs/remotes/origin/main` 一起改写。于是 `--force-with-lease` 拿着被改写过的期望值（`16ab5e0`）去比对真实远端（`9267929`），判定为过期信息而中止。解法是先 `git fetch origin` 让跟踪引用回到真实值，再强制推送：
+
+```bash
+cd "D:\Desktop\ABM paperlowmirror_v7"
+git fetch origin
+git push --force-with-lease origin main
+```
+
+`fetch` 已执行，跟踪引用已修正为 `9267929`，现在直接推送即可。本地 `HEAD` 为 `b6f93e9`。
+
+### 可视化：业主的明确要求
+
+业主看到"目录里一堆 JSON"后明确表示：要 **NetLogo 那种能看见 agent 互动的动态可视化**，而且必须是**能读任意一次运行数据的脚本实现，不是把当前 demo 写死的一张页面**。
+
+据此重排了队列，可视化提到最前：
+
+| 顺序 | 卡 | 产出 |
+|---|---|---|
+| 1 | VIEW-A | `flowmirror/analysis/export_bundle.py` + `flowmirror export-bundle` 子命令，导出 demo 规模的四个 JSON（bundle/posts/agents/events） |
+| 2 | VIEW-B | `web/` 静态回放页：canvas 上的 agent 场、机构脉冲、曝光连线、互动环、申购闪烁、适当性拒签独立视觉、播放/步进/调速、点选 agent 看其决策与提示词原文 |
+| 3 | INV-FIX | 修两条误报的不变量 |
+| 4 | ENV | 按目标盈亏分布抽成本基准 + 环境退化不变量 |
+
+IMG-A（引擎侧图片解析）在限流期间失败，需在可视化落地后重发。队列脚本 `scratchpad/glm/run_queue3.sh`，串行、失败退避、已有响应则跳过。
+
+### 本地临时查看（不是正式界面）
+
+```bash
+python -c "import http.server,functools; h=http.server.SimpleHTTPRequestHandler; h.extensions_map['.txt']='text/plain; charset=utf-8'; h.extensions_map['.jsonl']='text/plain; charset=utf-8'; http.server.test(HandlerClass=functools.partial(h,directory=r'D:/Desktop/ABM paper/flowmirror_v7/runs/out'),port=8765,bind='127.0.0.1')"
+```
+
+注意必须显式指定 `charset=utf-8`，否则浏览器按 latin-1 解码中文提示词会显示乱码。`try_images/prompts/inv_00012_d0.txt` 是一个 agent 第 0 天收到的完整提示词原文，可用于验证"多模态输入"这条主张。这只是文件浏览，**正式界面以 VIEW-B 为准**。
