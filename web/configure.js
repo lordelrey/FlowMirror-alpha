@@ -145,7 +145,7 @@ export function mountRunPage(root, opts = {}) {
     const seed = $('f-seed').value || '2027';
     const arms = ($('f-arms').value || 'T,TV').split(',');
     const cfg = arms.length === 3 ? 'runs/demo_three_arm.json' : 'runs/demo_two_arm.json';
-    const tag = `ui_${arms.length}arm_${agents}x${days}`;
+    const tag = `ui_${arms.length}arm_${agents}x${days}_s${seed}`;
     return [
       `python -m flowmirror.engine.loop ${cfg} --mock --days ${days} --agents ${agents} --seed ${seed} --out runs/out/${tag}`,
       `python -m flowmirror.analysis.export_bundle runs/out/${tag}`,

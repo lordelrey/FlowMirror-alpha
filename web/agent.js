@@ -27,6 +27,13 @@ import {
 
 import { esc, num } from './data.js';
 
+// This is the only spot where a color reaches a style= attribute, and esc()
+// does not escape ';' so it cannot guard it alone; reuse panels.js' existing
+// whitelist verbatim instead of inventing a new one.
+const SAFE_COLOR = /^[#a-zA-Z0-9(),.%\s/-]{1,64}$/;
+const safeColor = (c, fallback = 'var(--ink-dim)') =>
+  (typeof c === 'string' && SAFE_COLOR.test(c) && c.trim()) ? c.trim() : fallback;
+
 /* ---------- vocabulary ------------------------------------------------- */
 
 
@@ -57,7 +64,7 @@ function fundLabel(model, code) {
 
 function armBadge(model, arm) {
   if (!arm) return '<span class="armbadge">臂未记录</span>';
-  const c = (model.armColor && model.armColor[arm]) || 'var(--ink-dim)';
+  const c = safeColor((model.armColor && model.armColor[arm]) || 'var(--ink-dim)');
   return `<span class="armbadge"><i style="background:${esc(c)}"></i>${esc(arm)}</span>`;
 }
 
@@ -556,7 +563,7 @@ export function mountAgentPage(root, model, agentId) {
             ${esc('补齐方式是对该运行目录跑 flowmirror export-bundle。')}</div>` : ''}
           ${truncNote(model)}
           <label class="field" style="margin:2px 0 4px">在这位投资者的记录里检索
-            <input type="text" data-role="q" placeholder="例如 观望、广发基金、588220"
+            <input type="text" data-role="q" placeholder="例如 观望、机构名、基金代码"
               autocomplete="off" spellcheck="false">
           </label>
           <p class="faint" data-role="qnote">只在上面已经显示出来的文本里做子串匹配（理由、

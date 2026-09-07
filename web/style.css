@@ -44,12 +44,12 @@
   --stop: #c9536b;
 
   /* the run ladder on the configure page */
-  --step-active: var(--arm-T);
+  --step-active: var(--accent-ui);
   --step-done: var(--ok);
   --step-pending: var(--ink-faint);
 
   /* "this only works on your machine" */
-  --local-badge: var(--arm-TC);
+  --local-badge: var(--accent-ui);
 
   --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --ui: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
@@ -95,7 +95,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--arm-T); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a { color: var(--accent-ui); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 a:hover { color: var(--ink); }
 
 :focus-visible {
@@ -260,9 +260,12 @@ label.field { display: grid; gap: 4px; font-size: 12px; color: var(--ink-dim); }
 .post .org { font-size: 12px; font-weight: 600; }
 .post .meta { font-size: 11px; color: var(--ink-dim); font-family: var(--mono); }
 .post .intent { font-size: 11px; }
-.i-I1 { color: var(--arm-T); }
-.i-I2 { color: var(--signal); }
-.i-I3 { color: var(--ok); }
+/* Contract §4: arm colors belong to arms only, and --signal/--stop/--ok are
+   reserved for suitability settlement and invariant verdicts. Intent labels
+   are neither, so differentiate by weight/dimming, not hue. */
+.i-I1 { color: var(--ink-dim); }
+.i-I2 { color: var(--ink); font-weight: 600; }
+.i-I3 { color: var(--ink-dim); }
 
 /* ---- key/value and prose --------------------------------------------- */
 

@@ -17,7 +17,7 @@
 import { stateAt } from './data.js';
 import {
   AGE_ORDER, ASSET_ORDER, RISK_ORDER, AGE_ZH, ASSET_ZH, RISK_ZH,
-  STANCE_COLOR, cssVar,
+  STANCE_COLOR, STANCE_ZH, OC_SHORT_ZH, cssVar,
 } from './vocab.js';
 
 const STEP = 13;          // horizontal spacing between dots inside a strip
@@ -354,12 +354,13 @@ export function mountField(root, model) {
     const parts = model.arms.map((a) => sw(model.armColor[a] || dim(), `${a} 臂`));
     parts.push('<span class="k"><i style="background:transparent;'
       + `box-shadow:0 0 0 1.2px ${cssVar('--ink-dim', '#8593ac')}"></i>外圈：当日有点赞/收藏/关注</span>`);
-    parts.push(`<span class="k"><i class="sq" style="background:${cssVar('--ok', '#4fa981')}"></i>评论看多</span>`);
-    parts.push(`<span class="k"><i class="sq" style="background:${cssVar('--stop', '#c9536b')}"></i>评论看空</span>`);
+    // Source legend wording from vocab.js so the field and the checkout tables never drift apart.
+    parts.push(`<span class="k"><i class="sq" style="background:${cssVar('--ok', '#4fa981')}"></i>评论${STANCE_ZH.bullish}</span>`);
+    parts.push(`<span class="k"><i class="sq" style="background:${cssVar('--stop', '#c9536b')}"></i>评论${STANCE_ZH.bearish}</span>`);
     parts.push('<span class="k"><i style="background:transparent;'
-      + `box-shadow:0 0 0 1.6px ${cssVar('--signal', '#e8823c')}"></i>签署确认书</span>`);
+      + `box-shadow:0 0 0 1.6px ${cssVar('--signal', '#e8823c')}"></i>${OC_SHORT_ZH.confirm_signed}</span>`);
     parts.push('<span class="k"><i style="background:transparent;'
-      + `box-shadow:0 0 0 1.6px ${cssVar('--stop', '#c9536b')}"></i>拒签确认书</span>`);
+      + `box-shadow:0 0 0 1.6px ${cssVar('--stop', '#c9536b')}"></i>${OC_SHORT_ZH.confirm_declined}</span>`);
     if (S.strips.some((s) => s.block)) {
       // Swatch mirrors the canvas: mid-density UI accent veiled over surface-3.
       const veil = `color-mix(in srgb, ${cssVar('--accent-ui-dim', '#6d7d99')} 55%, transparent)`;

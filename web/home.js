@@ -322,7 +322,7 @@ python -m flowmirror.cli export-bundle runs/out/demo_two-arm</pre>
     ['分臂方式', esc(levelZh)],
     ['决策策略', esc(policy)],
     ['信息流', `${num(model.orgs.length)} 家机构 · ${num(model.postById.size)} 条笔记`],
-    ['结束状态', `${esc(STATUS_ZH[model.status] || model.status || '未记录')}
+    ['结束状态', `${esc(RUN_STATUS_ZH[model.status] || model.status || '未记录')}
       <span class="faint">${esc(model.status || '')}</span>`],
     ['不变量', esc(invLine)],
   ];

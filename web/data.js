@@ -8,6 +8,10 @@
    produce the same shape, so no page module needs to know which it got — it only reads
    `model.source` to say so honestly on screen. */
 
+// Fallbacks must be keyed by arm name, not position: without CSS vars a 2-arm
+// T/TV run would otherwise take index 1 (TC's purple), breaking "arm colors
+// belong to their arm". Unknown arm names still fall back positionally below.
+const ARM_FALLBACK_BY_NAME = { T: '#5c8bb0', TC: '#8e7bc4', TV: '#d9a441' };
 const ARM_FALLBACK = ['#5c8bb0', '#8e7bc4', '#d9a441', '#4fa981', '#c9536b'];
 const EV_KINDS = ['post', 'imp', 'dec', 'click', 'co', 'act', 'cmt', 'clim', 'st', 'refl'];
 
@@ -50,7 +54,7 @@ function groupByDay(rows) {
 function armColours(arms) {
   const out = {};
   arms.forEach((a, i) => {
-    out[a] = cssVar(`--arm-${a}`, '') || ARM_FALLBACK[i % ARM_FALLBACK.length];
+    out[a] = cssVar(`--arm-${a}`, '') || ARM_FALLBACK_BY_NAME[a] || ARM_FALLBACK[i % ARM_FALLBACK.length];
   });
   return out;
 }
@@ -331,13 +335,15 @@ export function stateAt(model, i) {
 /** Cumulative counts over days 0..i. Field names match the pre-refactor viewer. */
 export function tallyUpTo(model, i) {
   const t = {
-    imp: 0, eng: 0, cmt: 0, bull: 0, bear: 0, watch: 0,
+    imp: 0, click: 0, eng: 0, cmt: 0, bull: 0, bear: 0, watch: 0,
     co: 0, signed: 0, declined: 0, blocked: 0, sub: 0, red: 0, amt: 0, fees: 0,
     reach: new Set(), byOc: {},
   };
   for (let k = 0; k <= i && k < model.byDay.length; k++) {
     const g = model.byDay[k];
     t.imp += g.imp.length;
+    // Click bridges imp and checkout in the funnel; every byDay day carries a click array like imp/cmt.
+    t.click += g.click.length;
     for (const r of g.imp) t.reach.add(String(r.i));
     for (const r of g.dec) {
       if (((r.n_like || 0) + (r.n_save || 0) + (r.n_follow || 0)) > 0) t.eng++;

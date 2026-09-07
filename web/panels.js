@@ -198,6 +198,7 @@ export function mountReplayPanels(root, model, opts = {}) {
       `<div class="tally"${title ? ` title="${esc(title)}"` : ''}><b>${value}</b>${esc(label)}</div>`;
     const parts = [
       item('曝光', num(t.imp), '累计 imp 事件数'),
+      item('点击', num(t.click), '累计 click 事件数：曝光之后、结账之前的一步'),
       item('触达人数', num(t.reachN), '至今至少被曝光过一次的投资者'),
       item('互动人次', num(t.eng), '当日有赞/藏/关的投资者，逐日累加'),
       item('评论', num(t.cmt)),

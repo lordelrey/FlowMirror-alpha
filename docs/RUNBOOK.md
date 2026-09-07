@@ -427,7 +427,7 @@ anything about the interface. The acceptance record lives in
 |---|---|---|
 | Local mini-server | `python web/server.py [--port 8765] [--images-root <local image store>]` | Everything. Binds 127.0.0.1 only. Lists the runs under `runs/out/`; can launch a run from the page and stream engine stdout; with `--images-root` it serves real images (sha256 re-computed and compared on every request) |
 | Any static server | `python -m http.server 8765 --bind 127.0.0.1`, then open `http://127.0.0.1:8765/web/?run=<tag>` | All read-only pages work; the run-launch controls are disabled and the equivalent command is shown |
-| GitHub Pages | — | The repository distributes exactly one sample bundle, `web/samples/demo_three_arm/`, so the page shows a real run even without `?run=` (three arms T/TC/TV, 42 investors × 12 trading days, synthetic equity, institution names anonymized) |
+| GitHub Pages | — | The repository distributes exactly one sample bundle, `web/samples/demo_three_arm/`, so a real run is one click away: open `?run=demo_three_arm` (three arms T/TC/TV, 42 investors × 12 trading days, synthetic NAVs, institution names anonymized). With no `?run=` at all the four run-scoped pages say so and point at the picker — the viewer does not pick a run for you |
 
 ### The seven pages, one sentence each
 

@@ -105,8 +105,25 @@ DayState = {
   shown: Post[],                        // 当天出现过的帖子,按 post_id 升序
   climate: Map<postId, string>,
 }
-Tally = { impressions, reach, likes, saves, follows, comments,
-          clicks, checkouts, subscribes, redeems, byOc: Record<string, number> }
+// 2026-09-08 订正:这一段原本写的是一套 data.js 从未产出的字段名(impressions/likes/
+// saves/follows/subscribes/redeems),照着它写的模块会拿到一堆 undefined。下面是实现
+// 真正返回的形状。契约声称自己是唯一权威,那就得跟得上代码——否则它只会把人引到坑里。
+Tally = {
+  imp,            // 曝光次数
+  eng,            // 有互动的 agent-日数(赞/藏/关任一)
+  cmt,            // 评论条数
+  bull, bear, watch,     // 评论立场分布
+  co,             // 结账笔数
+  signed,         // 其中签署确认书
+  declined,       // 其中拒签
+  blocked,        // 其中被硬性拦截或当日停购
+  sub, red,       // 申购 / 赎回笔数
+  amt,            // 申购金额合计
+  fees,           // 费用合计
+  reach: Set<agentId>,   // 触达到的 agent 集合
+  reachN,         // 上面那个集合的大小
+  byOc: Record<string, number>,
+}
 ```
 
 ## 2. 页面模块签名(六张卡各写一个文件)

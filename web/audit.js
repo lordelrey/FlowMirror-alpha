@@ -262,8 +262,12 @@ function imagesSection(model) {
     head = `<p class="said">${esc(`本次运行附了 ${num(img.attached)} 张图。`)}</p>`;
   }
   const body = head + kv([
+    // Local absolute paths must not reach the UI: the exporter already elides
+    // them in showcase bundles, and raw-artifact runs (which read run_meta.json
+    // directly) should render the same way. Show only the final directory
+    // segment plus a "configured" marker.
     ['images_root', rootConfigured
-      ? `<code>${esc(String(img.root))}</code>`
+      ? `<code>${esc(String(img.root).replace(/.*[\\/]/, '') || 'images')}/（已配置）</code>`
       : esc('未配置')],
     ['挑图策略 policy', esc(String(img.policy ?? '—'))],
     ['已附图 attached', num(img.attached ?? 0)],
@@ -574,7 +578,7 @@ function runRow(r, base) {
     ? '<span class="faint">未知</span>'
     : (hasBundle ? tag('有', '') : tag('无', ''));
   const extras = [];
-  const rm = r.run_meta ?? r.has_run_meta;
+  const rm = r.run_meta ?? r.has_run_meta ?? r.has_meta;
   const iv = r.invariants ?? r.has_invariants;
   if (rm === false) extras.push(tag('无 run_meta', ''));
   if (iv === false) extras.push(tag('无不变量报告', ''));

@@ -265,7 +265,11 @@ class Handler(SimpleHTTPRequestHandler):
     images_root: Path | None = None
 
     def __init__(self, *a, **kw):
-        super().__init__(*a, directory=str(ROOT), **kw)
+        # Serving the repo root as static files shipped config/api.yaml (the
+        # API key) and .git/ to anyone who could reach the port. Only web/ is
+        # static now; run artifacts are exposed via the safe_run_path-backed
+        # routes in do_GET instead of raw disk paths.
+        super().__init__(*a, directory=str(ROOT / "web"), **kw)
 
     # keep the console readable: one line per request, no client address noise
     def log_message(self, fmt, *args):
@@ -295,9 +299,42 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def translate_path(self, path):
+        # Docs and existing links point at /web/?run=<tag>, a leftover from
+        # when the static root was the repo top. The static root is web/
+        # itself now, so strip one leading "web" segment before delegating;
+        # that keeps both /web/app.js and /app.js resolving to the same file
+        # under ROOT/web/. The base translate_path keeps ownership of URL
+        # decoding and ".." folding -- do not rebuild filesystem paths here.
+        p = path.split("?", 1)[0].split("#", 1)[0]
+        segs = p.split("/")
+        if len(segs) > 1 and segs[1] == "web":
+            del segs[1]
+        return super().translate_path("/".join(segs))
+
     def do_GET(self):                                              # noqa: N802
         u = urlparse(self.path)
         parts = [p for p in u.path.split("/") if p]
+
+        if not self._host_ok():
+            # DNS-rebinding shield: binding to 127.0.0.1 alone does not stop
+            # a foreign page from resolving its own hostname to 127.0.0.1;
+            # those requests arrive with a Host we never issued, so drop them.
+            # Deliberately the first statement: any branch answered before it
+            # (api/runs listing, artifact files, static fallback) would hand
+            # a forged Host a working route.
+            return self._json(403, {"error": "Host 校验失败：仅允许 127.0.0.1 / localhost（防 DNS rebinding）"})
+
+        # web/data.js fetches artifacts at ${base}/runs/out/<tag>/<file> with
+        # base defaulting to "..", i.e. relative to the old static root. The
+        # static root is web/ now, so those URLs no longer map to files; route
+        # them through safe_run_path (same traversal guards as /api/runs/...)
+        # to keep the UI working without re-exposing the repo root.
+        if len(parts) >= 4 and parts[:2] == ["runs", "out"]:
+            p = safe_run_path(parts[2], "/".join(parts[3:]))
+            if p is None:
+                return self._json(404, {"error": "找不到该运行产物，或路径越界"})
+            return self._file(p)
 
         if not parts or parts[0] != "api":
             return super().do_GET()
@@ -314,6 +351,7 @@ class Handler(SimpleHTTPRequestHandler):
             if p is None:
                 return self._json(404, {"error": "找不到该运行产物，或路径越界"})
             return self._file(p)
+
 
         if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "log":
             rid = unquote(parts[2])
@@ -346,10 +384,34 @@ class Handler(SimpleHTTPRequestHandler):
 
         return self._json(404, {"error": "未知的 API 端点"})
 
+    def _host_ok(self):
+        # Binding to 127.0.0.1 alone does not stop DNS rebinding: a page on
+        # some other site can resolve its own hostname to 127.0.0.1, and the
+        # browser then reaches us with a Host we never issued. Only requests
+        # that address this server by 127.0.0.1 / localhost (any port) pass.
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip().lower()
+        return host in ("127.0.0.1", "localhost")
+
     def do_POST(self):                                             # noqa: N802
+        if not self._host_ok():
+            return self._json(403, {"error": "Host 校验失败：仅允许 127.0.0.1 / localhost（防 DNS rebinding）"})
         u = urlparse(self.path)
         if u.path.rstrip("/") != "/api/run":
             return self._json(404, {"error": "未知的 API 端点"})
+        # Starting a run is an irreversible, cross-system action (subprocess,
+        # disk writes). A plain HTML form with enctype="text/plain" can carry
+        # JSON-shaped bodies and is NOT covered by the CORS preflight that
+        # guards cross-origin JSON fetches, so gate on both headers below.
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(400, {"error": "Content-Type 必须是 application/json；不接受 text/plain 表单直发"})
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            # Browsers attach Origin to same-origin POSTs too; absent Origin
+            # (curl, same-origin navigation) is allowed through.
+            host = self.headers.get("Host") or ""
+            if origin not in ("http://" + host, "https://" + host):
+                return self._json(403, {"error": "拒绝跨源请求：Origin 不是本服务自身"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
