@@ -638,6 +638,18 @@ def _held_codes(text):
     for line in (text or "").splitlines():
         if "held:" in line.lower() or "held：" in line or line.strip().startswith("持仓"):
             out.update(_codes_in(line))
+        # Holding lines rendered by prompt.py carry NO prefix marker; they look
+        # like "003142 / ... / R3 / 73,845.06份 × 净值0.9600 / 浮动盈亏 -4.1%".
+        # The legacy markers above ("held:", "held：", lines starting with
+        # "持仓") are never emitted by the prompt, so this parser always
+        # returned [] and the mock redeem branch in _trade has been dead code
+        # since the project started. Match on the "份 × 净值" + "浮动盈亏"
+        # pair instead: the generator guarantees both fragments on every
+        # holding line, and no other prompt line contains them. The
+        # empty-holdings line "你目前没有持有任何基金。" matches neither
+        # fragment and would yield no codes anyway.
+        elif "份 × 净值" in line and "浮动盈亏" in line:
+            out.update(_codes_in(line))
     return sorted(out)
 
 
