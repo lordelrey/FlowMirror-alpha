@@ -113,7 +113,7 @@ attachment on the TV arm:
 | key | meaning |
 |-----|---------|
 | `images_root` | Directory holding the pre-resized creative images, one file per `image_id` (flat, 0-based names like `68f06272000000000503bd5b_0.jpg`). `null` (default) = text-only: the engine prints `[world] WARNING: no images_root configured -- TV arm degrades to text-only; the modality comparison measures nothing.` at run start, TV is byte-identical to T, and the `m_tv_arm_carries_images` invariant is skipped with that reason. |
-| `image_pick` | Which of a note's OWN images to show: `"first"` (default; the note's first image, the intended original behaviour) or `"random"` (one of the note's own images, drawn per impression from the agent's deterministic RNG stream, so the same agent-day-post picks the same image on replay). Both hold the text, the landing fund and the institution constant, so `"random"` is a clean within-stimulus randomisation for later image-property work. |
+| `image_pick` | Which of a note's OWN images to show: `"first"` (default; the note's first image) or `"random"` (one of the note's own images, drawn per impression from a DEDICATED derived stream, `rng_for(run_tag, "img", agent_id, day, post_id)` -- deliberately **not** the agent's own `inv.rng`, because consuming that stream would shift every later draw for that investor and make a TV agent diverge from a T agent for reasons having nothing to do with the picture). The same agent-day-post therefore picks the same image on replay. Both policies hold the text, the landing fund and the institution constant, so `"random"` is a clean within-stimulus randomisation for later image-property work. |
 
 Mechanics: the engine joins `<images_root>/<image_id>` and verifies the
 file's sha256 against the pool's `image_sha256` before attaching anything; a
@@ -123,10 +123,15 @@ channel as always). Arm T never receives pixels or image fields; arm TC keeps
 OCR + the frozen caption and still receives no pixels. TV impressions log the
 chosen index as `img_idx` on the `imp` row (integer, or null when nothing
 attached), and `run_meta.json` records
-`images: {root, attached, missing, sha_mismatch, policy}`. The invariant
-`m_tv_arm_carries_images` FAILS a run where TV is active, `images_root` is
-configured, and zero impressions carried an image -- that silent no-op is
-exactly what the invariant layer exists to catch.
+`images: {root, attached, missing, sha_mismatch, policy}`.
+
+The invariant `m_tv_arm_carries_images` **reports, and never gates**: it always
+passes, and its `reason` says which case the run is in (no `images_root`, no TV
+arm, or both present with the three counts). Gates belong at irreversible,
+cross-system, security or release boundaries, and a simulation run is none of
+those. The question "did pixels actually reach the agents" is answered by
+`run_meta.images.attached`, which is a number you can read at a glance -- it
+does not need a failed run to express it.
 
 `runs/demo_three_arm_images.json` is `runs/demo_three_arm.json` plus
 `images_root` + `image_pick: "first"`. It is NOT part of the offline demo set
@@ -148,8 +153,12 @@ python -m flowmirror.engine.loop runs/demo_three_arm_images.json --mock --days 5
 ```
 
 A successful run prints `[world] images: <n> resolvable under <images_root>`,
-reports a non-zero `images.attached` in `run_meta.json`, passes the
-`m_tv_arm_carries_images` invariant, and shows `img_idx` on TV impressions.
+reports a non-zero `images.attached` in `run_meta.json`, and shows `img_idx` on
+TV impressions. On the store above a 3-day 24-agent run attaches 144 of 144 TV
+impressions with `missing: 0` and `sha_mismatch: 0`, `img_idx` appears on TV
+rows and on no others, and the TV prompt carries an `image_url` part whose
+digest is the file's own while arm T carries neither -- the two arms are no
+longer the same stimulus.
 
 ## 5. Exporting the exact prompt an agent saw
 
@@ -193,9 +202,14 @@ Start small: `flowmirror run <run.json> --days 5 --agents 20 --out runs/out/live
   `config/schemas/event.schema.json`. This file **is** the simulation.
 * `llm_cache.jsonl` - provider responses (`key/parsed/provenance/raw/ts`).
 * `prompts/` - only when `--dump-prompt` is used (section 5).
-* run metadata / counters used by `--replay-check`; includes the `images`
-  block (`root` / `attached` / `missing` / `sha_mismatch` / `policy`) from
-  the image card.
+* `invariants_report.json` - every registered invariant with its detail, plus a
+  summary (`total` / `passed` / `failed` / `skipped` / `all_passed`).
+* `run_meta.json` - run metadata and counters, including:
+  * `images` (`root` / `policy` / `attached` / `missing` / `sha_mismatch`)
+  * `counters.decision_failures_transport` and `counters.decision_failures_model`
+    -- the two kinds always sum to `counters.decision_failures`. The run summary
+    line prints them as `decision_failure_rate=... (transport=N model=N)`.
+  * `investors.initial_pnl_misses` when `initial_pnl.mode` is `"target"`
 
 To restore an overwritten output directory, see
 `flowmirror.io.backups.backup_existing`.
@@ -208,10 +222,18 @@ To restore an overwritten output directory, see
   order can reach an output file.
 * Same config + same cache state => byte-identical `event_log.jsonl`
   (`--replay-check` proves it; a mismatch exits 3).
-* `image_pick: "random"` draws from the per-agent deterministic stream (via
-  `rng_seed_from`, never `hash()`), so the same agent-day-post always picks
-  the same image on replay; a null `images_root` behaves exactly as the
-  pre-image code did.
+* `image_pick: "random"` draws from a DEDICATED derived stream
+  (`rng_for(run_tag, "img", agent_id, day, post_id)` via `rng_seed_from`, never
+  `hash()`), so the same agent-day-post always picks the same image on replay.
+  It deliberately does not consume the agent's own `inv.rng`: a draw inserted
+  there would shift every later draw for that investor, so the arms would differ
+  for a reason unrelated to the treatment. A null `images_root` behaves exactly
+  as the pre-image code did -- no attachment, no counters, no extra draw, and no
+  `img_idx` field on the `imp` row at all.
+* A new per-day or per-agent value that the agents can see must be derived from
+  data dated `t-1` or earlier. Invariant (a) enforces it and this codebase has
+  shipped exactly that bug once, in a week key that stepped back one day instead
+  of one week.
 
 ## 9. Troubleshooting
 
@@ -221,7 +243,10 @@ To restore an overwritten output directory, see
 | `...nav_demo_2025q4.json` missing | rerun the `make_demo_nav.py` command from section 1 |
 | `[world] WARNING: no images_root configured ...` at run start | text-only run by design (TV degrades to T); set `images_root` per section 4 to make the TV arm multimodal |
 | `image_sha_mismatch` notes / `images.sha_mismatch > 0` in run_meta.json | a file under `images_root` does not match the pool's sha256 (tampered or stale store); re-sync the store from fundmarket-sim (section 4) |
-| invariant `m_tv_arm_carries_images` FAILED | TV ran with `images_root` configured but zero attachments; read the `[world] images:` line and the `images` block in run_meta.json, fix the store path (section 4) |
+| `run_meta.images.attached` is 0 on a run that configured `images_root` | the store path resolves nothing: read the `[world] images:` line and the `images` block, then fix the path (section 4). `m_tv_arm_carries_images` reports this and does not fail the run |
+| `decision_failure_rate` above the halt threshold, `transport=` equal to the whole count | not the model: the provider is unreachable, rate-limiting, or the credential is wrong (section 6). Only `model=` failures mean unparseable output |
+| `market.benchmark_path is configured but unreadable` | the benchmark file is missing; `data/market/` is git-ignored third-party data, so regenerate it or unset the key (section 12) |
+| a `qdii_blocked` calendar that never suspends anything | the run prints `[world] note: qdii_blocked is configured but no fund in this universe is QDII`; the key exists so the path is reachable, and no shipped config sets it (section 11) |
 | `[flowmirror] FAIL ... (run): ...` | config error; the message names the problem; check `config/schemas/run.schema.json` |
 | `exit 3` after `--replay-check` | replay mismatch: compare the two `replay-check sha*=` lines; nondeterminism was introduced somewhere |
 | provider 401/403 or immediate credential error | credentials resolution failed; see section 6 |
@@ -233,4 +258,153 @@ To restore an overwritten output directory, see
 flowmirror schemas        # list bundled schemas
 flowmirror tree           # real package map, generated from the installed code
 flowmirror validate <f>   # validate any config against its schema
+flowmirror export-bundle <run_dir> [--out DIR] [--anonymise-orgs] [--max-bytes N]
 ```
+
+`export-bundle` turns a finished run directory into the four files the web
+viewer reads: `bundle.json` (run metadata, the `images` block, the invariants
+summary and entries, a per-day aggregate, and a `truncation` record),
+`posts.json` (per post, the text as EACH arm rendered it -- produced by calling
+the engine's own `_feed_card` -> `render_card`, so the bundle cannot drift from
+what the agents were shown -- plus per-arm reach and engagement, and the image
+DIGEST only), `agents.json` (per investor: cell, arm, opening cash and
+holdings, a per-day record, familiarity over time) and `events.json`.
+
+It never emits an image byte, an absolute filesystem path, or a key-shaped
+string. Over the byte budget it drops `imp` then `st` rows and records what it
+dropped, so a truncation is always visible to the reader.
+`--anonymise-orgs` replaces institution names with stable pseudonyms for
+double-blind review.
+
+Also useful, and NOT wired into the CLI:
+
+```
+python -m flowmirror.analysis.modality <run_dir> [<run_dir> ...]   # arm contrasts
+python -m flowmirror.analysis.export_bundle <run_dir>              # same exporter, direct
+python -m flowmirror.channels.feed                                 # channel self-test
+python -m flowmirror.engine.world --self-test
+python -m flowmirror.engine.loop  --self-test
+```
+
+The three self-tests must all exit 0. They cover 63, 50 and 41 assertions
+respectively and are not part of `pytest`, so run them after touching the
+engine.
+
+## 11. Parameters the decision record pins
+
+Every key below is optional. **Except where the table says otherwise, each
+default equals the literal the code used before it became configurable**, so a
+config that omits the block behaves byte-identically. The values come from
+`docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md` section 5, which is the
+authority when code and documentation disagree.
+
+`config/schemas/run.schema.json` sets `"additionalProperties": false`, so a key
+that is not in the schema is not merely ignored -- the whole config is rejected.
+That is why several of these mechanisms were unreachable before: the code read
+`cfg["fam_decay"]` and `cfg["qdii_blocked"]`, and no config could legally
+supply either.
+
+| key | default | note |
+|-----|---------|------|
+| `dynamics.fam_decay` | `0.2` | familiarity EMA decay. **Changed** from an unreachable 0.1. |
+| `dynamics.lambda_attention` | `0.8` | attention adstock retention. **Changed**: attention used to share one constant with familiarity decay, so no run could vary them independently. |
+| `dynamics.beta_guba` | `0.0` | coefficient on the lagged week's `z_abnormal` in the attention update. The pipeline is wired and the coefficient is **zero by decision**, so the term is present and inert; enabling the channel later is a one-value change. Do not set 0.1. |
+| `dynamics.lambda_trust` | `0.9` | institution-trust adstock |
+| `dynamics.fam_threshold` | `1.0` | exposure/affinity stock at which familiarity reaches level 1 |
+| `dca.pct` | `0.02` | monthly plan ticket as a share of cash |
+| `dca.min_ticket` | `100.0` | below this the plan skips and counts `dca_skipped` |
+| `feed.climate_margin` | `1/6` | comment-climate majority margin. **Changed** from a hardcoded 1/3, which was twice as strict as decided. |
+| `fees.subscribe_rate` | `0.0012` | **Changed** from 0.0; `act.fee` is non-zero now and the wealth identity already carried the fee term |
+| `fees.redeem_rate` | `0.005` | **Changed** from 0.0 |
+| `llm.temperature` | `0.3` | equals the old module constant, and now reaches `run_meta.json` -- a published experiment has to record its own sampling temperature |
+| `llm.max_provider_attempts` | `5` | physical HTTP retries. Distinct from `llm.max_attempts`, the macro retry switch; the two used to share a name in different namespaces. |
+| `initial_pnl.mode` | `"lookback"` | `"lookback"` reproduces the historical behaviour exactly and is what every demo uses. `"target"` aims at a P&L DISTRIBUTION instead, for research configs -- see below. |
+| `initial_pnl.lookback_days_min` / `_max` | `60` / `250` | the old literals |
+| `initial_pnl.share_at_loss` | `0.05` | `"target"` mode only |
+| `initial_pnl.tolerance` | `0.02` | `"target"` mode only; misses count as `investors.initial_pnl_misses` |
+| `qdii_blocked` | unset | `{"YYYY-MM-DD": {"codes": [...]}}`. In the schema so the suspension path is reachable; **no shipped config sets it**, because a real suspension calendar is a data task. A configured calendar with no QDII fund in the universe prints a note. |
+| `market.benchmark_path` / `_label` | `null` | see section 12 |
+
+### Why `initial_pnl` has a target mode
+
+The lookback draw randomises the LOOKBACK LENGTH, not the gain or loss. On the
+real NAV series that produced only 4.9% of holdings at a loss, median +39%. In
+a live smoke run every one of 77 decisions came back with mood 4, no comment
+was bearish, and no affinity delta was ever negative -- the behaviour counts
+varied fine, the ENVIRONMENT was one-sided. Under the synthetic demo NAVs the
+same code gives roughly 48% at a loss, so the demos never showed the problem.
+This matters because the disposition effect is one of the stylised facts the
+paper reproduces, and reproducing it needs losers to exist. Every run now
+prints its own opening split, e.g.
+`[world] initial P&L (lookback): 18 of 43 opening holding(s) at a loss (41.9%)`,
+and the `m_env_valence_warning` invariant carries the same numbers -- as a
+report, never a gate.
+
+## 12. The news channel and its benchmark
+
+Three lines can appear in the news block. All three read data dated `t-1` or
+earlier:
+
+* **the market line** -- a five-trading-day benchmark return, present only when
+  `market.benchmark_path` is set and the series covers the day
+* **the holdings line** -- the holdings-weighted one-day return, using the NAVs
+  of `t-1` and `t-2`
+* **guba lines** -- for a fund whose lagged week has posts, the discussion
+  volume relative to its trailing baseline
+
+**The benchmark series is a disclosed PROXY.** The owner asked for the SSE
+Composite (上证指数). The data source serves real index closes only for CSI 300
+(000300), ChiNext (399006), the Dow, the Nasdaq and London gold -- not for the
+SSE Composite -- so the unit NAV of fund `510760`, an SSE-Composite tracking
+ETF, stands in. Two consequences bind the whole project:
+
+* the values are fund unit NAVs, not index points, so a level is meaningless
+  and **only a return may be used or shown**; `index_5d` is
+  `v[t-1] / v[t-6] - 1` and nothing prints the level
+* every prompt, report and paper sentence naming it says
+  "上证综指ETF（510760）单位净值，作为上证综指的代理" and **never** "上证指数"
+
+The file lives at `data/market/benchmark_sse_composite_etf_510760.json` as
+`{"_meta": {...}, "series": {"YYYY-MM-DD": float}}`. `data/market/` is
+git-ignored: third-party data, held to the same rule as the NAV cache and
+never redistributed. A missing date, a gap, or fewer than six prior
+observations omits the key entirely rather than interpolating -- a fabricated
+quote in a market line is worse than a missing line. A configured but
+unreadable path raises instead of quietly producing a text-only market line.
+
+Switching to a real index means fetching `000300` daily closes and pointing
+`benchmark_path` and `benchmark_label` at the result; no code changes.
+
+**The guba stance seed is not available yet.** The signal file carries
+`n_posts`, `reply_n`, `read_n`, `z_abnormal` and `ratio_vs_baseline`, and its
+own `_meta` says no stance is computed there. So `bull_ratio` is absent, every
+run prints
+`[world] WARNING: guba stance seed unavailable -- 0 of N fund-weeks carry bull_ratio`,
+the cold-start climate falls back to agent comments, and the guba line omits
+its stance clause rather than printing a measured-looking 5:5. Neither the
+README nor the paper may claim a "guba sentiment seed" until the labelling
+task runs; the code accepts `bull_ratio` the moment it appears, with no
+further change.
+
+## 13. Failure kinds
+
+`llm.decision_failure_halt` (default `0.02`) stops a run whose decision failure
+rate passes the threshold. That rule exists to catch a MODEL that cannot
+produce parseable output, and the engine used to count a dead socket, an HTTP
+error and malformed JSON into the same bucket -- so a revoked key presented as
+model instability. In one live smoke run three rate-limited calls looked like
+an unstable model while the parse rate was 77 of 77.
+
+Each `dec` row now carries `failure_kind`:
+
+| value | meaning |
+|-------|---------|
+| `"transport"` | no model output at all: exception, HTTP error, empty response, or a rejected reasoning salvage |
+| `"model"` | a response arrived and JSON or schema parsing failed |
+| `null` | the decision parsed |
+
+**The threshold and the halt condition are unchanged** -- the split is a
+diagnosis, not a new gate; changing the gate would be a pre-registration
+change. The identity `transport + model == decision_failures` holds on every
+run. If a halt fires with `transport` equal to the whole count, fix the
+credential or the rate limit; the model was never the problem.
