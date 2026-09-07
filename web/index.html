@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowMirror 回放</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>FlowMirror 模拟社会回放</h1>
+    <span class="runtag" id="runtag">载入中…</span>
+    <span class="spacer"></span>
+    <span class="chip" id="chip-scale">—</span>
+    <span class="chip warn" id="chip-nav" hidden>合成净值，仅供演示</span>
+    <span class="chip warn" id="chip-mock" hidden>模拟模型，无真实调用</span>
+    <span class="chip warn" id="chip-img" hidden>本次运行未附带图片</span>
+    <span class="chip" id="chip-inv">不变量 —</span>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true">中国 · 小红书 2025Q4</button>
+    <button class="tab" role="tab" aria-selected="false" disabled
+            title="素材与基金数据已采集；场景骨架尚未可运行">美国 2025（路线图）</button>
+  </div>
+
+  <div id="fatal" class="err" hidden>
+    <h2>无法载入运行数据</h2>
+    <p id="fatal-msg" class="muted"></p>
+    <p class="muted">在仓库根目录启动本地服务后打开本页：</p>
+    <p><code>python -m http.server 8765 --bind 127.0.0.1</code></p>
+    <p class="muted">然后访问 <code>http://127.0.0.1:8765/web/?run=demo_three-arm</code></p>
+  </div>
+
+  <div class="stage" id="stage" hidden>
+
+    <section class="panel">
+      <h2>当日帖子 <span id="feed-count" class="muted"></span></h2>
+      <div class="feed-list" id="feed"></div>
+      <div class="body muted" style="border-top:1px solid var(--line)">
+        点一条帖子，场上会只高亮看到它的人。
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>人口场 · 横轴年龄 纵轴资产 每格三条风险容忍带</h2>
+      <canvas id="field" width="1180" height="700" role="img"
+              aria-label="模拟人口场：每个点是一位投资者，按年龄、资产与风险容忍度分格排布"></canvas>
+      <div class="legend" id="legend"></div>
+
+      <div class="transport">
+        <button id="btn-first" title="回到第一天">⏮</button>
+        <button id="btn-prev" title="上一天">◀</button>
+        <button id="btn-play" class="primary" title="播放 / 暂停（空格）">▶ 播放</button>
+        <button id="btn-next" title="下一天">▶</button>
+        <button id="btn-last" title="最后一天">⏭</button>
+        <span class="daylabel" id="daylabel">第 — 天</span>
+        <input type="range" id="scrub" min="0" max="0" value="0" aria-label="按天跳转">
+        <select id="speed" aria-label="播放速度">
+          <option value="2">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="0.5">2×</option>
+          <option value="0.25">4×</option>
+        </select>
+      </div>
+
+      <div class="tallies" id="tallies"></div>
+    </section>
+
+    <section class="panel">
+      <h2 id="insp-title">图例与统计</h2>
+      <div class="body" id="inspector"></div>
+    </section>
+
+  </div>
+
+  <div class="grid2" id="lower" hidden>
+    <section class="panel">
+      <h2>模态对照 · 同一条帖子在三个臂里的样子</h2>
+      <div class="body">
+        <p class="muted" id="mod-note"></p>
+        <div class="grid3" id="modality"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>适当性结账（suitability checkout）</h2>
+      <div class="body scrollx" id="checkout"></div>
+    </section>
+  </div>
+
+  <section class="panel" id="heatwrap" hidden style="margin-top:14px">
+    <h2>扩散热力图 · 行是投资者（按人口格排序） 列是交易日</h2>
+    <div class="body">
+      <canvas id="heat" width="1180" height="260" role="img"
+              aria-label="每位投资者每天的互动强度热力图"></canvas>
+      <p class="muted" id="heat-note"></p>
+    </div>
+  </section>
+
+  <section class="panel" id="invwrap" hidden style="margin-top:14px">
+    <h2>不变量报告</h2>
+    <div class="body scrollx" id="invariants"></div>
+  </section>
+
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
