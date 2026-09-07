@@ -18,6 +18,12 @@ Pinned behaviour:
     BACKOFF_ERROR_S * k for non-empty failures, token ladder never escalates without truncation;
   * no credentials at all             ==> RuntimeError naming all three supported ways to supply
     a key, raised BEFORE any attempt or backoff is spent (nothing is ever cached), echoing no key.
+
+Card RT2 (E9) extends the same scripted transport to the two values that used to be module
+constants: the request payload must carry the CONFIGURED sampling temperature (an unrecorded
+temperature is an unrecorded experimental parameter), and `max_provider_attempts` must be the
+ladder's real length -- with the defaults still equal to the frozen 0.3 / 5, which is what the
+tests above already pin by never passing either one.
 """
 from __future__ import annotations
 
@@ -69,7 +75,10 @@ def _install(monkeypatch, behavior, sleeps):
 
     def fake_post(url, headers=None, json=None, timeout=None):
         step = behavior[len(calls)] if len(calls) < len(behavior) else behavior[-1]
-        calls.append({"url": url, "model": (json or {}).get("model")})
+        body = json or {}
+        # RT2: the payload is recorded whole enough to assert the sampling temperature actually
+        # sent, not merely the value _llm_sampling computed.
+        calls.append({"url": url, "model": body.get("model"), "temperature": body.get("temperature")})
         if step == "raise":
             raise RuntimeError("transient provider error")
         if step == "http_500":
@@ -138,3 +147,46 @@ def test_call_glm_without_credentials_fails_fast_with_actionable_message(monkeyp
         assert needle in msg
     assert "unit-test-key" not in msg      # a key (or any part of one) is never echoed
     assert calls == [] and sleeps == []    # fail fast: no attempt and no backoff spent, nothing cached
+
+
+# --------------------------------------------------------------------------------------
+# Card RT2 (E9): the two provider parameters that used to be unconfigurable constants.
+# --------------------------------------------------------------------------------------
+def test_payload_carries_the_configured_temperature(monkeypatch):
+    """`temperature=` reaches the request body; omitting it keeps the frozen 0.3 default.
+
+    TEMP was a module constant that never reached run_meta, so no reviewer could tell what
+    sampling temperature a published run used. It is only genuinely recorded if the value in
+    the config is the value in the payload -- which is what this asserts."""
+    sleeps = []
+    calls = _install(monkeypatch, ["ok"], sleeps)
+
+    rt.call_glm(_MESSAGES, 1024, parser=_parse, temperature=0.9)
+    rt.call_glm(_MESSAGES, 1024, parser=_parse, temperature=0.0)   # greedy is a real setting
+    rt.call_glm(_MESSAGES, 1024, parser=_parse)                    # unpassed -> today's constant
+
+    assert [c["temperature"] for c in calls] == [0.9, 0.0, rt.TEMP_DEFAULT]
+    assert rt.TEMP_DEFAULT == 0.3          # the default equals the constant it replaced
+    # _llm_sampling is the one place cfg["llm"] is read, and 0.0 must survive it (a plain
+    # `value or default` would silently restore 0.3 and misreport the run).
+    assert rt._llm_sampling({"llm": {"temperature": 0.0}})[0] == 0.0
+    assert rt._llm_sampling({})[0] == rt.TEMP_DEFAULT
+
+
+def test_max_provider_attempts_two_stops_after_exactly_two_attempts(monkeypatch):
+    """A configured ladder length is the ladder's real length -- and no sleep after the last."""
+    sleeps = []
+    calls = _install(monkeypatch, ["raise"], sleeps)
+
+    prov = rt.call_glm(_MESSAGES, 2048, parser=_parse, max_provider_attempts=2)
+
+    assert prov["parsed"] is None
+    assert prov["attempts"] == 2 and len(prov["attempt_log"]) == 2 and len(calls) == 2
+    assert sleeps == [rt.BACKOFF_ERROR_S * 1]      # one backoff between the two, none after
+    # The name collision this key exists to end: llm.max_attempts is the MACRO re-ask switch
+    # read by decide(), llm.max_provider_attempts is this physical ladder. Two keys, two
+    # helpers, two constants -- _llm_cfg must not answer for the provider ladder.
+    assert rt._llm_sampling({"llm": {"max_provider_attempts": 2}})[1] == 2
+    assert rt._llm_cfg({"llm": {"max_attempts": 2}})[3] == 2
+    assert rt.MAX_PROVIDER_ATTEMPTS_DEFAULT == 5 and rt._llm_sampling({})[1] == 5
+    assert not hasattr(rt, "MAX_ATTEMPTS")         # the ambiguous name is gone for good

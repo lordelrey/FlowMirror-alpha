@@ -158,14 +158,30 @@ def _cmt_field(c, primary, alias, default=None):
     return default if v is None else v
 
 
-def climate_for(post_id, comments_prev, min_n=4, weights=None):
+def climate_for(post_id, comments_prev, min_n=4, weights=None,
+                margin=1.0 / 6.0):
     """Aggregate day-(t-1) comment stances for one post into a climate label.
 
-    The +/-1/3 thresholds and the min_n=4 floor are frozen design
-    parameters: below the floor a post shows "no_signal" rather than a
-    noisy majority, which keeps thin comment threads from manufacturing
-    fake social proof for the LLM prompt.  Returns (label, counts) where
-    counts covers {bullish, bearish, watching} only.
+    Decision 1 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md section 5):
+    the majority margin is 1/6.  This function hardcoded +/-1/3 and its own
+    docstring called that a frozen design parameter -- it is twice as strict
+    as DECISIONS #6 asks for, so every thread between the two thresholds was
+    reported "mixed" when the design record calls it a majority.  The margin
+    is now a keyword so the sensitivity sweep needs no code change; the
+    default carries the decided value to the engine until card L3 threads
+    cfg["feed"]["climate_margin"] through loop.py.
+
+    The comparison is STRICT (d > margin), which matters at the margin
+    itself: 3 bullish / 2 bearish / 1 watching gives d == 1/6 to the bit
+    (1/6 is the same float on both sides), so that thread stays "mixed"
+    under margin=1/6 as well.  Only a mix STRICTLY between the old and new
+    thresholds -- e.g. 4/2/2, d = 0.25 -- changes label.
+
+    The min_n=4 floor IS still frozen: below the floor a post shows
+    "no_signal" rather than a noisy majority, which keeps thin comment
+    threads from manufacturing fake social proof for the LLM prompt.
+    Returns (label, counts) where counts covers {bullish, bearish,
+    watching} only.
 
     weights (agent_id -> strat_weight) enables the runtime climate
     weighting path (PREREG v1.2 B): each comment contributes its
@@ -192,9 +208,11 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None):
     if total < min_n:
         return ("no_signal", counts)
     d = (counts["bullish"] - counts["bearish"]) / total
-    if d > 1.0 / 3.0:
+    # Decision 1: the margin is symmetric and comes from the caller, so a
+    # sensitivity sweep changes one config value rather than this file.
+    if d > margin:
         label = "bullish_majority"
-    elif d < -1.0 / 3.0:
+    elif d < -margin:
         label = "bearish_majority"
     else:
         label = "mixed"
@@ -579,12 +597,22 @@ def check_arm_balance(agent_arms, agent_cells, arms=None):
     return (ok_overall and ok_cells, report)
 
 
-def fit(agent_state, post):
+def fit(agent_state, post, fit_band_narrow=0.15, fit_band_wide=0.25):
     """Bounded [0,1] suitability-adjacency heuristic for a (agent, post) pair.
 
     Deliberately a coarse prior, not a gate: the hard CSRC-style C x R rule
     lives in the engine and applies to SUBSCRIBE only.  Keeping this term
     bounded keeps the w_fit weighting stable regardless of agent type.
+
+    E13 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md 1A): the two
+    adjustment magnitudes were bare literals, so no reviewer could read a
+    run config and learn what the suitability prior actually did.  They are
+    now parameters, fed by `feed.fit_band_wide` (the risk-latency swing,
+    0.25) and `feed.fit_band_narrow` (the core-type nudge, 0.15) via
+    rank_feed.  The defaults ARE today's literals, so a config that sets
+    neither key is byte-identical -- and neither key is in
+    config/schemas/run.schema.json yet (they were not on the decided list),
+    so a config that DOES set one is rejected until a schema entry lands.
     """
     s = 0.5
     ig = post.get("intent_group")
@@ -592,14 +620,14 @@ def fit(agent_state, post):
     core = _state_get(agent_state, "core", None)
     if ig == "I2":
         if risk == "tolerant":
-            s += 0.25
+            s += fit_band_wide
         elif risk == "fragile":
-            s -= 0.25
+            s -= fit_band_wide
         if core == "chaser":
-            s += 0.15
+            s += fit_band_narrow
     elif ig == "nonI2":
         if core == "allocator":
-            s += 0.15
+            s += fit_band_narrow
     return max(0.0, min(1.0, s))
 
 
@@ -626,7 +654,9 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
 
     cfg keys: slots {"follow":2,"fit":2,"trending":2} (summing to K,
     default 6) and weights w_trust, w_fit, w_heat, w_soc (defaults
-    1.0/1.0/1.0/0.5) plus eps (default 0.05).  eps must stay SMALL:
+    1.0/1.0/1.0/0.5) plus eps (default 0.05) and the two fit() bands
+    fit_band_narrow / fit_band_wide (defaults 0.15/0.25, E13).  eps must
+    stay SMALL:
     engine_v5 added an unscaled U(0,1) tie-break that dominated ranking
     for low-familiarity agents; that bug must not be reproduced.
 
@@ -668,6 +698,11 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
     w_heat = _f(cfg.get("w_heat", 1.0), 1.0)
     w_soc = _f(cfg.get("w_soc", 0.5), 0.5)
     eps = _f(cfg.get("eps", 0.05), 0.05)
+    # E13: read alongside the weights so the fit prior is scored with one
+    # fixed pair of bands per call, never re-resolved per candidate.  Same
+    # defaults as fit()'s own, so an omitting config changes nothing.
+    band_narrow = _f(cfg.get("fit_band_narrow", 0.15), 0.15)
+    band_wide = _f(cfg.get("fit_band_wide", 0.25), 0.25)
 
     # Score every candidate exactly once, in list order, so the rng stream
     # is consumed identically for identical inputs (reproducibility).
@@ -678,7 +713,8 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
         # not wrongly collapsed into one another by dedup.
         key = pid if pid is not None else ("__obj__", id(post))
         heat = _f(heat_prev.get(pid, 0.0))
-        f = fit(agent_state, post)
+        f = fit(agent_state, post, fit_band_narrow=band_narrow,
+                fit_band_wide=band_wide)
         score = (
             w_trust * math.tanh(_f(trust.get(post.get("org"), 0.0)))
             + w_fit * f
@@ -776,6 +812,34 @@ def self_test():
                              + _cmts(["bearish"] * 4, pid="p2"))
     record("climate_for: ignores other posts' comments", lab_iso == "bullish_majority")
 
+    # Decision 1: the margin is 1/6, and it is a parameter.  The mix that pins
+    # the change has to sit STRICTLY between the two thresholds, because
+    # d > margin is strict: 4 bullish / 2 bearish / 2 watching gives d = 0.25,
+    # "mixed" under the old 1/3 and a majority under the decided 1/6.
+    _straddle = _cmts(["bullish"] * 4 + ["bearish"] * 2 + ["watching"] * 2)
+    lab_m13, _ = climate_for("p1", _straddle, margin=1.0 / 3.0)
+    lab_m16, _ = climate_for("p1", _straddle)
+    record("climate_for: d=0.25 is mixed at margin 1/3, majority at 1/6",
+           lab_m13 == "mixed" and lab_m16 == "bullish_majority",
+           f"1/3={lab_m13} 1/6={lab_m16}")
+    # A thread sitting exactly ON the decided margin does NOT cross it:
+    # 3 bullish / 2 bearish / 1 watching is d == 1/6 as the identical float,
+    # so the strict comparison keeps it "mixed" at both thresholds.  Pinned
+    # here so a later switch to >= -- which would move every hash again --
+    # cannot land silently.
+    _onmargin = _cmts(["bullish"] * 3 + ["bearish"] * 2 + ["watching"])
+    lab_e13, cnt_e = climate_for("p1", _onmargin, margin=1.0 / 3.0)
+    lab_e16, _ = climate_for("p1", _onmargin)
+    _d_edge = (cnt_e["bullish"] - cnt_e["bearish"]) / 6.0
+    record("climate_for: a thread exactly on the 1/6 margin stays mixed",
+           lab_e13 == "mixed" and lab_e16 == "mixed" and _d_edge == 1.0 / 6.0,
+           f"d={_d_edge!r} 1/3={lab_e13} 1/6={lab_e16}")
+    # The same margin governs the bearish branch (symmetry of -margin).
+    lab_bear, _ = climate_for("p1", _cmts(["bearish"] * 4 + ["bullish"] * 2
+                                          + ["watching"] * 2))
+    record("climate_for: the decided margin is symmetric",
+           lab_bear == "bearish_majority", f"lab={lab_bear}")
+
     # Weighted path: all-1.0 weights must equal the unweighted result
     # exactly (dict equality holds because 3.0 == 3 in Python).
     cwb = _cmts(["bullish", "bullish", "bullish", "bearish"])  # inv_00003 bearish
@@ -800,8 +864,13 @@ def self_test():
     cwf = _cmts(["bullish", "bullish", "bearish"])
     lab_f0, _ = climate_for("p1", cwf)
     lab_f1, _ = climate_for("p1", cwf, weights={"inv_00002": 3.0})
+    # Decision 1 moved this expectation: the weighted thread is 2.0 bullish
+    # vs 3.0 bearish, d = -0.2, which clears -1/6 but not the old -1/3.  What
+    # this case exists to prove is unchanged -- the floor is compared against
+    # the WEIGHTED total, so 3 raw comments go from no_signal to labelled --
+    # and asserting the exact label keeps it a margin regression too.
     record("climate_for: min_n floor compares the weighted total",
-           lab_f0 == "no_signal" and lab_f1 == "mixed",
+           lab_f0 == "no_signal" and lab_f1 == "bearish_majority",
            f"{lab_f0} -> {lab_f1}")
 
     # --- top_comments ----------------------------------------------------
@@ -1106,6 +1175,13 @@ def self_test():
            fit({"risk_latent": "tolerant", "core": "chaser"}, {"intent_group": "I2"}) == 0.9
            and fit({"risk_latent": "fragile", "core": "chaser"}, {"intent_group": "I2"}) == 0.4
            and fit({"risk_latent": "fragile", "core": "allocator"}, {"intent_group": "nonI2"}) == 0.65)
+    # E13: the bands are parameters now.  Halving both must move exactly the
+    # terms they name (0.5 + 0.125 + 0.075) and nothing else, which is what
+    # proves the literals were replaced rather than shadowed.
+    _fb = fit({"risk_latent": "tolerant", "core": "chaser"}, {"intent_group": "I2"},
+              fit_band_narrow=0.075, fit_band_wide=0.125)
+    record("fit: custom bands shift the prior by exactly those bands",
+           abs(_fb - 0.7) < 1e-12, f"fit={_fb!r}")
     record("climate_bonus: +1/0/-1/0 mapping",
            climate_bonus("bullish_majority") == 1.0
            and climate_bonus("mixed") == 0.0

@@ -181,6 +181,24 @@ def render_belief(view):
     lines = [f"眼下你对后市的判断偏「{_MV_ZH[mv]}」；面对账户可能的亏损，你的心情是「{_RM_ZH[rm]}」。"]
     if view.get("last_reflection"):
         lines.append("你上次给自己的小结：" + str(view["last_reflection"]))
+    # Audit E10 / decision 11: the beliefs declared at the last reflection feed forward into
+    # the NEXT DECISION prompt only -- never into the reflection input, which is a separate
+    # enhancement the owner has not approved.  Until this line the key was asked for, parsed,
+    # clamped and stored on inv.beliefs and then read by nobody, so a declared cognitive
+    # dimension of the design had no behavioural consequence at all.
+    # Defensive by construction: card L1 is adding view["beliefs"] right now, and an agent
+    # that has not reflected yet carries []. Absent / empty / non-list must every one of them
+    # render nothing, so the surrounding text stays byte-identical.
+    bel = view.get("beliefs")
+    if isinstance(bel, (list, tuple)):
+        # parse_reflection already clamps to 3 x 30 chars; re-clamped here because
+        # render_belief must hold for any other producer of the key too.
+        kept = [s for s in (str(b).strip() for b in bel if isinstance(b, str)) if s][:3]
+        if kept:
+            # House convention for a list of sentences (render_experience / render_news):
+            # one per line, no bullet or ordinal marker -- only render_social numbers items.
+            lines.append("你现在相信的判断：")
+            lines.extend(kept)
     return "\n".join(lines)
 
 
@@ -212,7 +230,16 @@ def render_experience(view):
 
 
 def render_news(view):
-    """news channel: index 5-day move, holdings 1-day move, guba exogenous lines (no coverage -> omitted)."""
+    """news channel: index 5-day move, holdings 1-day move, guba exogenous lines (no coverage -> omitted).
+
+    index_5d comes from a benchmark series that is a PROXY (decision 6: the SSE
+    Composite itself is not available from the data source, so an index-tracking ETF's
+    unit NAV stands in). Only its RETURN is ever shown, never a level, and every report
+    and paper sentence naming the series discloses the proxy.
+
+    A guba line states volume relative to the trailing baseline and adds a stance split
+    ONLY when stance data exists -- which it does not until the labelling task runs.
+    """
     lines = []
     for key, stem in (("index_5d", "大盘指数近五个交易日累计"), ("holdings_1d", "你持有的基金昨日整体")):
         v = view.get(key)
@@ -224,10 +251,19 @@ def render_news(view):
         mult, ratio = g.get("mult"), g.get("bull_ratio")
         if not isinstance(mult, (int, float)) or isinstance(mult, bool):
             continue
-        ratio = 0.5 if not isinstance(ratio, (int, float)) or isinstance(ratio, bool) else float(ratio)
-        bull = int(round(ratio * 10))
-        lines.append(f"近一周股吧里【{g.get('name') or code}】的讨论量比上月均值高 {float(mult):.1f} 倍，"
-                     f"多空比约 {bull}:{10 - bull}。")
+        # mult is ratio_vs_baseline: a RATIO of this week's volume to the trailing
+        # baseline, so 0.94 means slightly quieter than usual and 2.3 means busier.
+        # It was rendered as "高 N 倍" (higher BY N times), which inverted the meaning
+        # of every value below 1.0 -- most of the shipped signal file.
+        head = f"近一周股吧里【{g.get('name') or code}】的讨论量约为上月均值的 {float(mult):.1f} 倍"
+        # bull_ratio stays None until stance labelling runs (decision 4). It used to be
+        # defaulted to 0.5 and printed as "多空比约 5:5", which tells the agent a stance
+        # split was measured when none was. No stance data -> no stance clause.
+        if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
+            bull = int(round(float(ratio) * 10))
+            lines.append(f"{head}，多空比约 {bull}:{10 - bull}。")
+        else:
+            lines.append(head + "。")
     return lines
 
 

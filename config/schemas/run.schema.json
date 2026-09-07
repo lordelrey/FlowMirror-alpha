@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/run.schema.json",
   "title": "FlowMirror run configuration (M0+)",
-  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), images_root and image_pick (optional image keys, Card IMG: images_root is a machine-local directory holding the pre-resized creative images, one file per image_id, verified against the pool's image_sha256 before any pixel is attached -- null (default) means text-only and the TV arm degrades to text; image_pick selects which of a note's own images the TV arm shows, first|random), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), and any key starting with '_' (e.g. _what, _generated_from). CLI-only runtime switches are deliberately NOT schema keys: --dump-prompt travels in the engine's separate runtime-options object (flowmirror.engine.loop.RuntimeOpts, card R2D) and never through this validated config, so a literal 'dump_prompt' key handwritten into a run config is rejected on purpose (additionalProperties: false).",
+  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), images_root and image_pick (optional image keys, Card IMG: images_root is a machine-local directory holding the pre-resized creative images, one file per image_id, verified against the pool's image_sha256 before any pixel is attached -- null (default) means text-only and the TV arm degrades to text; image_pick selects which of a note's own images the TV arm shows, first|random), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), dynamics, dca, initial_pnl and market (Card CFG: parameters that used to be bare literals in the engine, defaults in config/engine_defaults.yaml -- every default equals the literal it replaces except dynamics.fam_decay, feed.climate_margin and fees, which the 2026-09-07 owner decisions 2/1/8 deliberately change), qdii_blocked (Card CFG, decision 10: typed here so the QDII suspension path stops being dead code, but it has NO default and must stay absent from every shipped config until a real suspension calendar lands), and any key starting with '_' (e.g. _what, _generated_from). CLI-only runtime switches are deliberately NOT schema keys: --dump-prompt travels in the engine's separate runtime-options object (flowmirror.engine.loop.RuntimeOpts, card R2D) and never through this validated config, so a literal 'dump_prompt' key handwritten into a run config is rejected on purpose (additionalProperties: false).",
   "type": "object",
   "properties": {
     "run_tag": {
@@ -292,6 +292,142 @@
       ],
       "additionalProperties": false
     },
+    "dynamics": {
+      "description": "Optional (E4 / DECISIONS #5; defaults in config/engine_defaults.yaml). Belief-and-attention dynamics that loop.py used to carry as bare literals, which left a reviewer unable to read a run's parameters off its config. Every default equals today's literal EXCEPT fam_decay, which decision 2 raises from 0.1 to 0.2.",
+      "type": "object",
+      "properties": {
+        "fam_decay": {
+          "description": "Per-day decay of the familiarity (exposure) stock; decision 2 sets it to 0.2. loop.py falls back to 0.1 today and nothing sets the key, so this default is a deliberate change of the familiarity time series.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fam_threshold": {
+          "description": "Familiarity/affinity stock at which an org reaches exposure level 1 (level 2 is reserved for an explicit follow). Default 1.0 equals today's literal.",
+          "type": "number",
+          "minimum": 0
+        },
+        "lambda_trust": {
+          "description": "Org-affinity adstock retention (spec 6b, lambda_a). Default 0.9 equals today's literal.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "lambda_attention": {
+          "description": "Retention of the per-fund attention stock: att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba (DECISIONS #5). Today attention reuses fam_decay, so giving it its own 0.8 moves the attention series.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "beta_guba": {
+          "description": "Coefficient on the guba abnormal-volume signal (z_abnormal) inside the attention adstock. Decision 3: the pipeline is wired end to end but the coefficient is held at ZERO, so this round's attention series is unchanged and the channel can be switched on before the main grid by editing one config value. Unbounded like the other feed/adstock coefficients: a negative value is meaningful.",
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dca": {
+      "description": "Optional (E7 / decision 7; defaults in config/engine_defaults.yaml). The monthly dollar-cost-averaging ticket, which loop.py carries as bare literals today. Both defaults equal those literals.",
+      "type": "object",
+      "properties": {
+        "pct": {
+          "description": "Fraction of the agent's cash invested per DCA instalment. Default 0.02.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_ticket": {
+          "description": "Minimum instalment in CNY; a smaller amount is skipped and counted in dca_skipped. Default 100.0.",
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "initial_pnl": {
+      "description": "Optional (E11 / decision 13; defaults in config/engine_defaults.yaml). How an agent's opening holding cost is drawn. 'lookback' is today's behaviour -- a cost date sampled uniformly lookback_days_min..lookback_days_max trading days back -- and decision 13 keeps the three demo configs on it, so their hashes do not move. 'target' instead draws toward a target P&L distribution and is enabled ONLY in research-grade configs, because on the real NAV series lookback leaves just ~4.9% of openings at a loss, which collapses expressed sentiment to one side.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "lookback",
+            "target"
+          ],
+          "default": "lookback"
+        },
+        "lookback_days_min": {
+          "description": "Lower end of the cost-date lookback in trading days; default 60 equals today's randint lower bound.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "lookback_days_max": {
+          "description": "Upper end of the cost-date lookback in trading days; default 250 equals today's randint upper bound.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "share_at_loss": {
+          "description": "Target share of opening holdings that sit at a loss. Read only when mode is 'target'.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "tolerance": {
+          "description": "Absolute P&L tolerance accepted when scanning the lookback window for a cost date. Read only when mode is 'target'; a holding outside it is counted in initial_pnl_misses.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "market": {
+      "description": "Optional (decision 6; defaults null in config/engine_defaults.yaml). The market benchmark behind the agent view's index_5d. null (the default, and what the three demo configs use) leaves index_5d out of the view entirely, which is today's behaviour, so the demo hashes do not move. The landed series is the unit NAV of the 510760 SSE Composite ETF used as a PROXY for the SSE Composite index, which the sanctioned data source does not carry: only its RETURNS are meaningful, never its level, and it must never be labelled 'the SSE index'. data/market/ is gitignored, so the path is machine-local like nav_cache.",
+      "type": "object",
+      "properties": {
+        "benchmark_path": {
+          "description": "Path to a {\"_meta\": {...}, \"series\": {\"YYYY-MM-DD\": float}} file. index_5d is computed as v[t-1] / v[t-6] - 1, both operands at or before t-1 because look-ahead is the red line of invariant (a); a missing date leaves index_5d empty with no interpolation and no forward fill.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "default": null
+        },
+        "benchmark_label": {
+          "description": "Human-readable label for the series, shown in prompts and the paper. Must disclose the proxy, e.g. the unit NAV of the SSE Composite ETF (510760) as a proxy for the SSE Composite.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "qdii_blocked": {
+      "description": "Optional (E6 / decision 10). Per-date QDII purchase suspensions: {\"YYYY-MM-DD\": {\"codes\": [fund_code, ...]}}, consumed by loop._qdii_blocked_set so a subscription into a listed fund on that date checks out as purchase_blocked. DELIBERATELY has NO default and is set in NO shipped config: decision 10 wires the schema only, so that the suspension path stops being dead code, and the key stays unset until a real suspension calendar lands as a separate data task. Do not add it to config/engine_defaults.yaml or to any runs/*.json.",
+      "type": "object",
+      "patternProperties": {
+        "^\\d{4}-\\d{2}-\\d{2}$": {
+          "type": "object",
+          "required": [
+            "codes"
+          ],
+          "properties": {
+            "codes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "p_image": {
       "description": "LEGACY, optional: image probability superseded by modality_arms (the TV arm); kept for backward compatibility. No longer required.",
       "type": "number",
@@ -365,6 +501,12 @@
         },
         "gamma": {
           "type": "number"
+        },
+        "climate_margin": {
+          "description": "Optional (decision 1, default 1/6 in config/engine_defaults.yaml). The margin |bullish - bearish| / total that a post's previous-day comment climate must clear before it is labelled bullish_majority / bearish_majority instead of mixed. Kept as a key so the sensitivity sweep needs no code change.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },
@@ -407,6 +549,17 @@
         "max_tokens_start": {
           "type": "integer",
           "minimum": 256
+        },
+        "temperature": {
+          "description": "Optional (E9, default 0.3 in config/engine_defaults.yaml, equal to the agents/runtime.py TEMP constant it replaces). Sampling temperature sent to the provider; an experimental parameter, so it belongs in the validated config and in run_meta rather than in a module constant. The bound is the widest any supported provider accepts -- GLM itself takes (0, 1].",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "max_provider_attempts": {
+          "description": "Optional (E9, default 5 in config/engine_defaults.yaml, equal to the agents/runtime.py MAX_ATTEMPTS constant it replaces). PHYSICAL HTTP retry budget inside call_glm for one request. Distinct from max_attempts above, which is the macro re-ask switch at the decision level: same word, different mechanism, deliberately two keys.",
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [

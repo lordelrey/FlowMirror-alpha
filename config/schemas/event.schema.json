@@ -490,6 +490,18 @@
               null
             ]
           },
+          "failure_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional (E12, decision 9): which SIDE of the decision call failed, so a bad key or a dead endpoint can no longer masquerade as an unstable model. 'transport' = call_glm never got a usable response (exception, http_error, empty_response, reasoning_salvage_rejected); 'model' = a response arrived but its JSON or schema did not parse; null (or absent) = the decision did not fail. Decision 9 keeps decision_failure_halt on the COMBINED rate at 0.02, so this field and its two counters are diagnostics only and change no behaviour; the identity transport + model == decision_failures must hold.",
+            "enum": [
+              "transport",
+              "model",
+              null
+            ]
+          },
           "arm": {
             "type": "string",
             "enum": [

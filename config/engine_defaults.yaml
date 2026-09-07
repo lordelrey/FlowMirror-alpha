@@ -51,9 +51,14 @@ images_root: null
 # clean within-stimulus randomisation for later image-property work. The
 # chosen index is logged as img_idx on the imp row.
 image_pick: "first"
+# Decision 8: the fee schedule the pre-registration names -- 0.12% subscription,
+# 0.5% redemption. These were 0.0/0.0, which silently made every acceptance run
+# fee-free even though apply_decision already charges cfg["fees"]. That makes
+# this the ONE key on this card that moves an event-log sha by itself, and only
+# for a run whose own config does not set fees explicitly.
 fees:
-  subscribe_rate: 0.0
-  redeem_rate: 0.0
+  subscribe_rate: 0.0012
+  redeem_rate: 0.005
 p_image: 0.5
 climate_weighting: true
 memory: true
@@ -79,6 +84,12 @@ feed:
   w_soc: 0.5
   eps: 0.05
   gamma: 1.8
+  # Decision 1: the margin |bullish-bearish|/total must clear before a post's
+  # comment climate is called a majority. feed.climate_for hardcodes 1/3, which
+  # is twice as strict as DECISIONS #6 asks for; 1/6 is the decided value, kept
+  # as a key so the sensitivity sweep needs no code change. Inert until the
+  # feed card reads it, then it moves the sha of every run with comment traffic.
+  climate_margin: 0.16666666666666666
 p_active: 1.0
 memory_days: 5
 reflection_every_days: 5
@@ -88,6 +99,72 @@ llm:
   workers: 4
   max_attempts: 3
   decision_failure_halt: 0.02
+  # E9: both of these were unconfigurable module constants in agents/runtime.py,
+  # so the sampling temperature -- an experimental parameter -- never reached
+  # run_meta and no reviewer could tell what a run used. The defaults equal
+  # runtime.TEMP and runtime.MAX_ATTEMPTS exactly, so surfacing them moves no
+  # hash. max_provider_attempts is the PHYSICAL HTTP retry budget inside
+  # call_glm; it is a different quantity from llm.max_attempts above, which is
+  # the macro re-ask switch. Same word, different mechanism -- do not merge them.
+  temperature: 0.3
+  max_provider_attempts: 5
 mock_options:
   force_c2_r4_click: false
   malformed_rate: 0.0
+# E4 / DECISIONS #5: the belief-and-attention dynamics. Every one of these was a
+# bare literal in loop.py, so a reviewer could not read the run's parameters off
+# its config. Each default equals today's literal EXCEPT fam_decay (decision 2),
+# and all of them stay inert until the loop card reads them.
+dynamics:
+  # Decision 2: exposure decay per day for the familiarity stock. loop.py:763
+  # reads a TOP-LEVEL "fam_decay" that no schema admits and no config sets, so
+  # its 0.1 fallback is what every run has used; 0.2 is therefore a real change
+  # of the familiarity time series once the loop card reads it from here.
+  fam_decay: 0.2
+  # loop.py:~770: the familiarity/affinity stock at which an org reaches
+  # exposure level 1 (level 2 is reserved for an explicit follow).
+  fam_threshold: 1.0
+  # loop.py:1050: the org-affinity adstock retention (spec 6b, lambda_a).
+  lambda_trust: 0.9
+  # DECISIONS #5 wants attention to carry its OWN retention:
+  # att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba.
+  # Today loop.py reuses fam_decay for the attention decay, so once the loop
+  # card separates them the attention series moves and the sha with it.
+  lambda_attention: 0.8
+  # Decision 3: the guba abnormal-volume coefficient. The pipeline is to be
+  # wired end to end (read z_abnormal, multiply, feed the adstock) with the
+  # coefficient held at ZERO, so this round's attention series stays
+  # byte-identical and the owner can switch the channel on before the main
+  # grid by editing one config value. The decision says 0.0 and explicitly
+  # forbids 0.1 -- test_defaults_match_decisions.py guards that.
+  beta_guba: 0.0
+# E7, the literals half: the monthly DCA ticket, carried as bare literals in
+# loop.py:1024-1027 (inv.cash * 0.02, and the 100 CNY floor). Decision 7's other
+# half -- letting a zero-holding agent ever START a DCA -- is a loop.py change,
+# not a config key, so nothing here addresses it.
+dca:
+  pct: 0.02
+  min_ticket: 100.0
+# E11 / decision 13: how an agent's opening holding cost is drawn.
+# "lookback" is today's behaviour -- sample a cost date randint(60, 250) trading
+# days back (world.py:454) -- and the three demo configs stay on it, so their
+# hashes do not move. "target" (share_at_loss / tolerance) draws toward a target
+# P&L distribution instead and is enabled ONLY in research-grade configs,
+# because the real NAV series leaves just ~4.9% of openings at a loss, which
+# collapses expressed sentiment to one side.
+initial_pnl:
+  mode: lookback
+  lookback_days_min: 60
+  lookback_days_max: 250
+  share_at_loss: 0.05
+  tolerance: 0.02
+# Decision 6: the market benchmark behind the view's index_5d. Default null
+# means the key is absent from the agent view, which is today's behaviour, so
+# the demo hashes do not move. The landed series is the unit NAV of the
+# 510760 SSE Composite ETF used as a PROXY for the SSE Composite (the index
+# itself is not available from the sanctioned MCP); only its RETURNS are
+# meaningful, never its level, and it must never be called "the SSE index".
+# data/market/ is gitignored, so the path is machine-local like nav_cache.
+market:
+  benchmark_path: null
+  benchmark_label: null

@@ -87,9 +87,87 @@ def test_climate_for_matches_reference_with_and_without_weights():
     weights = {"inv_00000": 1.0, "inv_00001": 3.0, "inv_00002": 0.5,
                "inv_00003": 2.0, "inv_00004": 1.0, "inv_00005": 0.25,
                "inv_00006": 4.0}
+    # climate_for DELIBERATELY diverges from the frozen reference from
+    # 2026-09-07 on -- same shape as the check_arm_balance divergence below.
+    # Decision 1 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md section 5) sets
+    # the majority margin to 1/6; the reference hardcodes 1/3, twice as strict
+    # as DECISIONS #6 asks for.  The assertion is kept rather than deleted and
+    # split into the two halves that must still hold: parity of the
+    # AGGREGATION (counts, the min_n floor, the weighting path, post scoping)
+    # when v7 is handed the reference's own margin, and a named divergence at
+    # the new default, so a revert to 1/3 fails here loudly.
     for pid in ("p1", "p2", "p3", "p9"):
         for w in (None, weights):
-            assert fm_feed.climate_for(pid, cmts, weights=w) == sf.climate_for(pid, cmts, weights=w)
+            assert (fm_feed.climate_for(pid, cmts, weights=w, margin=1.0 / 3.0)
+                    == sf.climate_for(pid, cmts, weights=w))
+    # p1 unweighted is 2 bullish / 1 bearish / 1 watching, d = +0.25: strictly
+    # between the two margins, and the only mix in this fixture whose label
+    # decision 1 moves.  The counts stay identical on both sides -- only the
+    # thresholding changed.
+    got_lab, got_cnt = fm_feed.climate_for("p1", cmts)
+    ref_lab, ref_cnt = sf.climate_for("p1", cmts)
+    assert (ref_lab, got_lab) == ("mixed", "bullish_majority")
+    assert got_cnt == ref_cnt
+
+
+def test_fit_bands_default_to_the_frozen_literals():
+    """E13: fit()'s +/-0.25 and +0.15 became parameters; defaults must not move.
+
+    The bands are now feed.fit_band_wide / feed.fit_band_narrow so a reviewer
+    can read a run config and learn what the suitability prior did.  The
+    defaults ARE the reference's literals, so every (risk, core, intent_group)
+    combination must still equal sim/feed.py exactly -- that is the whole
+    claim that surfacing the two keys moves no hash."""
+    sf = _sim_feed()
+    for ig in ("I2", "nonI2", None, "other"):
+        for risk in ("tolerant", "fragile", "neutral", None):
+            for core in ("chaser", "allocator", "other", None):
+                st = {"risk_latent": risk, "core": core}
+                post = {"intent_group": ig}
+                assert fm_feed.fit(st, post) == sf.fit(st, post), (ig, risk, core)
+
+
+def test_fit_custom_bands_shift_only_the_terms_they_name():
+    # Halving both bands must move exactly the wide (risk-latency) and narrow
+    # (core-type) terms: 0.5 + 0.125 + 0.075 = 0.7 for tolerant/chaser on I2,
+    # 0.5 - 0.125 + 0.075 = 0.45 for fragile/chaser, and the nonI2 allocator
+    # nudge takes the narrow band alone.  The [0,1] clamp still applies, so an
+    # oversized band saturates instead of leaving the bounded range.
+    tol_chaser = {"risk_latent": "tolerant", "core": "chaser"}
+    frag_chaser = {"risk_latent": "fragile", "core": "chaser"}
+    alloc = {"risk_latent": "fragile", "core": "allocator"}
+    i2 = {"intent_group": "I2"}
+    non = {"intent_group": "nonI2"}
+    half = dict(fit_band_narrow=0.075, fit_band_wide=0.125)
+    assert fm_feed.fit(tol_chaser, i2, **half) == pytest.approx(0.7, abs=1e-12)
+    assert fm_feed.fit(frag_chaser, i2, **half) == pytest.approx(0.45, abs=1e-12)
+    assert fm_feed.fit(alloc, non, **half) == pytest.approx(0.575, abs=1e-12)
+    # Zero bands collapse the prior to the flat 0.5 for every combination.
+    zero = dict(fit_band_narrow=0.0, fit_band_wide=0.0)
+    assert fm_feed.fit(tol_chaser, i2, **zero) == 0.5
+    assert fm_feed.fit(alloc, non, **zero) == 0.5
+    # Clamp: a wide band past 0.5 cannot push the prior outside [0, 1].
+    big = dict(fit_band_narrow=0.4, fit_band_wide=0.9)
+    assert fm_feed.fit(tol_chaser, i2, **big) == 1.0
+    assert fm_feed.fit(frag_chaser, i2, **big) == 0.0
+
+
+def test_rank_feed_passes_the_configured_fit_bands_through():
+    """The keys only matter if rank_feed actually forwards them.
+
+    rank_feed receives cfg["feed"], so cfg["fit_band_*"] IS feed.fit_band_*.
+    Setting w_fit high and eps to zero makes the fit term the sole ordering
+    signal, so zeroed bands (a flat 0.5 prior for every post) must produce a
+    different fit-stage pick order than the default bands do."""
+    agent, cands, heat_prev, clim_prev, cfg = _feed_inputs()
+    flat = dict(cfg, w_trust=0.0, w_heat=0.0, w_soc=0.0, w_fit=10.0, eps=0.0)
+    with_bands = fm_feed.rank_feed(agent, cands, heat_prev, clim_prev,
+                                   flat, random.Random(7))
+    zeroed = fm_feed.rank_feed(agent, cands, heat_prev, clim_prev,
+                               dict(flat, fit_band_narrow=0.0, fit_band_wide=0.0),
+                               random.Random(7))
+    assert ([p["post_id"] for p, _ in with_bands]
+            != [p["post_id"] for p, _ in zeroed])
 
 
 def test_top_comments_matches_reference():

@@ -8,7 +8,11 @@ Agent level (default): per run, each agent's arm comes from run_meta.arms
 fields get n_comment derived from cmt rows and the remaining micro metrics null.
 Rates per agent: engagement = (n_like+n_save)/n_shown (n_shown = imp count),
 comment = n_comment/n_shown, click = I2 clicks / I2 impressions, subscribe
-conversion = act.subscribe / I2 clicks. For every ordered pair of arms present
+conversion = act.subscribe / I2 clicks. An impression or click counts as I2 when
+its post id belongs to the set of `post` rows whose `ig` -- the intent GROUP in
+{"I2","nonI2"} written by world.publish_day -- equals "I2"; only logs whose post
+rows carry no `ig` at all fall back to the legacy id/source heuristic (_is_i2).
+For every ordered pair of arms present
 (TV-TC, TV-T, TC-T, ...): difference of agent means, Cohen h (rates) / d
 (aff_sum), and an agent-cluster bootstrap CI (1,000 reps, seed 2027) inside the
 run. Across runs (seeds) the seed-level Student-t interval (df = n_runs - 1) on
@@ -97,7 +101,16 @@ def _effect(metric, v1, v2):
 
 
 def _is_i2(pid, source=None):
-    """I2 content: source == 'I2' or a post id carrying the I2 prefix."""
+    """LEGACY I2 heuristic: source == 'I2' or a post id carrying the I2 prefix.
+
+    Audit E2: the engine has never emitted either shape -- imp.source is a
+    ranking source in {follow, fit, trending, spill, random} and post ids are
+    numeric ({t:03d}{org_index}{slot}, e.g. "00031"). The authoritative I2 tag
+    is the `post` row's `ig` field, which _aggregate now reads. Kept, not
+    deleted, because run directories written by older/external producers exist
+    on disk with no `ig` on their post rows; _aggregate falls back to this only
+    for those.
+    """
     if source == "I2":
         return True
     s = str(pid)
@@ -210,10 +223,23 @@ def _aggregate(ev):
     dec_rows = ev.get("dec", [])
     modern = any(("n_like" in r) or ("n_save" in r) or ("n_read" in r) for r in dec_rows)
     imp_rows = ev.get("imp", [])
-    i2_posts = set()
-    for r in imp_rows:
-        if _is_i2(r.get("p"), r.get("source")):
-            i2_posts.add(r.get("p"))
+    # Audit E2: I2 membership is a property of the POST, not of the impression.
+    # The engine tags it on the `post` row's `ig` field (the intent GROUP in
+    # {"I2","nonI2"}, world.intent_group; invariant (f) ties ig == "I2" to
+    # intent == "I2"), while imp.source only says how the card was ranked
+    # (follow/fit/trending/spill/random) and post ids are numeric. Reading the
+    # impression instead of the post is why click_rate and subscribe_conversion
+    # came back empty on every real event log.
+    post_rows = ev.get("post", [])
+    i2_posts = {r.get("p") for r in post_rows if r.get("ig") == "I2"}
+    # LEGACY fallback, kept for run directories whose post rows predate `ig`
+    # (or which have no post block at all): only then trust the id/source
+    # heuristic. A log WITH ig-bearing post rows and no I2 among them genuinely
+    # has no I2 content, so it must not silently fall back.
+    legacy_i2 = not any("ig" in r for r in post_rows)
+    if legacy_i2:
+        i2_posts = {r.get("p") for r in imp_rows
+                    if _is_i2(r.get("p"), r.get("source"))}
     rec = {}
 
     def R(i):
@@ -229,7 +255,10 @@ def _aggregate(ev):
         if r.get("p") in i2_posts:
             rr["i2_shown"] += 1
     for r in ev.get("click", []):
-        if r.get("p") in i2_posts or _is_i2(r.get("p"), r.get("source")):
+        # membership in the post-row I2 set is authoritative; the heuristic
+        # second arm only fires on legacy logs (a click on a post that was
+        # never impressed), never on a log whose post rows carry `ig`
+        if r.get("p") in i2_posts or (legacy_i2 and _is_i2(r.get("p"), r.get("source"))):
             R(r.get("i"))["i2_clicks"] += 1
     for r in ev.get("act", []):
         if r.get("kind") == "subscribe":
@@ -630,10 +659,20 @@ def _synthetic_run(run_dir, seed, like_tv=None, run_arm=None, legacy=False,
                    with_meta_arms=True):
     """Write a tiny synthetic run for self-tests.
 
+    Audit E2: the fixture must exercise the REAL I2 path, so its rows carry what
+    world.publish_day / loop.py actually write -- `post` rows with NUMERIC ids
+    shaped {t:03d}{org_index}{slot} and the intent GROUP on `ig` ("I2"/"nonI2",
+    half and half as in the demo runs' 20/20 split), impressions with an integer
+    `slot` and a ranking `source` from the engine's real domain, and clicks
+    landing on I2 post ids. The old fixture hand-planted "I2-..." ids and
+    source="I2", shapes the engine has never emitted, which let the module's
+    self-test pass while every real event log produced an empty click_rate.
+
     Agent-level fixture (run_arm=None): T vs TV, 10 agents per arm, 10 days,
-    20 impressions/day (all I2), 4 I2 clicks/day, dec micro fields (unless
-    legacy), constant aff_sum, uniform post popularity, and (legacy only) one
-    comment per day from a single TV-arm agent. Planted TV engagement effect:
+    20 impressions/day over that day's 20 posts of which 10 are I2, 2 I2 clicks
+    per day (click_rate 0.2), dec micro fields (unless legacy), constant
+    aff_sum, uniform post popularity, and (legacy only) one comment per day
+    from a single TV-arm agent. Planted TV engagement effect:
     TV agents like like_tv/day vs 4/day for T over 200 imps -> per-agent
     contrast (like_tv - 4)/20. like_tv defaults to 7 for seed 2 and 6 for every
     other seed (+0.15 / +0.10), so per-seed diffs are genuinely different, the
@@ -649,21 +688,44 @@ def _synthetic_run(run_dir, seed, like_tv=None, run_arm=None, legacy=False,
     if like_tv is None:
         like_tv = 7 if seed == 2 else 6
     os.makedirs(run_dir, exist_ok=True)
+    # engine's real imp.source domain (channels.feed.rank_feed) -- never "I2"
+    sources = ("follow", "fit", "trending", "spill", "random")
+    days = range(1, 11)
+    dstr = {d: "2025-10-%02d" % d for d in days}      # d is an ISO date, not an int
+    # each day publishes 20 posts from 2 orgs x 10 slots; ig alternates so half
+    # are I2, and `intent` agrees with `ig` exactly as invariant (f) demands
+    day_posts = {}
+    for d in days:
+        items = []
+        for oi in (0, 1):
+            for j in range(10):
+                idx = oi * 10 + j
+                ig = "I2" if idx % 2 == 0 else "nonI2"
+                intent = "I2" if ig == "I2" else ("I1" if idx % 4 == 1 else "I3")
+                items.append(("%03d%d%d" % (d, oi, j), ig, intent, "ORG%d" % (oi + 1)))
+        day_posts[d] = items
+    i2_of_day = {d: [p for p, ig, _int, _org in items if ig == "I2"]
+                 for d, items in day_posts.items()}
     rows = []
+    for d in days:                       # the platform publishes before it shows
+        for pid, ig, intent, org in day_posts[d]:
+            rows.append({"ev": "post", "t": d, "d": dstr[d], "org": org, "p": pid,
+                         "intent": intent, "ig": ig, "fund": None, "img": True})
     arms = {}
     for arm in (("T", "TV") if run_arm is None else (run_arm,)):
         pref = "A" if arm == "T" else "B"
         for k in range(10):
             i = "%s%03d" % (pref, k)
             arms[i] = arm
-            for d in range(1, 11):
-                for j in range(20):
-                    rows.append({"ev": "imp", "t": d, "d": d, "i": i,
-                                 "p": "I2-%03d" % j, "arm": arm,
-                                 "slot": "feed", "source": "I2"})
-                for _ in range(4):
-                    rows.append({"ev": "click", "t": d, "d": d, "i": i, "p": "I2-000"})
-                dec = {"ev": "dec", "t": d, "d": d, "i": i, "status": "ok",
+            for d in days:
+                for s, (pid, _ig, _int, _org) in enumerate(day_posts[d]):
+                    rows.append({"ev": "imp", "t": d, "d": dstr[d], "i": i,
+                                 "p": pid, "arm": arm,
+                                 "slot": s, "source": sources[s % len(sources)]})
+                for pid in i2_of_day[d][:2]:   # 2 of 10 I2 imps clicked -> 0.2
+                    rows.append({"ev": "click", "t": d, "d": dstr[d], "i": i,
+                                 "p": pid, "oc": "to_checkout"})
+                dec = {"ev": "dec", "t": d, "d": dstr[d], "i": i, "status": "ok",
                        "arm": arm, "aff_sum": 5.0}
                 if not legacy:
                     dec.update({"n_read": 20, "n_like": 4 if arm == "T" else like_tv,
@@ -672,12 +734,14 @@ def _synthetic_run(run_dir, seed, like_tv=None, run_arm=None, legacy=False,
                 if legacy and arm == "TV" and k == 0:
                     # legacy-only commenting agent is a TV agent, so the
                     # TV-T comment contrast is POSITIVE under hi - lo
-                    rows.append({"ev": "cmt", "t": d, "d": d, "i": i, "p": "I2-000"})
-    for d in range(1, 11):
-        rows.append({"ev": "clim", "t": d, "d": d, "label": "neutral"})
-    rows.append({"ev": "st", "t": 3, "d": 3, "i": "A000", "org": "ORG1",
+                    rows.append({"ev": "cmt", "t": d, "d": dstr[d], "i": i,
+                                 "p": i2_of_day[d][0], "stance": "neutral",
+                                 "text": "c%d" % d})
+    for d in days:
+        rows.append({"ev": "clim", "t": d, "d": dstr[d], "label": "neutral"})
+    rows.append({"ev": "st", "t": 3, "d": dstr[3], "i": "A000", "org": "ORG1",
                  "what": "level", "lv": 1})
-    rows.append({"ev": "st", "t": 6, "d": 6, "i": "B000", "org": "ORG1",
+    rows.append({"ev": "st", "t": 6, "d": dstr[6], "i": "B000", "org": "ORG1",
                  "what": "follow"})
     meta = {"seed": seed, "run_tag": "fake%s" % seed}
     if run_arm is not None:

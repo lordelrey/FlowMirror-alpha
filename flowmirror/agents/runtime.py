@@ -9,6 +9,11 @@ is never printed or logged), a deterministic MockLLM for zero-API dry runs,
 thin decide()/reflect() entry points for flowmirror.engine.loop, and an
 order-preserving run_parallel().  Prompt assembly and parsing live in
 flowmirror.agents.prompt, never here.
+
+Every decide()/reflect() record carries failure_kind (contract 2.4): "transport" when the
+provider never returned a model response, "model" when a response arrived but would not
+parse, None when nothing failed.  Splitting the two is diagnosis only -- the
+decision_failure_halt gate keeps the same threshold and the same condition (decision 9).
 """
 from __future__ import annotations
 
@@ -40,12 +45,32 @@ LEGACY_KEY_FILE_ENV = "FLOWMIRROR_LEGACY_KEY_FILE"
 GLM_EP_DEFAULT = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 MODEL = "glm-4.6v"
 TEXT_MODEL = "glm-4.6"
-TEMP = 0.3
-MAX_ATTEMPTS = 5
+# E9 / card RT2: these are now DEFAULTS behind config keys, not the effective values --
+# a published experiment has to record its own sampling temperature, and a module
+# constant never reaches run_meta.  The old names were TEMP and MAX_ATTEMPTS;
+# MAX_ATTEMPTS read exactly like cfg["llm"]["max_attempts"], which is a DIFFERENT
+# mechanism (the decision-level re-ask switch), and _llm_cfg below was already using the
+# physical-retry constant as that macro switch's fallback.  Three distinct names so no
+# reader can conflate them again, each spelled like the config key it backs.
+TEMP_DEFAULT = 0.3                      # llm.temperature -- per-request sampling temperature
+MAX_PROVIDER_ATTEMPTS_DEFAULT = 5       # llm.max_provider_attempts -- PHYSICAL HTTP ladder in call_glm
+MAX_DECISION_ATTEMPTS_FALLBACK = 5      # llm.max_attempts fallback -- MACRO re-ask in decide(); that key
+                                        # is required by run.schema.json, so only a hand-built
+                                        # cfg dict (a test, the self-test) ever reaches this
 BACKOFF_EMPTY_S = 15.0
 BACKOFF_ERROR_S = 5.0
 TOKEN_LADDER = (6144, 12288, 16384)
 SCHEMA_VERSION = "v7"
+
+# Contract 2.4 / audit E12: the call_glm `cls` values that mean NO model response was
+# ever produced -- the provider was unreachable, refused the request, or answered with
+# nothing.  Counting these as model failures is what made three rate-limit responses look
+# like model instability while the parse rate was 77/77, and what would present a bad API
+# key as "the model is unstable".  reasoning_salvage_rejected sits here by owner decision
+# (contract 2.4): the content channel came back empty, which is provider-side degradation
+# rather than a model that cannot produce parseable output.
+TRANSPORT_FAILURE_CLASSES = ("exception", "http_error", "empty_response",
+                             "reasoning_salvage_rejected")
 
 
 def _load_glm_config():
@@ -237,7 +262,8 @@ class LLMCache:
                     fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first_open=False):
+def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first_open=False,
+             temperature=None, max_provider_attempts=None):
     """One initial attempt + at most 4 retries (<= 5 physical provider attempts) — R5.5 R2A frozen schedule.
 
     `parser(text, channel)` must return (obj, matched_text); a call is a SUCCESS only when it returns a complete
@@ -250,18 +276,30 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
     EXCEPT CapStop (when a `governor` is supplied every single attempt — initial, retry and repair — is
     authorized BEFORE it is made, B3/B4, and the breaching attempt is refused instead of spent) and
     RuntimeError when no live credentials are configured (fail fast: a credential-less attempt must not be
-    spent, retried, or cached as a hole row)."""
+    spent, retried, or cached as a hole row).
+
+    E9 / card RT2: `temperature` and `max_provider_attempts` default to TEMP_DEFAULT and
+    MAX_PROVIDER_ATTEMPTS_DEFAULT -- today's constants -- so an unpassed call behaves exactly as before;
+    engine/loop.py's live wrapper supplies both from cfg["llm"] so the run's own sampling parameters, not
+    a module constant, drive the request and reach run_meta.  `max_provider_attempts` is the PHYSICAL
+    ladder length here and is NOT cfg["llm"]["max_attempts"] (the macro re-ask switch in decide())."""
     if not GLM_KEY:
         # Fail fast, BEFORE any attempt: without a key every request is a guaranteed 401, so running
         # the ladder would only burn 5 attempts x backoff and then CACHE the terminal failure, which
         # replays as a failure forever.  The message names every supported way to supply a key.
         raise _no_credentials_error()
     headers = {"Authorization": f"Bearer {GLM_KEY}", "Content-Type": "application/json"}
-    payload = {"model": model or MODEL, "messages": messages, "temperature": TEMP, "max_tokens": int(max_tokens)}
+    temp = TEMP_DEFAULT if temperature is None else float(temperature)
+    # max(1, ...): a zero-length ladder would skip the loop entirely and return a TERMINAL failure
+    # without ever contacting the provider -- a fabricated failure, which decide() would then cache
+    # forever.  run.schema.json already pins minimum 1; this is the guard for hand-built cfg dicts.
+    n_attempts = max(1, int(MAX_PROVIDER_ATTEMPTS_DEFAULT if max_provider_attempts is None
+                            else max_provider_attempts))
+    payload = {"model": model or MODEL, "messages": messages, "temperature": temp, "max_tokens": int(max_tokens)}
     prov = {"parsed": None, "raw": None, "response_source": None, "http_status": None, "attempts": 0,
             "finish_reason": None, "max_tokens_final": int(max_tokens), "parser_status": None,
             "raw_sha256": None, "usage": {}, "attempt_log": []}
-    for k in range(1, MAX_ATTEMPTS + 1):                      # k = physical attempt index (1..5)
+    for k in range(1, n_attempts + 1):                        # k = physical attempt index (1..n_attempts)
         if governor is not None:
             # B2/B3/B4: only attempt 1 on a first-time-opened prespecified ID is charged to the 15,120 base;
             # every retry, duplicate execution and repair-pass attempt is an EXTRA attempt against the reserve.
@@ -313,7 +351,7 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
         prov["raw_sha256"] = sha256_text(chan_text) if chan_text else None
         if empty or finish == "length":                       # budget exhaustion / truncation -> escalate tokens
             payload["max_tokens"] = escalate_tokens(payload["max_tokens"])
-        if k < MAX_ATTEMPTS:                                  # no sleep after the 5th (terminal) failure
+        if k < n_attempts:                                    # no sleep after the last (terminal) failure
             time.sleep((BACKOFF_EMPTY_S if empty else BACKOFF_ERROR_S) * k)
     return prov                                               # terminal: parsed is None -> caller writes a hole row
 
@@ -398,9 +436,59 @@ def _reflection_pair(txt):
 
 
 def _llm_cfg(cfg):
+    """-> (vision model, text model, max_tokens_start, MACRO re-ask limit).
+
+    The 4-tuple shape is load-bearing: tests/unit/test_live_path.py unpacks exactly four names
+    from this helper, so card RT2's two sampling parameters live in _llm_sampling() beside it
+    instead of lengthening this tuple.  The last element is cfg["llm"]["max_attempts"], the
+    decision-level re-ask switch -- NOT call_glm's physical HTTP ladder."""
     llm = dict((cfg or {}).get("llm") or {})
     return (str(llm.get("model") or MODEL), str(llm.get("text_model") or TEXT_MODEL),
-            int(llm.get("max_tokens_start") or 6144), int(llm.get("max_attempts") or MAX_ATTEMPTS))
+            int(llm.get("max_tokens_start") or 6144),
+            int(llm.get("max_attempts") or MAX_DECISION_ATTEMPTS_FALLBACK))
+
+
+def _llm_sampling(cfg):
+    """-> (temperature, max_provider_attempts) from cfg["llm"] (E9 / card RT2).
+
+    `or`-style defaulting is wrong for temperature: 0.0 is a legitimate (greedy) setting and
+    `x or TEMP_DEFAULT` would silently turn it into 0.3, so both keys test for None instead.
+    Both are coerced (float / int) because the value goes into the LLM cache key: two spellings
+    of one temperature must not open two cache namespaces for the same experiment."""
+    llm = dict((cfg or {}).get("llm") or {})
+    temp, mpa = llm.get("temperature"), llm.get("max_provider_attempts")
+    return (TEMP_DEFAULT if temp is None else float(temp),
+            MAX_PROVIDER_ATTEMPTS_DEFAULT if mpa is None else max(1, int(mpa)))
+
+
+def _failure_kind(parser_status, parsed):
+    """Contract 2.4: "transport" | "model" | None -- the honest diagnosis of ONE call (audit E12).
+
+    `parser_status` is call_glm's own per-attempt class from prov["parser_status"], never the status
+    decide() finally reports: a transport failure produced no model output, so the decision extractor
+    is not consulted about it at all.  Derived from the provenance on BOTH the live and the replay
+    path, so a warm replay reproduces the cold run's kind and invariant (l) byte-identical logs
+    survive card L3 writing this into dec.failure_kind."""
+    if parsed is not None:
+        return None
+    return "transport" if parser_status in TRANSPORT_FAILURE_CLASSES else "model"
+
+
+def _decision_outcome(prov, shown):
+    """-> (parsed, violations, parser_status) for ONE call_glm result on the decision path.
+
+    E12: on a transport class the old code re-fed prov["raw"] -- None on every one of those four
+    branches -- into extract_decision, which dutifully reported "no_json_object" on the empty
+    string.  That manufactured a parse verdict out of a network problem.  A transport class is
+    now the status itself and the extractor never sees it."""
+    parsed = prov.get("parsed")
+    if parsed is not None:
+        return parsed, [], None
+    cls = prov.get("parser_status")
+    if cls in TRANSPORT_FAILURE_CLASSES:
+        return None, [], cls
+    return extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
+                            shown["held"], shown["orgs"])
 
 
 def _record_from_row(row, prompt_sha, img_shas, violations, parser_status=None):
@@ -409,6 +497,7 @@ def _record_from_row(row, prompt_sha, img_shas, violations, parser_status=None):
     return {"parsed": parsed, "violations": violations,
             "parser_status": ("ok" if parsed is not None
                               else (parser_status or prov.get("parser_status") or "unparsed")),
+            "failure_kind": _failure_kind(prov.get("parser_status"), parsed),
             "prompt_sha": prompt_sha, "raw_sha256": prov.get("raw_sha256"), "image_shas": img_shas,
             "cache_hit": True, "attempts": int(prov.get("attempts") or 0), "notes": {"replay": True}}
 
@@ -418,7 +507,12 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
     schema-echo retry; the outcome (success OR failure) is always written to the cache."""
     messages, prompt_sha, img_shas, prompt_notes = build_decision_messages(agent_view, feed_cards, cfg)
     model, _txt, max_tokens, max_attempts = _llm_cfg(cfg)
-    key = cache.key_for(model, TEMP, prompt_sha, img_shas)
+    temperature, max_provider_attempts = _llm_sampling(cfg)
+    # E9: the cache key has always carried the temperature; it now carries the RUN's temperature
+    # instead of a module constant, so two temperatures can never share a cached response.  At the
+    # default the key is byte-identical to the old one (f"{0.3}" either way), so every existing
+    # cache entry -- all of them produced at 0.3 -- stays valid.
+    key = cache.key_for(model, temperature, prompt_sha, img_shas)
     parser = lambda txt, channel="content": extract_decision(
         txt, shown["pids"], shown["codes"], shown["held"], shown["orgs"], channel)[:2]
     row = cache.get(key)
@@ -426,34 +520,35 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
         governor.record_cache_hit()
         viol, status = [], None
         if row.get("parsed") is None:                        # replay derives exactly as the live path did
-            _norm, viol, status = extract_decision(row.get("raw") or "", shown["pids"], shown["codes"],
-                                                   shown["held"], shown["orgs"])
+            cls = (row.get("provenance") or {}).get("parser_status")
+            if cls in TRANSPORT_FAILURE_CLASSES:
+                # E12: the cold run reported the transport class itself, so the replay must too --
+                # otherwise a warm replay would disagree with the log it is supposed to reproduce.
+                status = cls
+            else:
+                _norm, viol, status = extract_decision(row.get("raw") or "", shown["pids"], shown["codes"],
+                                                       shown["held"], shown["orgs"])
         return _record_from_row(row, prompt_sha, img_shas, viol, status)
     notes = {"mode": "decision", "model": model, "retried": False, "prompt_notes": list(prompt_notes or [])}
     governor.authorize(True)
-    prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor, first_open=True)
-    parsed, viol, status = prov.get("parsed"), [], None
-    if parsed is None:
-        norm, viol, status = extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
-                                              shown["held"], shown["orgs"])
-        parsed = norm
+    prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor,
+               first_open=True, temperature=temperature, max_provider_attempts=max_provider_attempts)
+    parsed, viol, status = _decision_outcome(prov, shown)
     total_attempts = int(prov.get("attempts") or 0)
     if parsed is None and max_attempts > 1:
         notes["retried"] = True
         governor.authorize(False)                              # retries += 1
         prov = llm(_append_retry_suffix(messages), max_tokens=max_tokens, model=model, parser=parser,
-                   governor=governor, first_open=False)
-        parsed = prov.get("parsed")
-        if parsed is None:
-            norm, viol, status = extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
-                                                  shown["held"], shown["orgs"])
-            parsed = norm
+                   governor=governor, first_open=False, temperature=temperature,
+                   max_provider_attempts=max_provider_attempts)
+        parsed, viol, status = _decision_outcome(prov, shown)
         total_attempts += int(prov.get("attempts") or 0)
     if parsed is None:
         governor.record_failure()
     raw = prov.get("raw") or ""
     rec = {"parsed": parsed, "violations": [] if parsed is not None else viol,
            "parser_status": "ok" if parsed is not None else (status or "unparsed"),
+           "failure_kind": _failure_kind(prov.get("parser_status"), parsed),
            "prompt_sha": prompt_sha,
            "raw_sha256": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
            "image_shas": img_shas, "cache_hit": False, "attempts": total_attempts, "notes": notes}
@@ -468,8 +563,9 @@ def reflect(agent_view, cfg, cache, governor, llm):
     messages, prompt_sha = build_reflection_messages(agent_view)
     img_shas = _image_shas(messages)
     vis, text_model, max_tokens, _ma = _llm_cfg(cfg)
+    temperature, max_provider_attempts = _llm_sampling(cfg)
     model = text_model or vis
-    key = cache.key_for(model, TEMP, prompt_sha, img_shas)
+    key = cache.key_for(model, temperature, prompt_sha, img_shas)   # E9: see the note in decide()
     row = cache.get(key)
     if row is not None:
         governor.record_cache_hit()
@@ -477,15 +573,20 @@ def reflect(agent_view, cfg, cache, governor, llm):
                                 [] if row.get("parsed") is not None else ["parse_failure"])
     parser = lambda txt, channel="content": _reflection_pair(txt)
     governor.authorize(True)
-    prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor, first_open=True)
+    prov = llm(messages, max_tokens=max_tokens, model=model, parser=parser, governor=governor,
+               first_open=True, temperature=temperature, max_provider_attempts=max_provider_attempts)
     parsed = prov.get("parsed")
-    if parsed is None:
+    if parsed is None and prov.get("parser_status") not in TRANSPORT_FAILURE_CLASSES:
+        # E12: on a transport class prov["raw"] is None on all four branches, so re-parsing it only
+        # asked the reflection parser to fail on the empty string.  parser_status already carries the
+        # transport class straight through to rec below, which is the honest report.
         parsed, _m = _reflection_pair(prov.get("raw") or "")
     if parsed is None:
         governor.record_failure()
     raw = prov.get("raw") or ""
     rec = {"parsed": parsed, "violations": [] if parsed is not None else ["parse_failure"],
            "parser_status": "ok" if parsed is not None else (prov.get("parser_status") or "unparsed"),
+           "failure_kind": _failure_kind(prov.get("parser_status"), parsed),
            "prompt_sha": prompt_sha,
            "raw_sha256": prov.get("raw_sha256") or (sha256_text(raw) if raw else None),
            "image_shas": img_shas, "cache_hit": False, "attempts": int(prov.get("attempts") or 0),
@@ -727,8 +828,8 @@ def _self_test():
     def first():
         recs = [decide(*j) for j in jobs]
         state["recs"] = recs
-        req = ("parsed", "violations", "parser_status", "prompt_sha", "raw_sha256", "image_shas",
-               "cache_hit", "attempts", "notes")
+        req = ("parsed", "violations", "parser_status", "failure_kind", "prompt_sha", "raw_sha256",
+               "image_shas", "cache_hit", "attempts", "notes")
         bad = sum(1 for r in recs if any(k not in r for k in req))
         okn = sum(1 for r in recs if r["parsed"] is not None)
         return okn >= 186 and bad == 0 and (200 - okn) <= 14, \

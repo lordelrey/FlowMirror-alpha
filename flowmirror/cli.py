@@ -353,6 +353,32 @@ def _render_tree(groups: list[tuple[str, str, list[tuple[str, str]]]], pkg_dir: 
     return "\n".join(title + compact)
 
 
+def _cmd_export_bundle(args: argparse.Namespace) -> int:
+    """Turn a finished run directory into the four-file presentation bundle.
+
+    Deferred import: the exporter walks a whole event log, and `flowmirror --help`
+    should not pay for that.
+    """
+    from flowmirror.analysis.export_bundle import export_bundle
+
+    run_dir = Path(args.run_dir)
+    if not (run_dir / "event_log.jsonl").is_file():
+        print(f"[flowmirror] {run_dir} holds no event_log.jsonl -- point this at a "
+              f"finished run output directory", file=sys.stderr)
+        return 1
+    try:
+        info = export_bundle(str(run_dir), out_dir=args.out,
+                             anonymise_orgs=bool(args.anonymise_orgs),
+                             max_bytes=int(args.max_bytes))
+    except (OSError, ValueError) as exc:
+        print(f"[flowmirror] export failed: {exc}", file=sys.stderr)
+        return 1
+    trunc = (info or {}).get("truncation") or {}
+    if trunc.get("applied"):
+        print(f"[flowmirror] bundle truncated: {trunc.get('rule')}")
+    return 0
+
+
 def _cmd_tree(args: argparse.Namespace) -> int:
     pkg_dir = Path(__file__).resolve().parent
     try:
@@ -433,6 +459,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_schemas = sub.add_parser("schemas", help="list bundled schemas")
     p_schemas.set_defaults(func=_cmd_schemas)
+
+    p_export = sub.add_parser(
+        "export-bundle",
+        help="turn a finished run directory into the web viewer's four-file bundle")
+    p_export.add_argument("run_dir", help="finished run output directory (holds event_log.jsonl)")
+    p_export.add_argument("--out", default=None,
+                          help="bundle output directory (default: <run_dir>/bundle)")
+    p_export.add_argument(
+        "--anonymise-orgs", action="store_true",
+        help="replace institution names with stable pseudonyms, for double-blind review")
+    p_export.add_argument("--max-bytes", type=int, default=4 * 1024 * 1024,
+                          help="total bundle budget; over it, imp then st event rows are "
+                               "dropped and the truncation is recorded in bundle.json")
+    p_export.set_defaults(func=_cmd_export_bundle)
 
     p_tree = sub.add_parser("tree", help="print the real package map (generated at run time)")
     p_tree.set_defaults(func=_cmd_tree)
