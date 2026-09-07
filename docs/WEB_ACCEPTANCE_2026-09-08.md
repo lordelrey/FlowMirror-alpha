@@ -140,9 +140,28 @@ python -m pytest -q  366 passed
 CI（提交 50e34a8）   绿
 ```
 
-### 一条留给业主决定的事（本轮未动）
+### 一条本以为要留给业主、实测发现不是问题的事
 
-八个随仓库分发的配置把 `mock_options.malformed_rate` 设成 `0.05`，
-高于同一批配置里 `llm.decision_failure_halt` 的 `0.02`。
-`mock_options` 曾经是死代码（缺陷 E5），所以这个矛盾一直没有后果；E5 修好之后它是活的了。
-两个值该动哪一个是机制取舍，不是缺陷，留给业主。
+审计把这条列为"待业主决定"：八个随仓库分发的配置把 `mock_options.malformed_rate` 设成
+`0.05`，高于同一批配置里 `llm.decision_failure_halt` 的 `0.02`；`mock_options` 曾是死代码
+（缺陷 E5），修好之后它是活的了，于是看上去每次 mock 运行都该自己把自己撞停。
+
+**跑了两次才发现这两个数不是同一个量纲**，所以并不矛盾：
+
+| 跑的 | 调用数 | 实测 `decision_failure_rate` |
+|---|---|---|
+| `runs/mock_10x3.json --mock` | 30 | 0.0000 |
+| 同配置 `--agents 100 --days 8` | 900 | **0.0037**（model=3, transport=0） |
+
+`malformed_rate` 是**每次尝试**的注入率——`runtime.py:724` 把 mock 的 JSON 截到 60%，
+于是解析不出完整对象。而 `decision_failure_halt` 卡的是**重试之后**仍然失败的比率。
+两次尝试就是 `0.05² = 0.0025`，实测 0.0037 与之相符。0.0037 远在 0.02 以下。
+
+顺带把"八个"这个数也核准了：带这个组合的运行配置是九个（含一个测试夹具），
+其中 `demo_null.json` 与 `mock_10x3_null.json` 是 `agent_policy: null` 的规则型运行，
+根本不走 mock LLM，所以真正相关的是六个。
+
+结论：**不用改任何一个数**，也不需要业主裁决。真正该改的是配置里没有一句话说明
+这两个键量纲不同——读的人（包括审计方）会以为它们可比。这条留作文档待办。
+
+产出这个结论的两次运行留在 `runs/out/probe_malformed_s1` 与 `runs/out/probe_malformed_s1b`。
