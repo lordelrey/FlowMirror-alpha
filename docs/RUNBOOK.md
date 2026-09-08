@@ -176,16 +176,27 @@ It is a side artifact only: the event log and every hash are unchanged, so
 
 ## 6. Live runs (real provider)
 
-Credentials are resolved in this order (first hit wins):
+Any OpenAI-compatible `chat/completions` endpoint works: the engine sends
+`{model, messages, temperature, max_tokens}` with a Bearer header and attaches
+images as `image_url` data URIs. Credentials are resolved in this order:
 
 1. `config/api.yaml` - flat shape; copy the template `config/api_example.yaml`
-   and fill in `endpoint`, `api_key`, `vision_model`, `text_model`;
-2. env var `FLOWMIRROR_GLM_KEY` (the key only; endpoint/models from defaults);
-3. env var `FLOWMIRROR_LEGACY_KEY_FILE` pointing at a file that contains the
-   key (opt-in convenience; no path is baked into the repo).
+   (it carries commented-out OpenAI, vLLM and Ollama examples) and fill in
+   `endpoint`, `api_key`, `vision_model`, `text_model`;
+2. env vars `FLOWMIRROR_ENDPOINT`, `FLOWMIRROR_VISION_MODEL`,
+   `FLOWMIRROR_TEXT_MODEL` override the file's endpoint and model names (CI and
+   containers configure this way);
+3. if the file has no key: env `FLOWMIRROR_API_KEY`, then the older alias
+   `FLOWMIRROR_GLM_KEY`;
+4. env var `FLOWMIRROR_LEGACY_KEY_FILE` pointing at a one-line key file
+   (opt-in; no path is baked into the repo).
 
-If none of these is present, a live run stops immediately with a message
-naming all three options. Keys are never printed or logged. Responses are
+If no key is found, a live run stops immediately with a message naming every
+option. Keys are never printed or logged; `run_meta.json` records the endpoint
+host and model names under `provider` and nothing else. Two traps: the run
+config's `llm.model` / `llm.text_model` override the template's model names,
+so keep both places consistent; and the native Anthropic API has a different
+request shape, so put an OpenAI-compatible proxy in front of it. Responses are
 cached in `<out>/llm_cache.jsonl` (rows: `key/parsed/provenance/raw/ts`), so
 re-running the same config is free and deterministic. Transient provider
 errors (timeouts, non-200s) are retried on the frozen schedule (one initial
