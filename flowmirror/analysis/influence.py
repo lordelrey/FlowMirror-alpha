@@ -135,7 +135,8 @@ def analyze(run_dirs):
         tag = os.path.basename(os.path.normpath(rd)) or str(rd)
         while tag in runs: tag += "#"  # rare basename collision: force uniqueness
         try:
-            events = list(common.load_events(rd) or [])
+            # keep the {ev: [rows]} dict: _run_metrics flattens it (list() would hand it the keys)
+            events = common.load_events(rd) or {}
             meta = common.load_run_meta(rd) or {}
             runs[tag] = _run_metrics(events, meta, run_dir=rd)
         except Exception as exc:  # per-run failures never propagate
