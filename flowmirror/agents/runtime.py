@@ -287,11 +287,17 @@ class LLMCache:
     A cached FAILURE (parsed is None) is terminal and replays as a failure -- this is what makes a
     full re-run reproduce the event log byte-for-byte with zero API calls."""
 
-    def __init__(self, path):
+    def __init__(self, path, retry_transport_holes=False):
         self.path = path
         self.rows = {}
         self.hits = self.misses = 0
         self.lock = threading.Lock()
+        # Off by default: a cached run must replay byte-for-byte, and cached
+        # failure rows are part of that transcript. Enable only when the holes
+        # came from transport noise (a rate-limited session's 429s, timeouts,
+        # empty responses) and the operator explicitly wants those turns
+        # re-asked rather than replayed.
+        self.retry_transport_holes = bool(retry_transport_holes)
         if path and os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as fh:
                 for line in fh:
@@ -313,6 +319,17 @@ class LLMCache:
     def get(self, key):
         with self.lock:
             row = self.rows.get(key)
+            # A transport hole is infrastructure noise, not the model's
+            # answer, so operators may opt into treating just those rows as
+            # misses. Model-side failures (schema_invalid etc.) are real
+            # verdicts and stay terminal even when the flag is on.
+            if (
+                row is not None
+                and self.retry_transport_holes
+                and row.get("parsed") is None
+                and ((row.get("provenance") or {}).get("parser_status")) in TRANSPORT_FAILURE_CLASSES
+            ):
+                row = None
             if row is None:
                 self.misses += 1
             else:

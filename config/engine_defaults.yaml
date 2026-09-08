@@ -121,6 +121,10 @@ llm:
   # the macro re-ask switch. Same word, different mechanism -- do not merge them.
   temperature: 0.3
   max_provider_attempts: 5
+  # Cap (seconds) on any single 429/RATE_LIMIT backoff sleep inside call_glm.
+  rate_limit_cap_s: 120
+  # Cap (seconds) on cumulative rate-limit waits per request before that attempt counts as failed.
+  rate_limit_max_wait_s: 600
 mock_options:
   force_c2_r4_click: false
   malformed_rate: 0.0

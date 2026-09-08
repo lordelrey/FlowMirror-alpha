@@ -105,7 +105,8 @@ from flowmirror.agents.null_policy import NullPolicyLLM
 from flowmirror.agents.prompt import MIME as PROMPT_MIME
 from flowmirror.agents.prompt import build_decision_messages
 from flowmirror.agents.runtime import (BudgetGovernor, CapStop, LLMCache, MockLLM,
-                                       call_glm, decide, reflect, run_parallel)
+                                       call_glm, decide, gate_for, reflect,
+                                       run_parallel)
 from flowmirror.channels.feed import (assign_arms, climate_for, hot_score,
                                       rank_feed, top_comments)
 from flowmirror.config.loader import deep_merge, load_config, resolve_paths
@@ -149,13 +150,15 @@ class RuntimeOpts:
     laundered, so only it moved.  Future CLI-only switches (--profile,
     --dry-run, ...) get a slot here, never a schema key."""
 
-    __slots__ = ("dump_prompt",)
+    __slots__ = ("dump_prompt", "retry_transport_holes")
 
-    def __init__(self, dump_prompt=None):
+    def __init__(self, dump_prompt=None, retry_transport_holes=False):
         self.dump_prompt = dump_prompt
+        self.retry_transport_holes = bool(retry_transport_holes)
 
     def __repr__(self):
-        return f"RuntimeOpts(dump_prompt={self.dump_prompt!r})"
+        return (f"RuntimeOpts(dump_prompt={self.dump_prompt!r}, "
+                f"retry_transport_holes={self.retry_transport_holes!r})")
 
 
 def _week_key(d):
@@ -532,12 +535,18 @@ def _make_llm(cfg):
     # keys the config actually carries are forwarded, so on a config that omits them
     # call_glm keeps its own defaults -- which contract 3 fixes at exactly 0.3 and 5, the
     # values hardcoded today. Hence no hash change from this branch.
+    params, var_kw = {}, False
+    gate = None  # fallback if signature introspection fails
     try:
         params = inspect.signature(call_glm).parameters
         var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
         knobs = tuple((k, cast(llm_cfg[k]))
-                      for k, cast in (("temperature", float), ("max_provider_attempts", int))
+                      for k, cast in (("temperature", float), ("max_provider_attempts", int),
+                                      ("rate_limit_cap_s", float), ("rate_limit_max_wait_s", float))
                       if (k in params or var_kw) and llm_cfg.get(k) is not None)
+        # provider-side rate gate, built once and shared by every _call() below
+        gate = (gate_for(int(llm_cfg.get("workers") or 1))
+                if ("gate" in params or var_kw) else None)
     except (TypeError, ValueError):     # unintrospectable callable (C-implemented stub)
         knobs = ()
 
@@ -550,6 +559,8 @@ def _make_llm(cfg):
         kw.setdefault("model", llm_cfg.get("model"))
         for key, val in knobs:          # same caller-wins precedence as model
             kw.setdefault(key, val)
+        if gate is not None:            # only when call_glm's signature accepts it (same rule as knobs)
+            kw.setdefault("gate", gate)
         return call_glm(messages, int(max_tokens), **kw)
 
     return _call
@@ -894,6 +905,12 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         else:
                             inv.hold[code] = units
                             inv.cost[code] = nav
+                        # every purchase opens a new lot; redemptions burn lots FIFO
+                        lots = getattr(inv, "lots", None)
+                        if lots is None:
+                            lots = {}
+                            inv.lots = lots
+                        lots.setdefault(code, []).append([units, nav, dt_cur])
                         inv.cash -= amt
                         _bump_fees(inv, fee)
                         S["sub_n"] += 1
@@ -914,10 +931,38 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         fee = amt * red_rate
                         cst = inv.cost.get(code, nav)
                         inv.realized += units * (nav - cst)
+                        # FIFO is the fee convention fund companies apply; pnl keeps the
+                        # weighted-average basis so the wealth identity is untouched.
+                        lots = getattr(inv, "lots", None) or {}
+                        lst = lots.get(code) or []
+                        youngest = None
+                        rem = units
+                        while rem > 1e-12 and lst:
+                            lot_u, _lot_c, lot_d = lst[0]
+                            take = lot_u if lot_u <= rem else rem
+                            rem -= take
+                            if youngest is None or lot_d > youngest:
+                                youngest = lot_d
+                            if lot_u - take <= 1e-12:
+                                lst.pop(0)
+                            else:
+                                lst[0][0] = lot_u - take
+                        hold_days = (dt_cur - youngest).days if youngest is not None else None
                         inv.hold[code] = u - units
                         if inv.hold[code] <= 1e-9:
                             del inv.hold[code]
                             inv.cost.pop(code, None)
+                            lots.pop(code, None)
+                        elif lst:
+                            lots[code] = lst
+                            gap = inv.hold[code] - sum(l[0] for l in lst)
+                            if abs(gap) > 1e-6:
+                                # inv.hold is the book of record: bend the last lot to it
+                                lst[-1][0] += gap
+                                if lst[-1][0] <= 1e-12:
+                                    lst.pop()
+                        else:
+                            lots.pop(code, None)
                         inv.cash += amt - fee
                         _bump_fees(inv, fee)
                         S["red_n"] += 1
@@ -926,7 +971,8 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         flows[fund.family][quarter_of(dt_cur)]["red"] += amt
                         logd("act", t=t, d=dstr, i=inv.id, p=None, kind="redeem", fund=code,
                              amt=round(amt, 2), units=round(units, 6), nav=nav,
-                             fee=round(fee, 2))
+                             fee=round(fee, 2), pnl=round(units * (nav - cst), 2),
+                             hold_days=hold_days)
             checkout_oc[oc] += 1
             day.checkout_oc_cf[oc_cf] += 1
             if act == "redeem":              # a redeem checkout has no post context
@@ -988,7 +1034,9 @@ def run_simulation(cfg, rt=None):
     notes_by_id = _note_index(W)
     elog = EventLog(os.path.join(out_dir, "event_log.jsonl"))
     logd = elog.emit
-    llm_cache = LLMCache(cfg["llm"]["cache"]) if cfg["llm"].get("cache") else None
+    llm_cache = (LLMCache(cfg["llm"]["cache"],
+                          retry_transport_holes=bool(getattr(rt, "retry_transport_holes", False)))
+                 if cfg["llm"].get("cache") else None)
     gov = BudgetGovernor(int(cfg["llm"].get("hard_cap_attempts")
                              or cfg["llm"].get("cap_attempts") or 100000))
     feed_cfg = cfg.get("feed") or {}
@@ -1442,6 +1490,12 @@ def run_simulation(cfg, rt=None):
                         inv.cost[code] = (held * inv.cost.get(code, nav) + (amt - fee)) \
                             / (held + units)
                         inv.hold[code] = held + units
+                        # a DCA purchase opens a lot too, exactly like a manual subscribe
+                        lots = getattr(inv, "lots", None)
+                        if lots is None:
+                            lots = {}
+                            inv.lots = lots
+                        lots.setdefault(code, []).append([units, nav, dt_cur])
                         inv.cash -= amt
                         _bump_fees(inv, fee)
                         S["dca_n"] += 1
@@ -1889,6 +1943,9 @@ def main(argv=None):
                          "index) or 'first' to <out_dir>/prompts/<agent>_d<day>.txt plus a "
                          ".json sidecar; runtime-only switch carried in RuntimeOpts (never "
                          "a run-config key); side artifact only, the event log is unaffected")
+    ap.add_argument("--retry-transport-holes", action="store_true",
+                    help="treat cached transport failures (429 / timeouts / empty) as cache misses and "
+                         "re-ask the provider; model-side failures stay terminal; runtime-only switch")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
     if args.self_test:
@@ -1918,7 +1975,7 @@ def main(argv=None):
     # (the old behavior) made run_simulation's schema re-validation reject the
     # whole run ("'dump_prompt' does not match any of the regexes: '^_'")
     # before the first trading day, leaving the feature unreachable.
-    rt = RuntimeOpts()
+    rt = RuntimeOpts(retry_transport_holes=bool(getattr(args, "retry_transport_holes", False)))
     if args.dump_prompt:
         try:
             _dump_target(args.dump_prompt)

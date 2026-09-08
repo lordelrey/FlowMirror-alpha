@@ -170,6 +170,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         argv += ["--out", args.out]
     if args.replay_check:
         argv.append("--replay-check")
+    if getattr(args, "retry_transport_holes", False):
+        argv.append("--retry-transport-holes")
     if args.dump_prompt:
         # Runtime-only switch: forwarded verbatim; the engine carries it in its
         # RuntimeOpts object (card R2D) -- it must never be merged into the
@@ -420,6 +422,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--replay-check",
         action="store_true",
         help="run twice; fail (exit 3) unless the event log is byte-identical",
+    )
+    p_run.add_argument(
+        "--retry-transport-holes",
+        action="store_true",
+        help="forwarded to the engine verbatim: retry cached transport failures (see engine --help)",
     )
     p_run.add_argument(
         "--dump-prompt",

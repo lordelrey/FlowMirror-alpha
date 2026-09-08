@@ -578,6 +578,16 @@
           "description": "Optional (E9, default 5 in config/engine_defaults.yaml, equal to the agents/runtime.py MAX_ATTEMPTS constant it replaces). PHYSICAL HTTP retry budget inside call_glm for one request. Distinct from max_attempts above, which is the macro re-ask switch at the decision level: same word, different mechanism, deliberately two keys.",
           "type": "integer",
           "minimum": 1
+        },
+        "rate_limit_cap_s": {
+          "description": "Optional (A1a, default 120 in config/engine_defaults.yaml). Upper bound, in seconds, on a single 429/RATE_LIMIT backoff sleep inside call_glm. Bounds each individual wait; the cumulative per-request budget is the sibling key rate_limit_max_wait_s.",
+          "type": "number",
+          "minimum": 0
+        },
+        "rate_limit_max_wait_s": {
+          "description": "Optional (A1a, default 600 in config/engine_defaults.yaml). Cumulative upper bound, in seconds, on total rate-limit waiting across one call_glm request; only once this budget is exceeded is that attempt counted as failed (rate_limited) and handed to the retry ladder.",
+          "type": "number",
+          "minimum": 0
         }
       },
       "required": [
