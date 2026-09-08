@@ -233,7 +233,7 @@ def test_transport_and_model_are_the_only_two_kinds(tmp_path):
     """The identity card L3 relies on: transport + model == decision_failures, so a failed
     decision is ALWAYS exactly one of the two and a successful one is neither."""
     assert set(rt.TRANSPORT_FAILURE_CLASSES) == {"exception", "http_error", "empty_response",
-                                                 "reasoning_salvage_rejected"}
+                                                 "reasoning_salvage_rejected", "rate_limited"}
     for cls in list(rt.TRANSPORT_FAILURE_CLASSES) + ["schema_invalid", "mock", None, ""]:
         assert rt._failure_kind(cls, None) in ("transport", "model")
         assert rt._failure_kind(cls, {"mood": 1}) is None

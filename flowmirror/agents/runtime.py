@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+_CLOCK = time.monotonic   # bound at import: tests stub `rt.time` with a sleep-only object
 from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 
 import requests
@@ -60,6 +61,9 @@ MAX_DECISION_ATTEMPTS_FALLBACK = 5      # llm.max_attempts fallback -- MACRO re-
                                         # cfg dict (a test, the self-test) ever reaches this
 BACKOFF_EMPTY_S = 15.0
 BACKOFF_ERROR_S = 5.0
+RATE_LIMIT_CAP_S_DEFAULT = 120.0        # one 429 wait never exceeds this, however long the provider asks
+RATE_LIMIT_MAX_WAIT_S_DEFAULT = 600.0   # cumulative 429 waiting tolerated before the rung counts as failed
+GATE_RECOVER_AFTER = 20                 # consecutive 200s that win one shrunk permit back
 TOKEN_LADDER = (6144, 12288, 16384)
 SCHEMA_VERSION = "v7"
 
@@ -71,7 +75,70 @@ SCHEMA_VERSION = "v7"
 # (contract 2.4): the content channel came back empty, which is provider-side degradation
 # rather than a model that cannot produce parseable output.
 TRANSPORT_FAILURE_CLASSES = ("exception", "http_error", "empty_response",
-                             "reasoning_salvage_rejected")
+                             "reasoning_salvage_rejected", "rate_limited")
+
+
+class AdaptiveGate:
+    """Process-wide concurrency gate for provider calls. Starts at `permits`;
+    every 429 halves the live permits (floor 1); after GATE_RECOVER_AFTER
+    consecutive 200s one permit is restored (ceiling = initial). Why: the
+    provider enforces a concurrency cap we cannot read; the thread pool would
+    otherwise keep hammering at full width and turn one 429 into a storm."""
+
+    def __init__(self, permits):
+        self._initial = max(1, int(permits))
+        self._live = self._initial    # current admitted width; in-flight calls beyond a shrink finish naturally
+        self._in_use = 0
+        self._shrinks = 0
+        self._streak = 0
+        self._cond = threading.Condition()
+
+    def acquire(self):
+        with self._cond:
+            while self._in_use >= self._live:
+                self._cond.wait()
+            self._in_use += 1
+
+    def release(self):
+        with self._cond:
+            self._in_use = max(0, self._in_use - 1)
+            self._cond.notify()
+
+    def on_rate_limited(self):
+        # Halve the width we admit, not the calls already running: the provider
+        # meters admissions, and aborting in-flight requests wastes paid tokens.
+        with self._cond:
+            new_live = max(1, self._live // 2)
+            if new_live < self._live:
+                self._shrinks += 1
+            self._live = new_live
+            self._streak = 0
+            self._cond.notify_all()
+
+    def on_success(self):
+        with self._cond:
+            self._streak += 1
+            if self._streak >= GATE_RECOVER_AFTER and self._live < self._initial:
+                self._live += 1
+                self._streak = 0
+                self._cond.notify()
+
+    def snapshot(self):
+        with self._cond:
+            return {"permits": self._live, "initial": self._initial, "shrinks": self._shrinks}
+
+
+_GATE = None
+
+
+def gate_for(workers):
+    """Create the process-wide gate on first use, sized to the worker pool;
+    every later call returns the same instance regardless of `workers` (only
+    one pool runs per process, so the first sizing wins)."""
+    global _GATE
+    if _GATE is None:
+        _GATE = AdaptiveGate(workers)
+    return _GATE
 
 
 def _load_glm_config():
@@ -264,7 +331,8 @@ class LLMCache:
 
 
 def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first_open=False,
-             temperature=None, max_provider_attempts=None):
+             temperature=None, max_provider_attempts=None, gate=None,
+             rate_limit_cap_s=None, rate_limit_max_wait_s=None):
     """One initial attempt + at most 4 retries (<= 5 physical provider attempts) — R5.5 R2A frozen schedule.
 
     `parser(text, channel)` must return (obj, matched_text); a call is a SUCCESS only when it returns a complete
@@ -300,7 +368,12 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
     prov = {"parsed": None, "raw": None, "response_source": None, "http_status": None, "attempts": 0,
             "finish_reason": None, "max_tokens_final": int(max_tokens), "parser_status": None,
             "raw_sha256": None, "usage": {}, "attempt_log": []}
-    for k in range(1, n_attempts + 1):                        # k = physical attempt index (1..n_attempts)
+    rate_cap = rate_limit_cap_s if rate_limit_cap_s is not None else RATE_LIMIT_CAP_S_DEFAULT
+    rate_max_wait = rate_limit_max_wait_s if rate_limit_max_wait_s is not None else RATE_LIMIT_MAX_WAIT_S_DEFAULT
+    waited_rl = 0.0
+    prov["rate_limit_waits"] = []        # seconds actually slept on 429s during this call, for the probe logs
+    k = 1
+    while k <= n_attempts:               # manual rung counter: a retried 429 re-runs the same k (see continue)                        # k = physical attempt index (1..n_attempts)
         if governor is not None:
             # B2/B3/B4: only attempt 1 on a first-time-opened prespecified ID is charged to the 15,120 base;
             # every retry, duplicate execution and repair-pass attempt is an EXTRA attempt against the reserve.
@@ -308,6 +381,9 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
         prov["attempts"], prov["max_tokens_final"] = k, int(payload["max_tokens"])
         status, finish, empty = None, None, False
         parsed, raw_store, chan_text, source, cls = None, None, None, None, None
+        if gate is not None:
+            gate.acquire()               # admission control before every physical attempt (429 retries included)
+        t0 = _CLOCK()            # per-attempt wall time, recorded in the attempt log
         try:
             resp = requests.post(GLM_EP, headers=headers, json=payload, timeout=180)
             status = resp.status_code
@@ -336,24 +412,56 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
                         empty = True
                         cls = "reasoning_salvage_rejected" if reasoning.strip() else "empty_response"
             else:
-                cls = "http_error"
+                # 429 -- or Zhipu's JSON business codes 1302/1305 (concurrency /
+                # frequency cap) on a non-200 body -- is transport pressure, not a
+                # model verdict. Classify it apart so it neither burns the retry
+                # ladder nor reaches the cache as a terminal model failure.
+                rl_code = False
+                try:
+                    rl_code = str((resp.json() or {}).get("error", {}).get("code")) in ("1302", "1305")
+                except Exception:
+                    pass                                      # unreadable body: let the HTTP status alone decide
+                cls = "rate_limited" if status == 429 or rl_code else "http_error"
         except Exception:
             cls = "exception"
+        finally:
+            if gate is not None:
+                gate.release()                                # free the slot on every path, raises included
+        elapsed_s = round(_CLOCK() - t0, 2)
         prov["http_status"], prov["finish_reason"], prov["parser_status"] = status, finish, cls
         prov["attempt_log"].append({"i": k, "http_status": status, "cls": cls, "finish_reason": finish,
-                                    "max_tokens": int(payload["max_tokens"])})
+                                    "max_tokens": int(payload["max_tokens"]), "elapsed_s": elapsed_s})
         if cls == "ok":
+            if gate is not None:
+                gate.on_success()                             # a streak of 200s slowly wins shrunk permits back
             prov.update(parsed=parsed, raw=raw_store, response_source=source, raw_sha256=sha256_text(chan_text))
             return prov
+        if cls == "rate_limited":
+            if gate is not None:
+                gate.on_rate_limited()                        # shrink process-wide width: stop feeding the storm
+            retry_after = 30.0 * k
+            try:
+                retry_after = float(resp.headers.get("Retry-After"))
+            except Exception:
+                pass                                          # header missing / not plain seconds / absent headers
+            wait_s = min(max(retry_after, 1.0), rate_cap)     # floor 1s prevents a Retry-After: 0 spin; cap bounds the stall
+            time.sleep(wait_s)                                # honor the provider's pause before asking again
+            waited_rl += wait_s
+            prov["rate_limit_waits"].append(wait_s)
+            if waited_rl <= rate_max_wait:
+                continue                                      # 429 is not a model failure: re-run rung k unchanged
+            # cumulative 429 waiting blew the budget: this attempt now counts as an
+            # ordinary transport failure and consumes the rung like any other error
         # Failed attempt: keep whatever channel text existed (schema_invalid etc. still stores the raw text
-        # and its sha). An attempt with NO channel text (exception / http_error) records raw=None /
-        # raw_sha256=None instead of crashing, and the ladder proceeds to the next attempt (E3 fix).
+        # and its sha). An attempt with NO channel text (exception / http_error / rate_limited) records
+        # raw=None / raw_sha256=None instead of crashing, and the ladder proceeds to the next attempt (E3 fix).
         prov["raw"], prov["response_source"] = raw_store, None
         prov["raw_sha256"] = sha256_text(chan_text) if chan_text else None
         if empty or finish == "length":                       # budget exhaustion / truncation -> escalate tokens
             payload["max_tokens"] = escalate_tokens(payload["max_tokens"])
-        if k < n_attempts:                                    # no sleep after the last (terminal) failure
-            time.sleep((BACKOFF_EMPTY_S if empty else BACKOFF_ERROR_S) * k)
+        if k < n_attempts and cls != "rate_limited":          # a 429 already slept its Retry-After above; never
+            time.sleep((BACKOFF_EMPTY_S if empty else BACKOFF_ERROR_S) * k)  # sleep after the terminal failure
+        k += 1                                                # advance the rung (budget-blowing 429s land here too)
     return prov                                               # terminal: parsed is None -> caller writes a hole row
 
 
