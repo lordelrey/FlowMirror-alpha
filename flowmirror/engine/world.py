@@ -881,8 +881,9 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
             posts.append({"post_id": pid, "org": org, "intent": intent, "intent_group": ig,
                           "note": nid, "code": code, "img": _has_image(note), "t_pub": dstr})
             if log is not None:
+                # note_id is the stable content identity; slot id "p" is reused each run.
                 log.emit("post", t=t, d=dstr, org=org, p=pid, intent=intent, ig=ig, fund=code,
-                         img=posts[-1]["img"])
+                         img=posts[-1]["img"], note=nid)
     return posts
 
 
@@ -1622,6 +1623,20 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
         "investors": {"total": len(agents), "active_ever": sum(1 for a in agents if a.entry < len(world.nav_days)),
                       "initial_pnl_misses": sum(int(_ag_get(a, "pnl0_misses", 0) or 0) for a in agents)},
         "arms": {str(k): agent_arms[k] for k in sorted(agent_arms, key=str)},
+        # Opening holdings and cost basis per funded agent, rebuilt from state["hold0"] /
+        # state["cost0"], so PGR/PLR accounting can recompute paper vs realized P&L from
+        # day one. run_meta.json is excluded from every hash, so this key is replay-safe.
+        # non-holders are omitted, an absent key means "no opening position"
+        "openings": {
+            str(aid): {
+                "hold": {code: round(units, 6) for code, units in hold.items()},
+                "cost": {code: (round(c0[code], 6) if c0.get(code) is not None else None)
+                         for code in hold},
+            }
+            for aid, hold in sorted((state.get("hold0") or {}).items(), key=lambda kv: str(kv[0]))
+            for c0 in [(state.get("cost0") or {}).get(aid) or {}]
+            if hold
+        },
         "modality": {"level": _mod_level_of(cfg),
                      "arms": list(cfg.get("modality_arms") or ("T", "TV")),
                      "run_arm": cfg.get("modality_run_arm") or "TV"},

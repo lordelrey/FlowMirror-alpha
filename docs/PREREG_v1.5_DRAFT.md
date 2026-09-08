@@ -68,3 +68,30 @@
 10. 不得在见到模态结果后更换主终点或 SESOI。
 11. TC 描述生成提示一经抽检通过即冻结，不得因结果修改。
 12. 空模拟器参数在主网格结果出现前固定，不得事后调参。
+
+## J. 2026-09-08 修订（方案 v2；业主同日批准；网格前随 v1.5 一并冻结）
+
+> 来源：`~/.claude/plans/plan-opus-fable5-1-opus5-encapsulated-blum.md`。本节为**引擎与日志的一次性变更**及新增实验的预注册。
+> 与 §A–§I 冲突处以本节为准。`fundmarket-sim/specs/PREREG_v1.5_DRAFT.md` 为论文侧副本，冻结前由业主同步。
+
+| # | 修订 | 性质 | 状态 |
+|---|---|---|---|
+| D20 | Feed 卡片的「热度：N 赞」改为显示**截至 t−1 的累计（人口加权）点赞计数取整**；此前是 `hot_score` 复合分（首日恒为 0）。一次性 `prompt_sha` 变更。排序仍用 `hot_score`。 | 提示变更 | 已落地（X1a） |
+| D21 | `dec` 行新增 `p_like` / `p_save`（排序后的帖子 id 列表，解析失败为 null）；`post` 行新增 `note`（内容池 note_id）；`run_meta.openings` 记录每人开局持仓与成本。 | 日志变更 | 已落地（X1a/X1b） |
+| D22 | TC 组定义：跑通 `data_pipeline/cn/caption_frozen.py` 批量（801 张图，脚本默认模型 **glm-5.3-flash**，与 §A1 写的 glm-4.6v 不一致，以脚本文档为准并在此记录）并业主抽检 30 张 ≥8/10 后按 §A1；否则改为「TC = OCR only」并记录。 | 定义 | 待批量 |
+| D23 | 五个重复 = 五个不同的 (run_tag, seed) 对（agent 随机流挂 run_tag，只有平台流挂 seed）。十份主网格配置的 sha 在冻结时列出。 | 设计 | 待配置 |
+| D24 | HTTP 429 归类为传输失败 `rate_limited`，不计入 `decision_failure_halt` 的模型侧；限流不消耗重试梯；传输洞可用 `--retry-transport-holes` 重试。模型失败阈值维持 2%，或业主在 100×12 试跑后修订。 | 传输层 | A1 进行中 |
+| D25 | 七日惩罚性赎回费（证监会 2017）：`regulation.short_term_redemption` 默认关；关闭时也记反事实 `st_fee_cf`；`disclose: true` 臂另列（开启时 `prompt_sha` 动）。 | 机制（开关） | 待 B2 |
+| D26 | 处置效应 PGR/PLR 为新增次终点（Odean 1998）；方向：文字描述组与真图组的 DE ≤ 纯文本组（Chen & Ren 2025）；SESOI 待 100×12 试跑定。规则型基线 DE > 0 为阳性对照。 | 终点 | 待 B3 |
+| D27 | 种子热度实验（Muchnik–Aral–Taylor 2013）：`heat_seed {enabled, k, p_treat, focus_fund}`，默认关；主因变量**级联乘数** = 到 t+2 累计多出互动 ÷ k；方向 > 0；> 1 且逐日增长作为"正反馈存在"的探索性判定。k 在试跑后按首日展示计数中位数定。 | 新实验 | 待 C |
+| D28 | 合规规则清单 `config/compliance_rules_cn_v1.yaml`（2020 宣传推介暂行规定 + 2026《金融产品网络营销管理办法》第十条）与打标提示 sha 冻结；结论只作描述性（`descriptive`）。 | 数据 | 待 D |
+| D29 | `run_meta.provider` 记录端点主机名与模型（不记 key）；所有真模型运行三组决策用同一 vision_model（隔离模态）。 | 记录 | 待 A2 |
+| D30 | `focus_fund` 单基金集中为独立臂；修正阶段终点：注意力爆发后 5 日赎回率与舆论翻转 vs 对照基金。 | 终点 | 待 C |
+| D31 | 大 V 层 `social_graph.enabled` 默认关：句柄由 agent id 派生；`follow_users` schema；热评按粉丝数排；「你关注的人昨天」块（≤3 条，t−1）。开启时 `prompt_sha` 动。终点：粉丝分布集中度、跟单率、影响 vs 同质性（Aral 等 2009）、关注图同质性。零结果措辞：「在本模型下未形成意见领袖 / 所有人趋同关注同一人」均为结论。 | 新机制 | 待 E |
+| D32 | 机构适应 `institutions.adaptive` 默认关：η=0.5、下限 0.05、周期 5 日；候选笔记抽样改派生流 `rng_for(run_tag,"note_pick",org,t)`（**关闭时也换流，一次性日志哈希变更，与 X1 同批**）。终点：全平台 I2 占比路径、机构权重收敛/分化、适当性开/关下的差。 | 新机制 | 待 F |
+| D33 | 两种运行形状：微观网格 400×12（§H 主网格）；涌现运行 150×40（或 200×30），3–5 种子，模态固定单组，E/F/C 全开。涌现层终点措辞档 `collective_qualitative`（Wu & Peng 2025）；财富 Gini 时间路径为第一层（微观真实）新增描述量。 | 设计 | 待配置 |
+
+**新增禁止事项**
+13. 网格开跑后不得再改任何提示、排序、费率、派生流；D20/D32 的哈希变更必须在网格前一次完成。
+14. 涌现运行减预算先减种子、再减天数，不得关闭 E/F/C 任一机制后仍称之为涌现运行。
+15. 探针与试跑（`live_probe_*`、`live_pilot_*`）的数字不得进入任何结果表。

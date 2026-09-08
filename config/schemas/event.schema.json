@@ -80,6 +80,9 @@
           },
           "img": {
             "type": "boolean"
+          },
+          "note": {
+            "type": "string"
           }
         }
       }
@@ -565,6 +568,24 @@
               "integer",
               "null"
             ]
+          },
+          "p_like": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "p_save": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

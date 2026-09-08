@@ -56,6 +56,11 @@ NONSHIPPING_PATTERNS = (
     # engine runs text-only without it, so this config is opt-in on a machine
     # that holds the images.
     "demo_three_arm_images.json",
+    "live_probe_*.json",  # real-model run config; uses local images_root and live net worth; never shipped
+    "live_pilot_*.json",  # real-model run config; uses local images_root and live net worth; never shipped
+    "main_*.json",  # real-model run config; uses local images_root and live net worth; never shipped
+    "emerge_*.json",  # real-model run config; uses local images_root and live net worth; never shipped
+    "heat_seed_*.json",  # real-model run config; uses local images_root and live net worth; never shipped
 )
 
 

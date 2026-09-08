@@ -390,7 +390,7 @@ def _resolve_tv_image(note, images_root, policy, rng):
 
 
 def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur, n_prev,
-               image=None):
+               image=None, likes_prev=None):
     """One impression card with the keys flowmirror.agents.prompt reads.
 
     Text fields prefer masked variants; n_comments_prev is the FULL t-1 comment
@@ -421,7 +421,8 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
             "title": note.get("title") or note.get("display_title") or "",
             "caption": (note.get("caption_masked") or note.get("caption")
                         or note.get("abstract") or note.get("summary") or ""),
-            "landing": landing, "likes": round(float(heat_prev.get(pid, 0.0)), 1),
+            # Cumulative (population-weighted) like count as of t-1, rounded for display; heat_prev still ranks the feed but no longer lands on cards.
+            "landing": landing, "likes": int(round(float((likes_prev or {}).get(pid, 0.0)))),
             "arm": arm, "image_path": image_path,
             # the REAL digest of the attached bytes; this used to hash the path string
             "image_sha": image_sha,
@@ -765,16 +766,20 @@ def _dec_counts(adapted, n_cards, social_on):
     apply_decision enforces (comments exist only with the social channel on);
     cache_hit/attempts stay OUT of dec by design (invariant l, byte-identical
     replays -- they live in llm_cache.jsonl and run_meta.counters)."""
-    keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum")
+    keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum",
+            "p_like", "p_save")
     if adapted is None:
         return {k: None for k in keys}
     aff = adapted.get("aff") or {}
+    # Per-post liked/saved ids feed the per-post social-measure and seed-heat experiments; sorted so the log stays byte-for-byte replayable.
     return {"n_read": int(n_cards),
             "n_like": len(adapted.get("likes") or ()),
             "n_save": len(adapted.get("saves") or ()),
             "n_follow": len(adapted.get("follows") or ()),
             "n_comment": len(adapted.get("comments") or ()) if social_on else 0,
-            "aff_sum": int(round(sum(float(v) for v in aff.values())))}
+            "aff_sum": int(round(sum(float(v) for v in aff.values()))),
+            "p_like": sorted(adapted.get("likes") or ()),
+            "p_save": sorted(adapted.get("saves") or ())}
 
 
 def _bump_fees(inv, fee):
@@ -968,6 +973,7 @@ def run_simulation(cfg, rt=None):
     rng_platform = random.Random(cfg["seed"])
     invs = sorted(init_investors(W, cfg), key=lambda x: x.id)
     hold0 = {inv.id: dict(inv.hold or {}) for inv in invs}   # FIX4: each agent's OPENING
+    cost0 = {inv.id: dict(inv.cost or {}) for inv in invs}   # snapshot of opening cost basis so run_meta.openings can rebuild disposition effects
     # holdings, snapshotted before any day runs (inv.hold mutates in place during the run, so
     # this is a copy, never the live dict). The run-bundle exporter reuses this exact key and
     # {agent_id: {fund_code: units}} shape.
@@ -1111,7 +1117,7 @@ def run_simulation(cfg, rt=None):
         if dump_target is not None and not dump_done:
             print("prompt dump: no prompt matched the requested agent/day; nothing written")
         elog.close()
-        state = {"agents": invs, "hold0": hold0, "funds": W.funds, "end": last_d.isoformat(),
+        state = {"agents": invs, "hold0": hold0, "cost0": cost0, "funds": W.funds, "end": last_d.isoformat(),
                  "signal_audit": signal_audit, "agent_arms": {i.id: i.arm for i in invs},
                  "active_per_day": dict(active_per_day), "flows": flows,
                  "snapshots": snapshots, "checkout_oc": dict(checkout_oc),
@@ -1237,6 +1243,8 @@ def run_simulation(cfg, rt=None):
                                  "prev_live_end": (dt_cur - ONE_DAY).isoformat(),
                                  "day_keys": guba_day_keys})
             heat_prev, clim_prev, top_prev = dict(heat), dict(clim_now), dict(top_now)
+            # Freeze cumulative likes at t-1 beside heat_prev so cards show one snapshot point and never leak same-day interactions.
+            likes_prev = dict(likes)
             # News channel (audit E1): the view needs the RAW weekly signal row, not the
             # stance label. The label is still the climate seed above (clim.source stays
             # "guba_seed" wherever it fired) -- these are two different consumers of the
@@ -1331,7 +1339,7 @@ def run_simulation(cfg, rt=None):
                     continue
                 cards = [_feed_card(W, shown[pid], notes_by_id, arm_by_pid[pid],
                                     heat_prev, clim_prev, top_prev, dt_cur, n_prev,
-                                    image=img_by_pid.get(pid))
+                                    image=img_by_pid.get(pid), likes_prev=likes_prev)
                          for pid in shown]
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined,
