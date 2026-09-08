@@ -1,5 +1,5 @@
 """FlowMirror influence analysis: follower concentration & follow-graph homophily.
-Copying / influence-vs-homophily are PATCH-card placeholders; handle = "@u"+sha256(id)[:5]."""
+Adds copying & an influence-vs-homophily decomposition; handle = "@u"+sha256(id)[:5]."""
 import argparse, hashlib, json, os, random, statistics
 from collections import Counter, defaultdict
 
@@ -97,6 +97,112 @@ def _homophily(edges, stances):
         block["note"] = "双方均有主立场的关注边仅 %d 条（<10），excess 不报告。" % n
     return block
 
+def _buys(events):
+    # per-agent [(t, fund)] over subscribe rows; feeds the follow-window copying tests
+    out = defaultdict(list)
+    for e in events:
+        if e.get("ev") == "act" and e.get("kind") == "subscribe" and e.get("fund"):
+            out[e.get("i")].append((e.get("t"), e["fund"]))
+    return out
+
+def _timed_edges(events, table):
+    # (fan, star, t0) per follow_user event whose handle resolves and t0 is present
+    for e in events:
+        if e.get("ev") == "st" and e.get("what") == "follow_user":
+            v, t0 = table.get(e.get("handle")), e.get("t")
+            if e.get("i") and v is not None and t0 is not None:
+                yield e["i"], v, t0
+
+def _copied(buys, u, v, t0):
+    # star bought in [t0, t0+3); copied (1/0) when the fan bought it in (t0, t0+3]
+    t1 = t0 + 3
+    star_f = {f for t, f in buys.get(v, ()) if t is not None and t0 <= t < t1}
+    if not star_f:
+        return None
+    fan_f = {f for t, f in buys.get(u, ()) if t is not None and t0 < t <= t1}
+    return 1 if star_f & fan_f else 0
+
+def _obs_rates(buys, edges):
+    # (n_eligible, copy_rate) over edges whose star bought inside the window
+    obs = [c for c in (_copied(buys, u, v, t0) for u, v, t0 in edges) if c is not None]
+    return len(obs), (sum(obs) / float(len(obs)) if obs else None)
+
+def _null_rate(edges, buys, pools, rng):
+    # mean copy_rate across _NULL_REPS redraws with random non-followed partners
+    reps = []
+    for _ in range(_NULL_REPS):
+        cs = [c for c in (_copied(buys, u, rng.choice(pools[u]), t0)
+                          for u, _v, t0 in edges if pools.get(u)) if c is not None]
+        if cs:
+            reps.append(sum(cs) / float(len(cs)))
+    return statistics.mean(reps) if reps else None
+
+def _pools(edges, agent_ids, followed, stances=None, same=None):
+    # per-fan candidates: not self / not followed; same (True/False/None) stance filter
+    out = {}
+    for u in {e[0] for e in edges}:
+        cand = [a for a in agent_ids if a != u and a not in followed[u]]
+        if same is not None:  # keep only partners in the wanted stance relation
+            cand = [a for a in cand if u in stances and a in stances
+                    and (stances[a] == stances[u]) == same]
+        out[u] = cand
+    return out
+
+def _copying(buys, edges, agent_ids):
+    # fans buying what the star just bought; null = same fans, random non-followed star
+    block = {"n_edges": len(edges), "n_edges_with_v_buy": 0, "copy_rate": None,
+             "copy_rate_null": None, "excess_copy": None}
+    if not edges:
+        block["note"] = "没有可解析的关注边，无法计算跟单。"
+        return block
+    n_el, rate = _obs_rates(buys, edges)
+    block["n_edges_with_v_buy"], block["copy_rate"] = n_el, rate
+    if not n_el:
+        block["note"] = "关注后 3 天窗口内被关注者均无申购，跟单分母为 0。"
+        return block
+    followed = defaultdict(set)
+    for u, v, _t in edges:
+        followed[u].add(v)
+    rng = random.Random(_NULL_SEED)
+    block["copy_rate_null"] = _null_rate(edges, buys, _pools(edges, agent_ids, followed), rng)
+    if n_el >= 10 and block["copy_rate_null"] is not None:
+        block["excess_copy"] = rate - block["copy_rate_null"]
+    elif n_el < 10:
+        block["note"] = "分母（被关注者有申购的边）仅 %d 条（<10），excess_copy 不报告；copy_rate 仍给出。" % n_el
+    else:
+        block["note"] = "随机配对不可评估，excess_copy 不报告。"
+    return block
+
+def _ivh(buys, edges, agent_ids, stances):
+    # coarse matched decomposition: within-stratum obs-null ~ influence, the null
+    # gap between strata ~ homophily; purely descriptive, no tests anywhere
+    block = {"same": None, "diff": None, "influence_same": None, "influence_diff": None,
+             "homophily_gap": None}
+    if not edges:
+        block["note"] = "没有可解析的关注边，无法做影响 vs 同质性分解。"
+        return block
+    followed = defaultdict(set)
+    for u, v, _t in edges:
+        followed[u].add(v)
+    rng, small = random.Random(_NULL_SEED), []
+    for name, same in (("same", True), ("diff", False)):
+        sub = [e for e in edges if e[0] in stances and e[1] in stances
+               and (stances[e[0]] == stances[e[1]]) == same]
+        n_el, rate = _obs_rates(buys, sub)
+        null = _null_rate(sub, buys, _pools(sub, agent_ids, followed, stances, same), rng)
+        block[name] = {"n_edges": len(sub), "n_edges_with_v_buy": n_el,
+                       "copy_rate": rate, "copy_rate_null": null}
+        if n_el >= 10 and rate is not None and null is not None:
+            block["influence_" + name] = rate - null
+        else:
+            small.append("%s 层分母 %d 条（%s）" % (name, n_el,
+                "<10" if n_el < 10 else "零模型不可评估"))
+    s, d = block["same"], block["diff"]
+    if all(x["n_edges_with_v_buy"] >= 10 and x["copy_rate_null"] is not None for x in (s, d)):
+        block["homophily_gap"] = s["copy_rate_null"] - d["copy_rate_null"]
+    block["note"] = "描述性分解：层内 观察-零模型≈影响，两层零模型之差≈同质性；" + ("；".join(small) or "两层分母均≥10")
+    return block
+
 def _run_metrics(events, meta, run_dir=None):
     # common.load_events returns {ev: [rows]} grouped by event kind; the self-test hands in a
     # flat list. Flatten here so every consumer below iterates rows, never dict keys.
@@ -106,12 +212,13 @@ def _run_metrics(events, meta, run_dir=None):
     agent_ids = sorted(arms) if arms else sorted({e.get("i") for e in events if e.get("i")})
     table, ambiguous = _handle_table(agent_ids)
     stances, edges = _stances(events), list(_follow_edges(events, table))
+    buys, tedges = _buys(events), list(_timed_edges(events, table))
     return {"run_dir": run_dir, "n_events": len(events),
             "n_follow_events": len(edges), "n_ambiguous_handles": ambiguous,
             "followers": _followers(edges, agent_ids, arms, stances, ambiguous),
             "homophily": _homophily(edges, stances),
-            "copying": None,  # PATCH card: fans buying what the star just bought
-            "influence_vs_homophily": None}  # PATCH card: pre-follow matching
+            "copying": _copying(buys, tedges, agent_ids),
+            "influence_vs_homophily": _ivh(buys, tedges, agent_ids, stances)}
 
 def _cross_run(runs, warnings):
     def t_entry(key, sub):
@@ -126,7 +233,8 @@ def _cross_run(runs, warnings):
                 warnings.append("seed_t_interval(%s.%s) 失败：%s" % (key, sub, exc))
         return e
     return {"n_runs": len(runs), "followers_gini": t_entry("followers", "gini"),
-            "homophily_excess": t_entry("homophily", "excess")}
+            "homophily_excess": t_entry("homophily", "excess"),
+            "copying_excess": t_entry("copying", "excess_copy")}
 
 def analyze(run_dirs):
     """Analyze run dirs -> {"runs": {tag: metrics}, "cross_run": {...}, "warnings": []}."""
@@ -161,7 +269,7 @@ def _write(path, obj, warnings):
 
 def _print_summary(tag, m):
     if "error" in m: print("[%s] 分析失败：%s" % (tag, m["error"])); return
-    f, h = m.get("followers") or {}, m.get("homophily") or {}
+    f, h, c = m.get("followers") or {}, m.get("homophily") or {}, m.get("copying") or {}
     print("[%s] 粉丝分布：agent=%s 有粉=%s max=%s Gini=%s top1=%s(share=%s)%s" % (
         tag, f.get("n_agents"), f.get("n_with_followers"), f.get("max"),
         _fmt(f.get("gini")), ((f.get("top5") or [{}])[0]).get("handle"),
@@ -170,6 +278,10 @@ def _print_summary(tag, m):
         tag, h.get("n_edges_with_stance"), _fmt(h.get("p_same_obs")),
         _fmt(h.get("p_same_null_mean")), _fmt(h.get("p_same_null_p95")),
         _fmt(h.get("excess")), ("；" + h["note"]) if h.get("note") else ""))
+    print("[%s] 跟单：边=%s 星有申购边=%s copy=%s null=%s excess=%s%s" % (
+        tag, c.get("n_edges"), c.get("n_edges_with_v_buy"), _fmt(c.get("copy_rate")),
+        _fmt(c.get("copy_rate_null")), _fmt(c.get("excess_copy")),
+        ("；" + c["note"]) if c.get("note") else ""))
 
 def _self_test():
     # 1) handle reverse lookup: a known id's handle must map back to that id
@@ -187,9 +299,19 @@ def _self_test():
     # 3) no follow events -> followers.gini is None and the note is non-empty
     m0 = _run_metrics(events[:4], meta)
     assert m0["followers"]["gini"] is None and m0["followers"].get("note")
+    # 4) copying: star buys F1 at t0 and the fan at t0+1 -> 1.0; silent fan -> 0.0;
+    #    denominator < 10 -> excess_copy is None while copy_rate is still given
+    meta2 = {"arms": {"s1": "star", "f1": "plain"}}
+    ev2 = [{"ev": "st", "t": 5, "i": "f1", "what": "follow_user", "handle": _handle("s1")},
+           {"ev": "act", "t": 5, "i": "s1", "kind": "subscribe", "fund": "F1"},
+           {"ev": "act", "t": 6, "i": "f1", "kind": "subscribe", "fund": "F1"}]
+    cp = _run_metrics(ev2, meta2)["copying"]
+    assert cp["n_edges_with_v_buy"] == 1 and cp["copy_rate"] == 1.0
+    assert cp["excess_copy"] is None and cp.get("note")
+    assert _run_metrics(ev2[:2], meta2)["copying"]["copy_rate"] == 0.0
     # 5) Gini of an all-zero vector is None (not 0); sanity check on [0, 1]
     assert _gini([0, 0, 0, 0]) is None and abs(_gini([0, 1]) - 0.5) < 1e-9
-    print("self-test 通过：句柄反查 / 同质性=1.0 / 零关注 / 全零Gini=None")
+    print("self-test 通过：句柄反查 / 同质性=1.0 / 跟单=1.0与0.0 / 零关注 / 全零Gini=None")
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="FlowMirror influence analysis")
@@ -214,7 +336,7 @@ def main(argv=None):
     if ns.out:
         _write(ns.out, res, res["warnings"])
     cross = res["cross_run"] or {}
-    for name in ("followers_gini", "homophily_excess"):
+    for name in ("followers_gini", "homophily_excess", "copying_excess"):
         print("跨运行 %s：%s" % (name, cross.get(name) or {}))
     for w in res["warnings"]:
         print("警告：%s" % w)
