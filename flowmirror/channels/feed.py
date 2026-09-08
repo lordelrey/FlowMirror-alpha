@@ -222,7 +222,8 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None,
 def top_comments(post_id, comments_prev, k=3, weights=None):
     """Pick the k most authoritative day-(t-1) comments for a post.
 
-    Familiarity with the posting org (fam_level) DESC, then agent_id ASC as
+    Follower count (followers/nf, present only when social_graph is enabled) DESC first; when the field is missing every comment ties at 0 and the order below applies unchanged.
+Familiarity with the posting org (fam_level) DESC, then agent_id ASC as
     the frozen deterministic tie-break.  This ranking must never be
     randomized: the excerpt shown inside an LLM prompt has to be identical
     across identically-seeded runs or the whole run is irreproducible.
@@ -233,7 +234,12 @@ def top_comments(post_id, comments_prev, k=3, weights=None):
     ranking here.
     """
     pool = [c for c in comments_prev or [] if _cmt_field(c, "post_id", "p") == post_id]
-    pool.sort(key=lambda c: (-int(_cmt_field(c, "fam_level", "fam") or 0),
+    # Social graph (E): when the engine attaches the author's follower count, the most-followed
+    # author ranks first -- this is the preferential-attachment loop (more followers -> shown
+    # more -> more followers). Without the field every comment ties at 0 and the historical
+    # order (familiarity desc, agent id asc) is unchanged byte for byte.
+    pool.sort(key=lambda c: (-int(_cmt_field(c, "followers", "nf") or 0),
+                             -int(_cmt_field(c, "fam_level", "fam") or 0),
                              str(_cmt_field(c, "agent_id", "i") or "")))
     return pool[: max(0, k)]
 

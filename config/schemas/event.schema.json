@@ -434,13 +434,23 @@
             "type": "string"
           },
           "org": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "what": {
             "type": "string",
             "enum": [
               "level",
-              "follow"
+              "follow",
+              "follow_user"
+            ]
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "lv": {
@@ -594,6 +604,15 @@
             }
           },
           "p_save": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "p_follow_users": {
             "type": [
               "array",
               "null"

@@ -65,6 +65,11 @@ fees:
   redeem_rate: 0.005
 # CSRC 2017 liquidity rule: redemptions of units held < 7 days pay >= 1.5%.
 # Off by default; the counterfactual extra fee is still written to co.st_fee_cf.
+# Social graph (E): off by default; on, comments carry author handles + follower counts,
+# agents may follow_users, hot comments rank by followers, and a "what the people you
+# follow did yesterday" block appears (prompt_sha moves -- pre-registered D31).
+social_graph:
+  enabled: false
 regulation:
   short_term_redemption:
     enabled: false

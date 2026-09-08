@@ -617,7 +617,8 @@ def _decision_outcome(prov, shown):
     if cls in TRANSPORT_FAILURE_CLASSES:
         return None, [], cls
     return extract_decision(prov.get("raw") or "", shown["pids"], shown["codes"],
-                            shown["held"], shown["orgs"])
+                            shown["held"], shown["orgs"],
+                            visible_handles=shown.get("handles", ()))
 
 
 def _record_from_row(row, prompt_sha, img_shas, violations, parser_status=None):
@@ -643,7 +644,8 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
     # cache entry -- all of them produced at 0.3 -- stays valid.
     key = cache.key_for(model, temperature, prompt_sha, img_shas)
     parser = lambda txt, channel="content": extract_decision(
-        txt, shown["pids"], shown["codes"], shown["held"], shown["orgs"], channel)[:2]
+        txt, shown["pids"], shown["codes"], shown["held"], shown["orgs"], channel,
+        visible_handles=shown.get("handles", ()))[:2]
     row = cache.get(key)
     if row is not None:
         governor.record_cache_hit()
@@ -656,7 +658,8 @@ def decide(agent_view, feed_cards, cfg, cache, governor, llm, shown):
                 status = cls
             else:
                 _norm, viol, status = extract_decision(row.get("raw") or "", shown["pids"], shown["codes"],
-                                                       shown["held"], shown["orgs"])
+                                                       shown["held"], shown["orgs"],
+                                                       visible_handles=shown.get("handles", ()))
         return _record_from_row(row, prompt_sha, img_shas, viol, status)
     notes = {"mode": "decision", "model": model, "retried": False, "prompt_notes": list(prompt_notes or [])}
     governor.authorize(True)

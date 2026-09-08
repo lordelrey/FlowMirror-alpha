@@ -271,6 +271,12 @@
       ],
       "default": "first"
     },
+    "social_graph": {
+      "description": "Agent-to-agent follow graph (E): comments carry author handles and follower counts, agents may follow_users, hot comments rank by followers, and each agent sees what the people it follows did yesterday. Off by default; on, prompt_sha moves (PREREG D31).",
+      "type": "object",
+      "properties": {"enabled": {"type": "boolean"}},
+      "additionalProperties": false
+    },
     "regulation": {
       "description": "Sell-side rules. short_term_redemption encodes CSRC 2017 (units held < days pay >= min_fee_rate); default off; the counterfactual fee is always logged on co rows as st_fee_cf.",
       "type": "object",
