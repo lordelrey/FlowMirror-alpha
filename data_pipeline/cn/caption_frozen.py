@@ -120,9 +120,15 @@ from flowmirror.io.hashing import rng_seed_from, sha256_text
 # PROMPT_SHA256 hashes the exact system + blank line + user-text bytes; every
 # "was this caption made with the frozen prompt?" check uses it.
 # ---------------------------------------------------------------------------
-PROMPT_SYSTEM = ("你是一个只描述画面内容的助手。只写画面上有什么（文字、数字、图表类型、人物或物体），"
+# Card CAP2: the first 801-image batch hit the 40-char cap on 550 captions and mostly
+# transcribed on-image text that the TC arm already receives as OCR. The revised prompt
+# forbids transcription, asks for layout/visual elements only, and for one <=30-char
+# sentence, leaving headroom under the unchanged 40-char hard cap. PROMPT_SHA256 moves
+# (pre-registered D22: the TC caption prompt is frozen only after the owner's spot check).
+PROMPT_SYSTEM = ("你是一个只描述画面内容的助手。图中的文字已另行提供，不要抄写或转述图中文字；"
+                 "只写版式与视觉元素（图表类型、表格、人物、物体、图标、场景），"
                  "不评价好坏，不推测意图，不使用颜色、表情、情绪和美感词汇。")
-PROMPT_USER_TEXT = "用不超过40个字描述这张图的内容。只输出这一句话。"
+PROMPT_USER_TEXT = "用一句话、不超过30个字描述这张图的画面（不含图中文字）。只输出这一句话。"
 PROMPT_SHA256 = sha256_text(PROMPT_SYSTEM + "\n\n" + PROMPT_USER_TEXT)
 
 MAX_CAPTION_CHARS = 40
@@ -656,7 +662,8 @@ def process(pool_path, out_path, images_root, model, captioner, max_calls,
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
     tmp = out_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    # LF regardless of platform: the repo pins eol=lf and MANIFEST.sha256 hashes the bytes.
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(meta, ensure_ascii=False) + "\n")
         for row_out in out_rows:
             fh.write(json.dumps(row_out, ensure_ascii=False) + "\n")
