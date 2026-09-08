@@ -277,6 +277,17 @@
       "properties": {"enabled": {"type": "boolean"}},
       "additionalProperties": false
     },
+    "institutions": {
+      "description": "Institution adaptation (F, PREREG D32): every period_days each org re-weights its I1/I2/I3 mix from the responses its posts drew (w_new = (1-eta)*w_old + eta*share, floored, renormalised); one inst event per org per period. Off by default; off is byte-identical.",
+      "type": "object",
+      "properties": {
+        "adaptive": {"type": "boolean"},
+        "period_days": {"type": "integer", "minimum": 1},
+        "eta": {"type": "number", "minimum": 0, "maximum": 1},
+        "floor": {"type": "number", "minimum": 0, "maximum": 0.33}
+      },
+      "additionalProperties": false
+    },
     "regulation": {
       "description": "Sell-side rules. short_term_redemption encodes CSRC 2017 (units held < days pay >= min_fee_rate); default off; the counterfactual fee is always logged on co rows as st_fee_cf.",
       "type": "object",
@@ -583,6 +594,11 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "decision_failure_min_calls": {
+          "description": "Minimum number of decisions before decision_failure_halt is evaluated (a rate on <100 calls is noise); 0 = evaluate from the first call.",
+          "type": "integer",
+          "minimum": 0
         },
         "cache": {
           "type": "string"

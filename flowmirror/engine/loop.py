@@ -114,8 +114,8 @@ from flowmirror.engine.benchmark import load_benchmark, pct_5d, sorted_dates
 from flowmirror.config.validate import ConfigError, validate
 from flowmirror.engine.world import (DEFAULT_CONFIG, EventLog, check_invariants,
                                      event_log_sha, guba_seed_label, image_pool_summary,
-                                     init_investors, load_world, publish_day, quarter_of,
-                                     validate_config, write_reports)
+                                     init_investors, intent_probs, load_world, publish_day,
+                                     quarter_of, validate_config, write_reports)
 from flowmirror.io.backups import backup_existing
 from flowmirror.io.hashing import rng_seed_from, sha256_file, sha256_text
 from flowmirror.io.jsonl import iter_jsonl
@@ -820,6 +820,22 @@ def _dec_counts(adapted, n_cards, social_on, social_graph_on=False):
                if social_graph_on else {})}
 
 
+def _inst_update(w_old, conv, eta, floor):
+    """Institution adaptation step (F, PREREG D32): reinforcement-style share update.
+
+    w_new = (1-eta)*w_old + eta*share, where share is this period's response share per
+    intent; every weight is floored so no intent can die, then renormalised. Pure so the
+    rule is unit-testable and the engine loop stays a one-liner."""
+    total = float(sum(conv.values())) if conv else 0.0
+    if total <= 0.0:
+        return dict(w_old)
+    w = {ig: (1.0 - eta) * float(w_old.get(ig, 0.0)) + eta * float(conv.get(ig, 0)) / total
+         for ig in ("I1", "I2", "I3")}
+    w = {ig: max(float(floor), v) for ig, v in w.items()}
+    z = sum(w.values())
+    return {ig: v / z for ig, v in w.items()}
+
+
 def _bump_fees(inv, fee):
     """Accumulate cash-side fees on inv.fees (getattr-safe: the slot ships with
     the A2 world card; a pre-A2 slots-only Inv just drops it, and pre-A2 configs
@@ -1048,6 +1064,15 @@ def apply_decision(inv, rec, shown, day, fees=None):
                 logd("co", t=t, d=dstr, i=inv.id, p=pid, fund=code,
                      ig=post.get("intent_group", post.get("intent")), act=act,
                      oc=oc, oc_cf=oc_cf, amt=round(amt, 2))
+                # Institution adaptation (F): this post's org learns from the response it drew.
+                # getattr-safe: _fake_day and off runs carry no counter, so nothing is recorded.
+                ic = getattr(day, "inst_conv", None)
+                if ic is not None:
+                    per_org = ic.setdefault(post.get("org"), {})
+                    # keyed by the raw intent (I1/I2/I3) -- intent_group is the coarse I2/nonI2
+                    # label used by the co row, not the weight vector the org re-allocates.
+                    intent_key = post.get("intent")
+                    per_org[intent_key] = per_org.get(intent_key, 0) + 1 + (1 if oc == "match" else 0)
             if oc == "confirm_declined":
                 day.declined[inv.id] = day.declined.get(inv.id, 0) + 1
             elif amt > 0.0:
@@ -1196,6 +1221,16 @@ def run_simulation(cfg, rt=None):
     # One flag for the whole run: when off, every social-graph branch below stays empty and
     # the event log / prompts are byte-identical to the pre-E baseline.
     social_graph_on = bool((cfg.get("social_graph") or {}).get("enabled"))
+    # Institution adaptation (F, PREREG D32): each org re-weights its intent mix every
+    # period from the responses its own posts drew (checkout reached +1, matched +1).
+    # Off -> inst_w is None, publish_day gets intent_weights=None and nothing changes.
+    inst_cfg = cfg.get("institutions") or {}
+    inst_on = bool(inst_cfg.get("adaptive"))
+    inst_period = max(1, int(inst_cfg.get("period_days", 5)))
+    inst_eta = float(inst_cfg.get("eta", 0.5))
+    inst_floor = float(inst_cfg.get("floor", 0.05))
+    inst_w = ({org: dict(p) for org, p in intent_probs(W, cfg).items()} if inst_on else None)
+    inst_conv = {} if inst_on else None      # {org: {ig: responses}} for the current period
     snapshots, signal_audit, active_per_day = {}, [], {}
     last_trade, declined = {i.id: "" for i in invs}, {i.id: 0 for i in invs}
     guba_codes = {c for c in (W.guba or {}) if c in W.funds}
@@ -1330,7 +1365,20 @@ def run_simulation(cfg, rt=None):
                 for code in sorted(set(inv.attention) - set(inv.hold)):
                     inv.attention[code] = (inv.attention[code] * lam_att
                                            + beta_guba * z_day.get(code, 0.0))
-            today = publish_day(W, cfg, t, no_repeat, rng_platform, log=elog)  # (2) publish
+            if inst_on and t > 0 and t % inst_period == 0:
+                # Period boundary: reinforcement-style share update. Zero responses keep the
+                # weights (no signal); the floor keeps every intent alive so a mix can recover.
+                for org in sorted(inst_w):
+                    conv = inst_conv.get(org) or {}
+                    total = float(sum(conv.values()))
+                    if total > 0.0:
+                        inst_w[org] = _inst_update(inst_w[org], conv, inst_eta, inst_floor)
+                    logd("inst", t=t, d=dstr, org=org,
+                         w={ig: round(float(inst_w[org].get(ig, 0.0)), 4) for ig in ("I1", "I2", "I3")},
+                         conv={ig: int(conv.get(ig, 0)) for ig in ("I1", "I2", "I3")})
+                inst_conv.clear()
+            today = publish_day(W, cfg, t, no_repeat, rng_platform, log=elog,
+                                intent_weights=inst_w)  # (2) publish; None when adaptation is off
             for post in today:
                 birth[post["post_id"]] = t
             cand = [p for ps in recent_list for p in ps] + today
@@ -1409,6 +1457,7 @@ def run_simulation(cfg, rt=None):
                                   FUNDS=FUNDS, qdii_blk=qdii_blk, navday=navday, flows=flows,
                                   weights=wmap, comments=comments[t], likes=likes, saves=saves,
                                   acts_today=acts_today, handle_to_agent=handle_to_agent,
+                                  inst_conv=inst_conv,
                                   cw=cw, checkout_oc=checkout_oc, checkout_oc_cf=checkout_oc_cf,
                                   last_trade=last_trade, declined=declined)
             jobs, touched, trend_cache = [], {}, {}
@@ -1552,7 +1601,13 @@ def run_simulation(cfg, rt=None):
                 del inv.memory[:-mem_days]
             halt = cfg["llm"].get("decision_failure_halt", True)
             thr = halt if isinstance(halt, float) and 0.0 < halt < 1.0 else 0.02
-            if t >= 3 and halt and S["decisions"] \
+            # A failure RATE means nothing on a handful of calls: one terminal failure in 40
+            # decisions (a 10-agent mock run at t=3) read as 2.5% and killed a run whose true
+            # rate over 600 calls was 0.33%. Evaluate the halt only once the sample is large
+            # enough for a 2% threshold to be informative (PREREG D24); 0 restores the old
+            # behaviour.
+            min_calls = int(cfg["llm"].get("decision_failure_min_calls", 100) or 0)
+            if t >= 3 and halt and S["decisions"] >= max(1, min_calls) \
                     and S["decision_failures"] / S["decisions"] > thr:
                 return _finish({"decision_failure_halt":
                                 {"pass": False,

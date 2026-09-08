@@ -70,6 +70,13 @@ fees:
 # follow did yesterday" block appears (prompt_sha moves -- pre-registered D31).
 social_graph:
   enabled: false
+# Institution adaptation (F): orgs re-weight I1/I2/I3 every period_days from the responses
+# their own posts drew. Off by default -- off is byte-identical (PREREG D32).
+institutions:
+  adaptive: false
+  period_days: 5
+  eta: 0.5
+  floor: 0.05
 regulation:
   short_term_redemption:
     enabled: false
@@ -125,6 +132,8 @@ llm:
   workers: 4
   max_attempts: 3
   decision_failure_halt: 0.02
+  # The halt compares a RATE; below this many decisions the rate is noise (1/40 = 2.5%).
+  decision_failure_min_calls: 100
   # E9: both of these were unconfigurable module constants in agents/runtime.py,
   # so the sampling temperature -- an experimental parameter -- never reached
   # run_meta and no reviewer could tell what a run used. The defaults equal

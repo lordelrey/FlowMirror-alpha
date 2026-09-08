@@ -23,7 +23,8 @@
         "cmt",
         "clim",
         "refl",
-        "tac"
+        "tac",
+        "inst"
       ]
     },
     "t": {
@@ -139,6 +140,45 @@
               "null"
             ],
             "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "inst"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "org",
+          "w",
+          "conv"
+        ],
+        "properties": {
+          "org": {
+            "type": "string"
+          },
+          "w": {
+            "type": "object",
+            "properties": {
+              "I1": {"type": "number"},
+              "I2": {"type": "number"},
+              "I3": {"type": "number"}
+            },
+            "additionalProperties": false
+          },
+          "conv": {
+            "type": "object",
+            "properties": {
+              "I1": {"type": "integer"},
+              "I2": {"type": "integer"},
+              "I3": {"type": "integer"}
+            },
+            "additionalProperties": false
           }
         }
       }

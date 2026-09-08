@@ -856,10 +856,17 @@ def image_pool_summary(pool, images_root) -> dict:
             "refs_without_digest": sum(1 for ok in digested.values() if not ok)}
 
 
-def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: random.Random, log=None) -> list:
+def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: random.Random, log=None,
+                intent_weights=None) -> list:
     d = world.nav_days[t]
     dstr = d.isoformat()
-    probs, ppd = intent_probs(world, cfg), int(cfg.get("posts_per_org_per_day", 1))
+    # Institution adaptation (F): a caller may hand in this period's per-org intent weights
+    # ({org: {"I1": w, "I2": w, "I3": w}}); None keeps the measured / grouped mix exactly.
+    probs = intent_probs(world, cfg)
+    if intent_weights:
+        probs = {org: dict(intent_weights.get(org) or probs[org]) for org in world.orgs}
+    ppd = int(cfg.get("posts_per_org_per_day", 1))
+    run_tag = str(cfg.get("run_tag") or "")
     nod = int(cfg.get("no_repeat_days", 10))
     posts = []
     for oi, org in enumerate(world.orgs):
@@ -879,7 +886,12 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
                 print(f"[world] note fallback any org#{oi} slot{j}")
             if not elig:
                 continue
-            note = rng_platform.choice(sorted(elig, key=_note_id))
+            # Note pick on a DERIVED stream keyed by (run_tag, org, t, slot): when adaptation
+            # changes an org's intent weights, `elig` changes size, and drawing from the
+            # platform stream would consume a different number of draws and re-shuffle every
+            # later post for every org -- a mechanism A/B could never be same-seed. Keying by
+            # org/day/slot makes each pick independent of everything else that day.
+            note = rng_for(run_tag, "note_pick", org, t, j).choice(sorted(elig, key=_note_id))
             nid = _note_id(note)
             dq.append(nid)
             used.add(nid)

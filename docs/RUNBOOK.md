@@ -434,6 +434,8 @@ error and malformed JSON into the same bucket -- so a revoked key presented as
 model instability. In one live smoke run three rate-limited calls looked like
 an unstable model while the parse rate was 77 of 77.
 
+`llm.decision_failure_min_calls` (default `100`) is the sample floor for that check: the rate is only evaluated once at least this many decisions exist, because one terminal failure in 40 decisions (a 10-agent mock run at t=3) reads as 2.5% while the same run's rate over 600 calls was 0.33%. A 400-agent grid run has 400 decisions on day 0, so the floor never delays the check there; set it to 0 to restore the old behaviour.
+
 Each `dec` row now carries `failure_kind`:
 
 | value | meaning |
