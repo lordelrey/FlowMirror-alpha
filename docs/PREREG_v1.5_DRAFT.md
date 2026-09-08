@@ -78,13 +78,13 @@
 |---|---|---|---|
 | D20 | Feed 卡片的「热度：N 赞」改为显示**截至 t−1 的累计（人口加权）点赞计数取整**；此前是 `hot_score` 复合分（首日恒为 0）。一次性 `prompt_sha` 变更。排序仍用 `hot_score`。 | 提示变更 | 已落地（X1a） |
 | D21 | `dec` 行新增 `p_like` / `p_save`（排序后的帖子 id 列表，解析失败为 null）；`post` 行新增 `note`（内容池 note_id）；`run_meta.openings` 记录每人开局持仓与成本。 | 日志变更 | 已落地（X1a/X1b） |
-| D22 | TC 组定义：`data_pipeline/cn/caption_frozen.py` 批量**已跑完**（2026-09-08，800/801，glm-5.3-flash，prompt_sha `141b1e70dd82…`，产物 `data/creatives/cn/content_pool_v1_captioned.jsonl` 已登记 MANIFEST）。词级复审：真含颜色描述 3/801（脚本单字报警 435 条全是"基金/红包/粉丝"假阳性）；**550/801 在 40 字硬上限处被截断且多在抄写图中文字**。**业主 2026-09-08 决定（"都可以"，采纳推荐 (b)）**：改提示"不抄图中文字、只写版式与视觉元素、一句话 ≤30 字"重跑全部 801 张（卡 CAP2；新 prompt_sha 以脚本常量为准），产物 `content_pool_v1_captioned_v2.jsonl`；重跑后给出截断率与抄写率并写 30 张抽检样本供业主复核；若 v2 明显更好则网格配置指向 v2。 | 定义 | CAP2 落地中，重跑排在试跑与合规打标之后（key1） |
-| D23 | 五个重复 = 五个不同的 (run_tag, seed) 对（agent 随机流挂 run_tag，只有平台流挂 seed）。十份主网格配置的 sha 在冻结时列出。 | 设计 | 待配置 |
+| D22 | TC 组定义 **已定稿为描述 v2**（`content_pool_v1_captioned_v2.jsonl`，prompt_sha `dea5cb49039d…`，glm-5.3-flash，800/801，MANIFEST sha `a98519674b47…`）。v1 vs v2 实测：触到 40 字硬上限 550/800 → **6/800**；含引号抄写图内文字 425/800 → **0**；长度中位 40 → 29。代价是颜色词从 3 条升到 57 条（7%）——新提示要求写版式与视觉元素，模型偶尔带出颜色，系统提示的禁色要求未被完全遵守。**处置**：接受 v2 并披露该偏差；预注册一条稳健性检查——把这 57 张图所属笔记剔除后重算 TV−TC 对比。第 801 张图（`69aac1c1000000001a0267a5_2.jpg`）两版都因 HTTP 400 失败，该笔记 TC 组退化为仅 OCR，引擎记 `tc_no_caption`。30 张抽检样本 `caption_review_sample.md` 待业主复核。 | 定义 | 定稿 |
+| D23 | 五个重复 = 五个不同的 (run_tag, seed) 对（agent 随机流挂 run_tag，只有平台流挂 seed）。**十六份配置已冻结并入库，sha256 见文末附表**；全部指向描述 v2 池并带 `initial_pnl {mode: target, share_at_loss: 0.5}`。 | 设计 | 完成 |
 | D24 | HTTP 429 归类为传输失败 `rate_limited`，不计入 `decision_failure_halt` 的模型侧；限流不消耗重试梯；传输洞可用 `--retry-transport-holes` 重试；无 `Retry-After` 时默认等待 10·k 秒（原 30·k；A8 已落地）。**实测**（100×12 试跑首日，glm-4.6v，6 并发）：首次尝试失败 16/100（全为 `schema_invalid`，全部在重试梯内救回，最多 5 次），终态失败 0，限流等待 0，约 270–310 次/小时。模型失败阈值维持 2%（业主 2026-09-08 确认；样本下限 100 已落地）；推理链保持开启（业主同意采用推荐：不为速度牺牲 agent 行为质量，吞吐不足时再议）。 **样本下限**：`llm.decision_failure_min_calls`（默认 100）——比率检查只在累计决策 ≥100 次后评估；依据：10 人替身运行 t=3 时 1/40=2.5% 误停机，同一运行 600 次真实终态率 0.33%；400 人网格首日即 400 次，不受影响。 | 传输层 | A1 完成，试跑中 |
-| D25 | 七日惩罚性赎回费（证监会 2017）：`regulation.short_term_redemption` 默认关；关闭时也记反事实 `st_fee_cf`；`disclose: true` 臂另列（开启时 `prompt_sha` 动）。 | 机制（开关） | 待 B2 |
-| D26 | 处置效应 PGR/PLR 为新增次终点（Odean 1998）；方向：文字描述组与真图组的 DE ≤ 纯文本组（Chen & Ren 2025）；SESOI 待 100×12 试跑定。规则型基线 DE > 0 为阳性对照。 | 终点 | 待 B3 |
+| D25 | 七日惩罚性赎回费（证监会 2017）：`regulation.short_term_redemption` 默认关；关闭时也记反事实 `st_fee_cf`；`disclose: true` 臂另列。**2026-09-08 实测：真模型 12 日运行 0 笔赎回 → 该规则暴露面为 0（`st_fee_cf` 恒为 0），披露臂无可测终点**。因此 disclose 行为臂从计划中撤下（原本已在砍单顺序第二位），规则的量化只保留规则型基线与 40 日涌现运行。 | 机制（开关） | B2 已落地；披露臂撤下 |
+| D26 | 处置效应 PGR/PLR 作为新增次终点。**2026-09-08 实测（100×12 真模型）：1,200 次决策里模型给出的动作只有 `none` 829 次与 `buy` 670 次，`redeem` **0 次**，无违规、无被引擎拒绝的赎回**——不是机制不通（规则型基线 26 笔赎回、DE=+0.056 阳性对照通过），是这一代 agent 在 12 日窗口内从不卖出。旁证：后三日 300 次决策中 158 次由手上有浮亏仓位的人做出，全部继续持有或加仓，理由集中在"坚持定投/长期看好"；窗口内 75% 的基金下跌，运行期买入的 498 笔里 27% 到末日浮亏。开局浮亏比例即使按 `initial_pnl {mode: target, share_at_loss: 0.5}` 也只能做到 6.6%（578 笔里 38 笔，307 笔无法在真实净值史上实现抽到的目标）——真实净值史限制，非配置错误。**结论**：DE 的方向假设（文字描述组/真图组 ≤ 纯文本组）在主网格上不可估；写作时把"零卖出"当作微观真实性的边界结论报告（Wu & Peng 2025 措辞档），DE 只在规则型基线与 150×40 涌现运行上给。SESOI 不设。 | 次终点 | 改为零结果报告 |
 | D27 | 种子热度实验（Muchnik–Aral–Taylor 2013 设计）：`heat_seed: {enabled: false, k: 10, p_treat: 0.5, focus_fund: null}`；每帖**发布时**在派生流 `rng_for(run_tag,"heat_seed",pid)` 上分 `plus`/`ctrl`（写入 `post.heat_seed`，关闭时无此键）；`plus` 帖**仅首次展示日**卡片点赞数 +k，排序、累加器、`imp` 行不动（两组曝光相同）。主终点 P(like\|imp) 首日差；方向：plus > ctrl（Muchnik 2013 +32% 为参照，只比符号）；k 在 100×12 试跑后按首日展示计数中位数复核。 | 实验 | C1 引擎落地（9ef7187）；C2/C3 进行中 |
-| D28 | 合规规则清单 `config/compliance_rules_cn_v1.yaml`（2020 宣传推介暂行规定 + 2026《金融产品网络营销管理办法》第十条）与打标提示 sha 冻结；结论只作描述性（`descriptive`）。 | 数据 | 待 D |
+| D28 | 合规规则清单 v1（R01–R07，`config/compliance_rules_cn_v1.yaml`，rules_sha `a5f29aae6ea1…`）与打标提示 sha `7d6c1b175468…` 冻结；结论只作描述性。**2026-09-08 已完成**：glm-4.6，108 次模型裁定、0 失败、0 未定；200 条笔记里 64 条命中 ≥1 条规则（平均 0.35 条），按规则 R01 保本 15 / R03 极端表述 7 / R04 业绩无区间 4 / R05 推品无风险提示 3 / R06 诱导用语 10 / R07 未核实数据 31、**R02 预测业绩 0**（词表候选 4 条全被模型否掉，抽检时重点看这条是否漏判）；最高严重度 high 24 / medium 40 / 无 136；I2 组命中率 28/70=40%、非 I2 组 36/130=28%。产物 `compliance_labels_v1.jsonl` 与 30 条抽检样本 `compliance_review_sample.md`，已入库 `note_compliance_label` 1,400 行。 | 定义 | 完成，待业主抽检 |
 | D29 | `run_meta.provider` 记录端点主机名与模型（不记 key）；所有真模型运行三组决策用同一 vision_model（隔离模态）。 | 记录 | 待 A2 |
 | D30 | 种子热度**主因变量 = 级联乘数** `(plus 每帖到 t0+2 累计互动 − ctrl 同量) / k`，逐日路径判定 amplifying / damped / none；`focus_fund` 单基金集中为独立臂（其他帖标 `na`）；修正阶段终点：焦点基金的赎回次数 vs 其他基金（`act.kind == redeem`）、匹配申购路径。运行内帖级自助区间（200 次），跨运行种子级 t。 | 实验 | 卡 C2 已写 |
 | D31 | 大 V 层 `social_graph.enabled` 默认关：句柄 `"@u" + sha256(agent_id)[:6]`（6 位：400 人一次运行撞名概率约 0.5%，5 位约 7%）；`follow_users` schema（只接受当日可见作者的句柄，否则 `unknown_handle` 违规）；热评按 (粉丝数↓, 熟悉度↓, id↑) 排；「你关注的人昨天」块（≤3 条，t−1，含申购/赎回/评论立场）；`st.what == "follow_user"` 事件；`dec.p_follow_users` **只在开启时写入**。开启时 `prompt_sha` 动。终点：粉丝分布集中度、跟单率、影响 vs 同质性（Aral 等 2009）、关注图同质性。零结果措辞：「在本模型下未形成意见领袖 / 所有人趋同关注同一人」均为结论。 | 新机制 | E1/E2b 落地；E2a 落地待关闭态修复 |
@@ -95,3 +95,24 @@
 13. 网格开跑后不得再改任何提示、排序、费率、派生流；D20/D32 的哈希变更必须在网格前一次完成。
 14. 涌现运行减预算先减种子、再减天数，不得关闭 E/F/C 任一机制后仍称之为涌现运行。
 15. 探针与试跑（`live_probe_*`、`live_pilot_*`）的数字不得进入任何结果表。
+
+### D23 附表：十六份配置的 sha256（2026-09-08 冻结，内容池指向描述 v2）
+
+| 配置 | run_tag | seed | 人 | 日 | 适当性 | sha256（前 16） |
+|---|---|---|---|---|---|---|
+| `main_nosuit_s2027.json` | main_nosuit_s2027 | 2027 | 400 | 12 | False | `41a47b0111c4759b` |
+| `main_nosuit_s3031.json` | main_nosuit_s3031 | 3031 | 400 | 12 | False | `631d2f562ff271ba` |
+| `main_nosuit_s4049.json` | main_nosuit_s4049 | 4049 | 400 | 12 | False | `ab2b6711eb02603c` |
+| `main_nosuit_s5057.json` | main_nosuit_s5057 | 5057 | 400 | 12 | False | `6aef393fe87cc237` |
+| `main_nosuit_s6071.json` | main_nosuit_s6071 | 6071 | 400 | 12 | False | `a7e373a627171d05` |
+| `main_ref_s2027.json` | main_ref_s2027 | 2027 | 400 | 12 | True | `3b687d6708ba148f` |
+| `main_ref_s3031.json` | main_ref_s3031 | 3031 | 400 | 12 | True | `7c999b9708428eb0` |
+| `main_ref_s4049.json` | main_ref_s4049 | 4049 | 400 | 12 | True | `23829efad1eceeef` |
+| `main_ref_s5057.json` | main_ref_s5057 | 5057 | 400 | 12 | True | `4370cb6f41ee18fd` |
+| `main_ref_s6071.json` | main_ref_s6071 | 6071 | 400 | 12 | True | `cae16287478b81ef` |
+| `heat_seed_s2027.json` | heat_seed_s2027 | 2027 | 400 | 12 | True | `50e095d3f69fc5bd` |
+| `heat_seed_s3031.json` | heat_seed_s3031 | 3031 | 400 | 12 | True | `d057e6cba14dacad` |
+| `heat_seed_s4049.json` | heat_seed_s4049 | 4049 | 400 | 12 | True | `00bcff4887560f99` |
+| `emerge_s2027.json` | emerge_s2027 | 2027 | 150 | 40 | True | `c3620c3ef5ba08af` |
+| `emerge_s3031.json` | emerge_s3031 | 3031 | 150 | 40 | True | `81f1487e29b8b479` |
+| `emerge_s4049.json` | emerge_s4049 | 4049 | 150 | 40 | True | `117007d69e24210e` |
