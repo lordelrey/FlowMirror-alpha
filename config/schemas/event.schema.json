@@ -350,6 +350,12 @@
           "fee": {
             "type": "number",
             "minimum": 0
+          },
+          "pnl": {
+            "type": ["number", "null"]
+          },
+          "hold_days": {
+            "type": ["integer", "null"]
           }
         },
         "allOf": [

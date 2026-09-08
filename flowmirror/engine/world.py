@@ -422,7 +422,7 @@ class Inv:
     # again. pnl0 is the OPENING return of every held fund -- the only record of the environment
     # an investor woke up in: inv.cost is a CLOSING basis (a later subscription blends it), so it
     # can no more answer "did this investor open at a loss" than it can seed invariant (b).
-    __slots__ = ("id", "jid", "cell", "risk", "rc", "core", "strat_weight", "cash", "other", "hold", "cost",
+    __slots__ = ("id", "jid", "cell", "risk", "rc", "core", "strat_weight", "cash", "other", "hold", "cost", "lots",
                  "fam", "aff", "follow", "flag", "entry", "dca", "dca_target", "realized", "fees", "w0",
                  "expo", "memory", "reflection", "beliefs", "market_view", "risk_mood", "attention",
                  "gain_loss", "pnl0", "pnl0_misses", "arm", "arm_tally", "rng")
@@ -619,6 +619,11 @@ def init_investors(world: World, cfg: dict) -> list:
                     die(f"fund {code}: non-positive cost NAV")
                 hold[code] = alloc / nh / cnav
                 cost[code] = cnav
+                # same pass that fixes the basis fixes the initial lot's buy date;
+                # ci is already drawn, so this adds no sampling
+                if "buy_dates" not in locals():
+                    buy_dates = {}
+                buy_dates[code] = f.dates[ci]
                 # Opening valence, recorded here because this is the only moment both operands
                 # are unambiguous. Same form the day loop uses for gain_loss (nav / cost - 1);
                 # max(i0, 0) is the day-0 mark, and it also covers a world whose series starts
@@ -626,6 +631,9 @@ def init_investors(world: World, cfg: dict) -> list:
                 pnl0[code] = f.navs[max(i0, 0)] / cnav - 1.0
             cash -= alloc
         inv.cash, inv.other, inv.hold, inv.cost = cash, other, hold, cost
+        # lots mirror hold/cost with per-lot buy dates for FIFO redemption
+        # accounting; they never enter snapshot() or any hash
+        inv.lots = {code: [[u, cost[code], buy_dates.get(code)]] for code, u in hold.items()}
         inv.pnl0, inv.pnl0_misses = pnl0, n_miss
         inv.attention, inv.gain_loss = {c: 0.0 for c in hold}, {}
         inv.fam, inv.aff, inv.follow, inv.flag = {}, {}, set(), {}
