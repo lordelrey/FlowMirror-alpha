@@ -77,6 +77,12 @@ institutions:
   period_days: 5
   eta: 0.5
   floor: 0.05
+# Seeded social proof (C): plus posts show likes+k on their first display day; off = byte-identical.
+heat_seed:
+  enabled: false
+  k: 10
+  p_treat: 0.5
+  focus_fund: null
 regulation:
   short_term_redemption:
     enabled: false

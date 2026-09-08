@@ -406,7 +406,8 @@ def _resolve_tv_image(note, images_root, policy, rng):
 
 
 def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur, n_prev,
-               image=None, likes_prev=None, followers_prev=None, social_graph_on=False):
+               image=None, likes_prev=None, followers_prev=None, social_graph_on=False,
+               seed_bonus=0):
     """One impression card with the keys flowmirror.agents.prompt reads.
 
     Text fields prefer masked variants; n_comments_prev is the FULL t-1 comment
@@ -438,7 +439,9 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
             "caption": (note.get("caption_masked") or note.get("caption")
                         or note.get("abstract") or note.get("summary") or ""),
             # Cumulative (population-weighted) like count as of t-1, rounded for display; heat_prev still ranks the feed but no longer lands on cards.
-            "landing": landing, "likes": int(round(float((likes_prev or {}).get(pid, 0.0)))),
+            # seed_bonus is the displayed-only social-proof seed (C): +k on a plus post's first
+            # day, 0 otherwise and always 0 when the experiment is off, so bytes are unchanged.
+            "landing": landing, "likes": int(round(float((likes_prev or {}).get(pid, 0.0)))) + int(seed_bonus or 0),
             "arm": arm, "image_path": image_path,
             # the REAL digest of the attached bytes; this used to hash the path string
             "image_sha": image_sha,
@@ -1231,6 +1234,11 @@ def run_simulation(cfg, rt=None):
     inst_floor = float(inst_cfg.get("floor", 0.05))
     inst_w = ({org: dict(p) for org, p in intent_probs(W, cfg).items()} if inst_on else None)
     inst_conv = {} if inst_on else None      # {org: {ig: responses}} for the current period
+    # Seeded social proof (C): the displayed like count of a `plus` post is raised by k on its
+    # first display day only. Ranking (heat_prev) and the real counters never see the seed.
+    hs_cfg = cfg.get("heat_seed") or {}
+    hs_on = bool(hs_cfg.get("enabled"))
+    hs_k = int(hs_cfg.get("k", 10))
     snapshots, signal_audit, active_per_day = {}, [], {}
     last_trade, declined = {i.id: "" for i in invs}, {i.id: 0 for i in invs}
     guba_codes = {c for c in (W.guba or {}) if c in W.funds}
@@ -1532,7 +1540,9 @@ def run_simulation(cfg, rt=None):
                 cards = [_feed_card(W, shown[pid], notes_by_id, arm_by_pid[pid],
                                     heat_prev, clim_prev, top_prev, dt_cur, n_prev,
                                     image=img_by_pid.get(pid), likes_prev=likes_prev,
-                                    followers_prev=followers_prev, social_graph_on=social_graph_on)
+                                    followers_prev=followers_prev, social_graph_on=social_graph_on,
+                                    seed_bonus=(hs_k if (hs_on and shown[pid].get("heat_seed") == "plus"
+                                                         and birth.get(pid) == t) else 0))
                          for pid in shown]
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined,

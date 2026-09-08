@@ -867,6 +867,14 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
         probs = {org: dict(intent_weights.get(org) or probs[org]) for org in world.orgs}
     ppd = int(cfg.get("posts_per_org_per_day", 1))
     run_tag = str(cfg.get("run_tag") or "")
+    # Seeded social proof (C, PREREG D27/D30): each post is randomised at publication on a
+    # DERIVED stream keyed by its id, so the platform stream and every agent stream are
+    # untouched and an off run is byte-identical. focus_fund restricts the experiment to
+    # one fund's posts (the only feasible "blockbuster" campaign with <=5 notes per fund).
+    hs_cfg = cfg.get("heat_seed") or {}
+    hs_on = bool(hs_cfg.get("enabled"))
+    hs_p = float(hs_cfg.get("p_treat", 0.5))
+    hs_focus = hs_cfg.get("focus_fund") or None
     nod = int(cfg.get("no_repeat_days", 10))
     posts = []
     for oi, org in enumerate(world.orgs):
@@ -903,12 +911,19 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
                     break
             pid = f"{t:03d}{oi}{j}"
             ig = intent_group(intent)             # post.ig is the intent GROUP in {I2, nonI2}, not the raw label
+            heat_seed = None
+            if hs_on:
+                eligible = hs_focus is None or code == hs_focus
+                heat_seed = (("plus" if rng_for(run_tag, "heat_seed", pid).random() < hs_p else "ctrl")
+                             if eligible else "na")
             posts.append({"post_id": pid, "org": org, "intent": intent, "intent_group": ig,
-                          "note": nid, "code": code, "img": _has_image(note), "t_pub": dstr})
+                          "note": nid, "code": code, "img": _has_image(note), "t_pub": dstr,
+                          "heat_seed": heat_seed})
             if log is not None:
                 # note_id is the stable content identity; slot id "p" is reused each run.
                 log.emit("post", t=t, d=dstr, org=org, p=pid, intent=intent, ig=ig, fund=code,
-                         img=posts[-1]["img"], note=nid)
+                         img=posts[-1]["img"], note=nid,
+                         **({"heat_seed": heat_seed} if heat_seed is not None else {}))
     return posts
 
 

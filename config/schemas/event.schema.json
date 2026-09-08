@@ -66,6 +66,14 @@
               "I3"
             ]
           },
+          "heat_seed": {
+            "type": "string",
+            "enum": [
+              "plus",
+              "ctrl",
+              "na"
+            ]
+          },
           "ig": {
             "type": "string",
             "enum": [

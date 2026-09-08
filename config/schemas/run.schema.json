@@ -277,6 +277,17 @@
       "properties": {"enabled": {"type": "boolean"}},
       "additionalProperties": false
     },
+    "heat_seed": {
+      "description": "Seeded social proof (C, PREREG D27/D30): posts are randomised plus/ctrl at publication on a derived stream; a plus post shows likes+k on its first display day only. Ranking and counters never see the seed, so exposure is identical across arms. focus_fund restricts randomisation to one fund's posts (others are 'na'). Off by default; off is byte-identical.",
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "k": {"type": "integer", "minimum": 0},
+        "p_treat": {"type": "number", "minimum": 0, "maximum": 1},
+        "focus_fund": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
     "institutions": {
       "description": "Institution adaptation (F, PREREG D32): every period_days each org re-weights its I1/I2/I3 mix from the responses its posts drew (w_new = (1-eta)*w_old + eta*share, floored, renormalised); one inst event per org per period. Off by default; off is byte-identical.",
       "type": "object",
