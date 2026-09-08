@@ -97,7 +97,8 @@ def test_subscribe_appends_lots_batches():
     assert len(acts) == 2 and len(lots) == 2
     assert lots[0][0] == pytest.approx(acts[0]["units"], abs=1e-6)   # act row rounds units to 6 dp
     assert lots[0][1:] == [1.5, date(2024, 1, 2)]
-    assert lots[1] == [acts[1]["units"], 1.5, date(2024, 1, 2)]
+    assert lots[1][0] == pytest.approx(acts[1]["units"], abs=1e-6)   # act row rounds units to 6 dp
+    assert lots[1][1:] == [1.5, date(2024, 1, 2)]
     assert lots[0][0] + lots[1][0] == pytest.approx(inv.hold["F1"], abs=1e-9)
 
 
