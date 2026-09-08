@@ -10,4 +10,4 @@ c555ac61041b6b65757fe54abe10dccf6328bf237b3ec4ed74a9282a8b0b1618  data/attention
 75f5b7a1d8914ceeb41fab49fa5737b5d8c270cbe32618a4f6b512a429fb057a  data/population/agents_seed2027.json  438305  research:sim/agents_seed2027.json  2026-09-05T09:11:17Z
 23a5f66024fc8013cc7c25d70f329c505d04203052e8bd8aaac594a1d3535ef9  data/population/persona_grid_v3.json  145024  research:data/persona_grid_v3.json  2026-09-05T09:11:17Z
 1af2854ce4c7280ff418084a9c2ff679b0c51ba87156b760140a8cf90eba1531  data/population/population_10k_v3.json  4561946  external:flowmirror/flowmirror/data/population_10k_v3.json  2026-09-05T09:11:17Z
-e14603543f5d63d4cfea81d4b62e5a5ea027c27466c88b6122ab4d0ab1728360  data/creatives/cn/content_pool_v1_captioned.jsonl  2490961  pipeline:data_pipeline/cn/caption_frozen.py(glm-5.3-flash,prompt_sha=141b1e70dd82)  2026-09-08T07:03:33Z
+a17007dd169bfd909f9e6ce7c4281bbf73753bcd319dd2057d52ddd81bdff18c  data/creatives/cn/content_pool_v1_captioned.jsonl  2490760  pipeline:data_pipeline/cn/caption_frozen.py(glm-5.3-flash,prompt_sha=141b1e70dd82)  2026-09-08T07:35:35Z
