@@ -1,0 +1,129 @@
+# FlowMirror -- marketing-content compliance rules for Chinese public fund marketing, v1.
+# Frozen for PREREG D28: the labeler hashes this file (rules_sha256) into every label row.
+# lexicon_role: "hit"       -> a lexicon match alone is a hit (LLM may add evidence);
+#               "candidate" -> a lexicon match only nominates the note; the LLM decides.
+#               "none"      -> rule-only (R05) or LLM-only (R07).
+# Article numbers follow the public texts; the owner re-checks them during the 30-note spot check.
+version: 1
+rules:
+  - id: R01
+    name: 保本或承诺收益
+    severity: high
+    legal_source: 证监会《公开募集证券投资基金宣传推介材料管理暂行规定》第八条、第九条；《金融产品网络营销管理办法》（2026-04-24 发布，2026-09-30 施行）第十条
+    decision_rule: 明示或暗示本金不受损失、收益有保证、无风险（保本、稳赚、包赚、零风险、保收益、不会亏）。
+    lexicon_role: hit
+    lexicon:
+      - 保本
+      - 稳赚
+      - 包赚
+      - 零风险
+      - 无风险
+      - 保收益
+      - 保证收益
+      - 本金安全
+      - 不会亏
+      - 稳赢
+    examples:
+      - 稳赚不赔的好基金
+      - 本金安全，收益看得见
+  - id: R02
+    name: 预测未来业绩或预期收益率
+    severity: high
+    legal_source: 证监会《公开募集证券投资基金宣传推介材料管理暂行规定》第八条（不得预测基金的证券投资业绩）；《金融产品网络营销管理办法》第十条
+    decision_rule: 对基金未来净值、涨幅或收益率作出预测或给出预期数字（"预期年化 8%"、"有望翻倍"、"必涨"）；历史业绩带明确区间的展示不算。
+    lexicon_role: candidate
+    lexicon:
+      - 预期收益
+      - 预期年化
+      - 预计收益
+      - 目标收益率
+      - 有望上涨
+      - 有望翻倍
+      - 必涨
+      - 未来收益
+    examples:
+      - 预期年化收益 8% 以上
+      - 明年有望翻倍
+  - id: R03
+    name: 无依据的极端表述
+    severity: medium
+    legal_source: 证监会《公开募集证券投资基金宣传推介材料管理暂行规定》第八条（不得夸大或者片面宣传基金）
+    decision_rule: 使用"第一、最佳、最强、唯一、王牌、冠军、遥遥领先、业绩优异"等排他性或极端表述而未标明数据来源与统计区间。
+    lexicon_role: candidate
+    lexicon:
+      - 排名第一
+      - 业绩第一
+      - 同类第一
+      - 全市场第一
+      - 最佳
+      - 最强
+      - 唯一
+      - 王牌
+      - 冠军
+      - 顶级
+      - 遥遥领先
+      - 业绩优异
+    examples:
+      - 同类第一，闭眼入
+      - 王牌基金经理
+  - id: R04
+    name: 业绩展示无区间或无风险提示
+    severity: medium
+    legal_source: 证监会《公开募集证券投资基金宣传推介材料管理暂行规定》第十条至第十三条（业绩展示应载明统计区间并同时提示"基金的过往业绩并不预示其未来表现"）
+    decision_rule: 出现历史收益、涨幅或年化数字，但没有写明统计区间（起止日期或"近 N 月/年"），或没有"过往业绩不预示未来表现"之类的提示。
+    lexicon_role: candidate
+    lexicon:
+      - 涨幅
+      - 收益率
+      - 年化
+      - 成立以来
+      - 近一年
+      - 近三年
+      - 累计收益
+    examples:
+      - 成立以来涨了 60%（无区间、无提示）
+  - id: R05
+    name: 推品帖缺少风险提示
+    severity: medium
+    legal_source: 证监会《公开募集证券投资基金宣传推介材料管理暂行规定》第十四条（宣传推介材料应含风险提示）；《金融产品网络营销管理办法》第十条
+    decision_rule: 规则型：intent_group 为 I2（推品）且标题、正文、图内文字里都没有"风险提示 / 基金有风险 / 投资需谨慎 / 市场有风险"任一短语。不调用模型。
+    lexicon_role: none
+    risk_phrases:
+      - 风险提示
+      - 基金有风险
+      - 投资需谨慎
+      - 投资须谨慎
+      - 市场有风险
+      - 投资有风险
+    examples:
+      - 推品帖只有产品亮点，没有任何风险语句
+  - id: R06
+    name: 诱导性用语
+    severity: high
+    legal_source: 《金融产品网络营销管理办法》第十条（不得以"低风险高收益"等误导性表述诱导消费者）、第十三条（算法不得诱导过度消费）
+    decision_rule: 用"低风险高收益、零成本、躺赢、闭眼买、无脑买、抓紧上车、最后机会、限时、错过再等一年"等制造紧迫感或错误风险认知的表述。
+    lexicon_role: hit
+    lexicon:
+      - 低风险高收益
+      - 高收益低风险
+      - 零成本
+      - 无成本
+      - 躺赢
+      - 闭眼买
+      - 闭眼入
+      - 无脑买
+      - 抓紧上车
+      - 最后机会
+      - 限时
+      - 错过再等
+    examples:
+      - 低风险高收益，抓紧上车
+  - id: R07
+    name: 未经核实的数据
+    severity: medium
+    legal_source: 《金融产品网络营销管理办法》第十条（不得使用未经核实的数据）
+    decision_rule: 给出具体数字（百分比、亿元、排名、人数）但没有说明数据来源、口径或日期。纯活动信息（如红包金额）不算。
+    lexicon_role: candidate
+    lexicon_regex: '\d+(\.\d+)?\s*%|\d+\s*亿|\d+\s*万人|排名\s*\d+'
+    examples:
+      - 已有 300 万人持有（无来源）
