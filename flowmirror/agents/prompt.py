@@ -455,7 +455,15 @@ def build_decision_messages(agent_view, feed_cards, cfg):
         parts.append({"type": "text", "text": text})
         sha_blocks.append(text)
 
-    add_text("blocks B-E", head)
+    # The anti-priming guard is for OUR words. Block B (belief: last_reflection, beliefs) and
+    # block C (memory: the agent's own prior comments and reasons) are the agent's words -- an
+    # investor who wrote 研究 in yesterday's comment must be allowed to read it back today; the
+    # live 100x12 pilot died on exactly that on day 2. `head` bytes are untouched (prompt_sha
+    # unchanged); only the scan targets move to the blocks we author.
+    check_anti_priming("\n".join(d_lines), "block D (account / experience)")
+    check_anti_priming("\n".join(e_lines), "block E (news / trend)")
+    check_anti_priming(render_following(agent_view), "block following (social graph)")
+    add_text("blocks B-E", head, check=False)
     for card in feed_cards:
         add_text("card:" + str(card.get("post_id")), render_card(card, social_on), check=False)
         arm = str(card.get("arm") or "T")
