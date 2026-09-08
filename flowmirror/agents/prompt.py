@@ -412,6 +412,8 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     sys_text = (str(agent_view.get("persona_card_zh_rich") or "") + "\n\n" + PERSONA_FRAME_ZH).strip()
     d_lines = [f"你的风险测评等级：{agent_view.get('c_class') or 'C2'}。",
                f"账户可投闲钱：{float(agent_view.get('cash') or 0):,.0f} 元。"]
+    if agent_view.get("fee_notice"):
+        d_lines.append(str(agent_view["fee_notice"]))
     if exp_lines is not None:
         d_lines.extend(exp_lines)
     fam = agent_view.get("familiarity") or {}

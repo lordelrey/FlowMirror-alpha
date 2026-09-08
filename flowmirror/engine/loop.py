@@ -120,6 +120,7 @@ from flowmirror.io.backups import backup_existing
 from flowmirror.io.hashing import rng_seed_from, sha256_file, sha256_text
 from flowmirror.io.jsonl import iter_jsonl
 from flowmirror.regulator.cn_cxr import cxr_outcome
+from flowmirror.regulator.cn_redeem import ShortTermRedeemRule
 
 ROOT = os.environ.get("FLOWMIRROR_ROOT") or os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
@@ -473,6 +474,10 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             "last_reflection": inv.reflection,
             "market_view": inv.market_view, "risk_mood": inv.risk_mood,
             "c_class": inv.rc, "cash": round(inv.cash, 2), "holdings": hold,
+            # CSRC 2017 short-term redemption disclosure; None when off keeps the prompt byte-identical.
+            "fee_notice": (f"持有不足 {int(_st.get('days', 7))} 日赎回将收取 {float(_st.get('min_fee_rate', 0.015)) * 100:.1f}% 赎回费。"
+                           if ((_st := (cfg.get("regulation") or {}).get("short_term_redemption") or {}).get("enabled")
+                               and _st.get("disclose")) else None),
             "last_trade": last_trade.get(inv.id, ""),
             # prompt.render_experience expects a list of sentences; the engine keeps only the count
             "declined_confirms": ([f"你此前有 {int(declined.get(inv.id, 0))} 次在《风险不匹配确认书》前放弃了申购。"]
@@ -824,6 +829,14 @@ def apply_decision(inv, rec, shown, day, fees=None):
     fee_cfg = fees if isinstance(fees, dict) else {}
     sub_rate = float(fee_cfg.get("subscribe_rate") or 0.0)
     red_rate = float(fee_cfg.get("redeem_rate") or 0.0)
+    # CSRC 2017 liquidity rule: units held < `days` pay >= min_fee_rate on redemption.
+    # Off by default; the counterfactual extra fee is still logged so the rule's
+    # exposure can be measured without enabling it.
+    st_cfg = (cfg.get("regulation") or {}).get("short_term_redemption") or {}
+    st_rule = ShortTermRedeemRule(days=int(st_cfg.get("days", 7)),
+                                  min_fee_rate=float(st_cfg.get("min_fee_rate", 0.015)))
+    st_days = int(st_cfg.get("days", 7))
+    st_on = bool(st_cfg.get("enabled", False))
     w = day.weights.get(inv.id, 1.0) if day.weights else 1.0
     for key, dst in (("likes", day.likes), ("saves", day.saves)):
         for pid in rec.get(key) or ():
@@ -922,13 +935,14 @@ def apply_decision(inv, rec, shown, day, fees=None):
                              fee=round(fee, 2))
                 else:
                     u = float(inv.hold.get(code) or 0.0)
+                    # defaults for the no-holdings `co` row; the filled path overwrites both
+                    st_extra, st_units = 0.0, 0.0
                     if u <= 0.0:
                         oc = "no_holdings"   # engine refuses: non-holders never redeem (inv b)
                     else:
                         nav = navday[code]
                         units = u * pct
                         amt = units * nav    # gross redemption value before the fee
-                        fee = amt * red_rate
                         cst = inv.cost.get(code, nav)
                         inv.realized += units * (nav - cst)
                         # FIFO is the fee convention fund companies apply; pnl keeps the
@@ -937,9 +951,12 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         lst = lots.get(code) or []
                         youngest = None
                         rem = units
+                        st_units = 0.0
                         while rem > 1e-12 and lst:
                             lot_u, _lot_c, lot_d = lst[0]
                             take = lot_u if lot_u <= rem else rem
+                            if (dt_cur - lot_d).days < st_days:
+                                st_units += take
                             rem -= take
                             if youngest is None or lot_d > youngest:
                                 youngest = lot_d
@@ -948,6 +965,8 @@ def apply_decision(inv, rec, shown, day, fees=None):
                             else:
                                 lst[0][0] = lot_u - take
                         hold_days = (dt_cur - youngest).days if youngest is not None else None
+                        fee_total, st_extra = st_rule.short_term_fee(st_units, units - st_units, nav, red_rate)
+                        fee = fee_total if st_on else amt * red_rate
                         inv.hold[code] = u - units
                         if inv.hold[code] <= 1e-9:
                             del inv.hold[code]
@@ -972,12 +991,13 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         logd("act", t=t, d=dstr, i=inv.id, p=None, kind="redeem", fund=code,
                              amt=round(amt, 2), units=round(units, 6), nav=nav,
                              fee=round(fee, 2), pnl=round(units * (nav - cst), 2),
-                             hold_days=hold_days)
+                             hold_days=hold_days, st_units=round(st_units, 6),
+                             st_fee=round(st_extra if st_on else 0.0, 2))
             checkout_oc[oc] += 1
             day.checkout_oc_cf[oc_cf] += 1
             if act == "redeem":              # a redeem checkout has no post context
                 logd("co", t=t, d=dstr, i=inv.id, p=None, fund=code, ig=None, act=act,
-                     oc=oc, oc_cf=oc_cf, amt=round(amt, 2))
+                     oc=oc, oc_cf=oc_cf, amt=round(amt, 2), st_fee_cf=round(st_extra, 2))
             else:
                 logd("co", t=t, d=dstr, i=inv.id, p=pid, fund=code,
                      ig=post.get("intent_group", post.get("intent")), act=act,

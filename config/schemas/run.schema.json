@@ -271,6 +271,23 @@
       ],
       "default": "first"
     },
+    "regulation": {
+      "description": "Sell-side rules. short_term_redemption encodes CSRC 2017 (units held < days pay >= min_fee_rate); default off; the counterfactual fee is always logged on co rows as st_fee_cf.",
+      "type": "object",
+      "properties": {
+        "short_term_redemption": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "days": {"type": "integer", "minimum": 1},
+            "min_fee_rate": {"type": "number", "minimum": 0, "maximum": 0.1},
+            "disclose": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "fees": {
       "description": "Subscription/redemption fee rates in [0, 0.1].",
       "type": "object",

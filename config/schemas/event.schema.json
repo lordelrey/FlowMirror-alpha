@@ -241,6 +241,9 @@
           },
           "amt": {
             "type": "number"
+          },
+          "st_fee_cf": {
+            "type": ["number", "null"]
           }
         },
         "allOf": [
@@ -356,6 +359,12 @@
           },
           "hold_days": {
             "type": ["integer", "null"]
+          },
+          "st_units": {
+            "type": ["number", "null"]
+          },
+          "st_fee": {
+            "type": ["number", "null"]
           }
         },
         "allOf": [
