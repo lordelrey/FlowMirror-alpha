@@ -1,5 +1,5 @@
 """FlowMirror influence analysis: follower concentration & follow-graph homophily.
-Adds copying & an influence-vs-homophily decomposition; handle = "@u"+sha256(id)[:5]."""
+Adds copying & an influence-vs-homophily decomposition; handle = "@u"+sha256(id)[:6]."""
 import argparse, hashlib, json, os, random, statistics
 from collections import Counter, defaultdict
 
@@ -9,7 +9,7 @@ _STANCES = ("bullish", "bearish", "watching")
 _NULL_REPS, _NULL_SEED, _OUT_NAME = 200, 2027, "influence.json"
 
 def _handle(aid):
-    return "@u" + hashlib.sha256(aid.encode("utf-8")).hexdigest()[:5]
+    return "@u" + hashlib.sha256(aid.encode("utf-8")).hexdigest()[:6]
 
 def _handle_table(agent_ids):
     # handle -> agent_id; a handle owned by 2+ agents is ambiguous: drop & count

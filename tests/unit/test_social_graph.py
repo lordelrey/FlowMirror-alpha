@@ -30,10 +30,10 @@ REPO = Path(__file__).resolve().parents[2]
 class TestSocialGraphUnits(unittest.TestCase):
 
     def test_handle_is_deterministic_and_opaque(self):
-        expected = "@u" + hashlib.sha256("inv_00012".encode("utf-8")).hexdigest()[:5]
+        expected = "@u" + hashlib.sha256("inv_00012".encode("utf-8")).hexdigest()[:6]
         h = handle_of("inv_00012")
         self.assertEqual(h, expected)
-        self.assertEqual(len(h), 7)
+        self.assertEqual(len(h), 8)
         self.assertEqual(h, handle_of("inv_00012"))
         self.assertNotEqual(h, handle_of("inv_00013"))
         self.assertNotIn("inv_00012", h)

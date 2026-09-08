@@ -23,7 +23,7 @@
 
 ## 3. E 大 V 层
 
-- E1 `prompt.py`：句柄+粉丝数渲染、`render_following`、`follow_users` 解析与 `unknown_handle` 违规；E2a `loop.py`：`handle_of`、关注边、`followers_prev` 冻结、关注者动态（t−1）；E2b `feed.py` 排序 (−粉丝, −熟悉, id)；`dec.p_follow_users` 只在开启时写。测试 `test_social_graph.py`（8 项）。**攻击点**：句柄碰撞（5 hex ≈ 100 万空间，400 人碰撞概率约 8%！——请核算并给出建议：6 位？）；关注者动态里是否泄露 t 日信息；`following_recent` 最多 3 条的取舍是否确定性；替身模型永不关注 → 开启态从未在集成层被真正行使。
+- E1 `prompt.py`：句柄+粉丝数渲染、`render_following`、`follow_users` 解析与 `unknown_handle` 违规；E2a `loop.py`：`handle_of`、关注边、`followers_prev` 冻结、关注者动态（t−1）；E2b `feed.py` 排序 (−粉丝, −熟悉, id)；`dec.p_follow_users` 只在开启时写。测试 `test_social_graph.py`（8 项）。**攻击点**：句柄碰撞——已核算并修复（E6：5 位→6 位，400 人一次运行撞名概率 7.4%→0.48%）；请复核 `handle_to_agent` 在仍然碰撞时的行为（后者覆盖前者，静默）是否需要告警计数；关注者动态里是否泄露 t 日信息；`following_recent` 最多 3 条的取舍是否确定性；替身模型永不关注 → 开启态从未在集成层被真正行使。
 - E4a/E4b `analysis/influence.py`：粉丝 Gini、同质性零模型（保出度重连 200 次）、跟单 3 日窗、随机配对零模型。**攻击点**：零模型的重连是否允许自环/重边；`copy_rate` 分母定义。
 
 ## 4. F 机构适应

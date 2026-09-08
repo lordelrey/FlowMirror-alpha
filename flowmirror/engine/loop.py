@@ -311,9 +311,10 @@ def _trend_line(code, fund, hist):
 
 def handle_of(agent_id):
     """Public, stable, non-reversible handle for an agent: derived from the id alone, so it is
-    identical across runs and seeds and never exposes the id. Five hex chars keep 400 agents
-    collision-free in expectation."""
-    return "@u" + sha256_text(str(agent_id))[:5]
+    identical across runs and seeds and never exposes the id. Six hex chars (16.8M values): the
+    birthday-collision odds for 400 agents are ~0.5% (five chars would be ~7%), and a collision
+    would silently credit a follow edge to the wrong agent."""
+    return "@u" + sha256_text(str(agent_id))[:6]
 
 
 # Chinese stance words for the followee digest lines live loop-side so prompt templates stay
