@@ -194,6 +194,30 @@ with `parsed: null` and the run continues.
 
 Start small: `flowmirror run <run.json> --days 5 --agents 20 --out runs/out/live_probe`.
 
+### 6.1 What the first live probes measured (2026-09-08, glm-4.6v on the Zhipu coding-plan endpoint)
+
+| probe | agents x days | workers | calls | outcome |
+|---|---|---|---|---|
+| 0a | 3 x 1 | 1 | 3 | all 200; one decision needed a second attempt (schema_invalid, then ok) |
+| 0b | 20 x 5, three arms, real images | 4 | 120 | all 200, 0 terminal failures, 9 first-attempt failures recovered on the ladder; 210 images attached, 0 missing, 0 sha mismatch; **203 calls/hour**; CNY 0.99 in total |
+| 0c | 20 x 5, same | 12 | 15 (stopped) | 429s from the fifth call on, no `Retry-After` header; throughput fell to **77 calls/hour** |
+
+Three consequences worth knowing before your own run:
+
+- **Concurrency.** The provider caps concurrent requests somewhere between 4 and 12. Four workers ran clean;
+  twelve spent more time waiting out 429s than working. Start at `llm.workers: 4` to `6` and let the adaptive
+  gate (halves on a 429, restores after twenty clean calls) find the ceiling. Do not set 12.
+- **One key, one consumer.** The only earlier live attempt saw 400 consecutive 429s; its key was being used at
+  the same time by a separate code-generation job. Never share a key between the engine and anything else.
+- **Cost is not the constraint; wall time is.** A decision call carries about 3k prompt tokens (about 5k with
+  images) and returns about 1.8k completion tokens from a reasoning model. A 400-agent, 12-day run is roughly
+  5,600 calls, about CNY 46, and about 28 hours at four workers. Budget by the hour, not by the yuan.
+
+Two switches exist because of these probes: `llm.rate_limit_cap_s` and `llm.rate_limit_max_wait_s` bound how
+long one call waits on rate limits, and `--retry-transport-holes` makes a re-run ask the provider again for
+cached transport failures (429s, timeouts, empty bodies) while keeping model-side failures terminal. Without the
+flag a replay is byte-identical, holes included.
+
 ## 7. Outputs
 
 `<out_dir>/` contains:
