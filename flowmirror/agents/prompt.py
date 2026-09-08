@@ -129,6 +129,11 @@ INSTR_V3 = """请以你的人设，按下面四个互相独立的步骤给出今
 只输出一个 JSON 对象（键用英文，值中的文字用中文）：
 """ + DECISION_SCHEMA_TEXT
 
+INSTR_FOLLOW_ZH = (
+    "\n补充：评论区的作者带有句柄（如 @u3f9a）。如果你想以后优先看到某个人的看法与动向，"
+    "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a\"]）；不关注任何人则不写这个键。"
+)
+
 RETRY_SUFFIX = "上次输出不是合法 JSON。请只输出一个符合下面 schema 的 JSON 对象："
 
 REFLECTION_PROMPT_ZH = (
@@ -293,6 +298,16 @@ def render_trend(view):
     return lines
 
 
+def render_following(agent_view):
+    """block F2: what the people this agent follows did yesterday (engine-rendered
+    sentences, lagged one day). '' when the social graph is off, so the prompt is
+    byte-identical to a run without it."""
+    lines = [str(x) for x in (agent_view.get("following_recent") or []) if str(x).strip()]
+    if not lines:
+        return ""
+    return "你关注的人昨天：\n" + "\n".join(f"- {x}" for x in lines[:3])
+
+
 def render_social(card):
     """social channel (block F, per card): t-1 top comments + climate; '' when the label is no_signal.
 
@@ -314,7 +329,8 @@ def render_social(card):
     for i, c in enumerate(cps[:3]):
         c = c if isinstance(c, dict) else {}
         stance = _STANCE_ZH.get(str(c.get("stance", "")), "观望")
-        out.append(f"{'①②③'[i]} “{c.get('text', '')}” —{stance} · {c.get('fam_phrase', '')}")
+        who = f"{c['handle']}（粉丝 {int(c.get('followers') or 0)}）：" if c.get("handle") else ""
+        out.append(f"{'①②③'[i]} {who}“{c.get('text', '')}” —{stance} · {c.get('fam_phrase', '')}")
     return "\n".join(out)
 
 
@@ -425,7 +441,7 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     c_text = "最近五个交易日的记录（从早到晚）：\n" + ("\n".join(mem) if mem else "（这几天没有特别的事。）")
     e_lines = list(news_lines or []) + list(trend_lines or [])
     head = "\n\n".join(t for t in (render_belief(agent_view), c_text, "\n".join(d_lines),
-                                   "\n".join(e_lines)) if t)
+                                   "\n".join(e_lines), render_following(agent_view)) if t)
 
     check_anti_priming(sys_text, "block A (persona + frame)")   # our framing, not data
     messages = [{"role": "system", "content": sys_text}]
@@ -463,7 +479,7 @@ def build_decision_messages(agent_view, feed_cards, cfg):
             notes.append("image_unsupported" if exists else "image_missing")
     if direct_lines:
         add_text("direct", "\n".join(direct_lines))
-    add_text("instr G", INSTR_V3)
+    add_text("instr G", INSTR_V3 + (INSTR_FOLLOW_ZH if agent_view.get("social_graph_on") else ""))
     messages.append({"role": "user", "content": parts})
 
     for name, body in (("experience", exp_lines), ("news", news_lines), ("trend", trend_lines),
@@ -483,7 +499,7 @@ VALID_ENGAGE = ("like", "save", "follow")
 _REQUIRED = ("reads", "engage", "comments", "trade", "org_affinity_delta", "mood", "reason")
 
 
-def parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs):
+def parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs, visible_handles=()):
     """-> (normalized | None, violations). Structural failures -> (None, ["schema:<detail>"])."""
     shown_pids, shown_codes = set(shown_pids), set(shown_codes)
     held_codes, shown_orgs = set(held_codes), set(shown_orgs)
@@ -575,12 +591,26 @@ def parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs):
             violations.append("schema:affinity_value")
         else:
             affinity[str(org)] = max(-2, min(2, int(round(float(delta)))))
+    follow_users = []
+    raw_fu = obj.get("follow_users")
+    if raw_fu is not None:
+        if not isinstance(raw_fu, list):
+            violations.append("schema:follow_users")
+        else:
+            vis = set(visible_handles or ())
+            for h in raw_fu:
+                if isinstance(h, str) and h in vis:
+                    if h not in follow_users:
+                        follow_users.append(h)
+                else:
+                    violations.append("unknown_handle")
     return {"reads": reads, "engage": engage, "comments": comments, "trade": out_trade,
             "org_affinity_delta": affinity, "mood": max(1, min(5, int(round(float(mood))))),
-            "reason": obj["reason"][:60]}, violations
+            "reason": obj["reason"][:60], "follow_users": follow_users}, violations
 
 
-def extract_decision(text, shown_pids, shown_codes, held_codes, shown_orgs, channel="content"):
+def extract_decision(text, shown_pids, shown_codes, held_codes, shown_orgs, channel="content",
+                     visible_handles=()):
     """-> (normalized | None, violations, parser_status in {ok, no_json_object,
     schema_invalid, ambiguous_reasoning}). channel="content" takes the FIRST complete
     object that parses; channel="reasoning" accepts ONLY a single complete object that
@@ -595,7 +625,8 @@ def extract_decision(text, shown_pids, shown_codes, held_codes, shown_orgs, chan
             obj = json.loads(cands[0])
         except Exception:
             return None, ["schema:json_loads"], "schema_invalid"
-        norm, viol = parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs)
+        norm, viol = parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs,
+                                    visible_handles=visible_handles)
         return (norm, viol, "ok") if norm is not None else (None, viol, "schema_invalid")
     loaded = False
     last_viol = []
@@ -605,7 +636,8 @@ def extract_decision(text, shown_pids, shown_codes, held_codes, shown_orgs, chan
         except Exception:
             continue
         loaded = True
-        norm, viol = parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs)
+        norm, viol = parse_decision(obj, shown_pids, shown_codes, held_codes, shown_orgs,
+                                    visible_handles=visible_handles)
         if norm is not None:
             return norm, viol, "ok"
         last_viol = viol or last_viol
