@@ -1348,6 +1348,12 @@ def check_invariants(state: dict, events_path, cfg: dict):
     if lvl == "agent" and not agent_arms_map:
         checks["h_arm_balance"] = {"skipped": True, "level": "agent", "arms": list(arms), "reason":
                                    "no per-agent arm assignments in state; agent-level balance not evaluable"}
+    elif lvl == "agent" and len(arms) <= 1:
+        # Balance ACROSS arms is vacuous with one arm: every cell is "single-armed" by design.
+        # Emergence runs fix one modality (PREREG D33) and must not exit 4 on a non-question.
+        checks["h_arm_balance"] = {"skipped": True, "level": "agent", "arms": list(arms),
+                                   "agents_assigned": len(agent_arms_map), "reason":
+                                   "single modality arm: balance across arms is not applicable"}
     elif lvl == "agent":
         entry = {"pass": True, "level": "agent", "arms": list(arms),
                  "agents_assigned": len(agent_arms_map)}

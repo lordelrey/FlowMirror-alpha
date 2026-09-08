@@ -497,3 +497,15 @@ anything about the interface. The acceptance record lives in
 4. **One console 404 is guaranteed in static mode**: the page probes whether
    `/api/runs` exists, and a static server has no such endpoint. That is the probe
    itself, not an error.
+
+## 15. Mechanism switches (all default off; off is byte-identical)
+
+| Config key | What it adds | Moves `prompt_sha`? | Log rows | Read-out |
+|---|---|---|---|---|
+| `social_graph.enabled` | Comments carry an author handle (`@u`+sha256[:5]) and follower count; agents may `follow_users`; hot comments rank by followers; a "what the people you follow did yesterday" block | yes (when on) | `st.what=follow_user`, `dec.p_follow_users` | `python -m flowmirror.analysis.influence <run_dir>` |
+| `institutions.adaptive` | Every `period_days` each org re-weights its I1/I2/I3 mix from the responses its posts drew (`w=(1-eta)w+eta*share`, floored, renormalised) | no | `inst` (one per org per period) | `python -m flowmirror.analysis.institutions <run_dir>` |
+| `heat_seed.enabled` | Posts randomised plus/ctrl at publication; a plus post's card shows likes+`k` on its first display day only; ranking and counters never see it | no (numbers only) | `post.heat_seed` | `python -m flowmirror.analysis.social_proof <run_dir>` |
+| `regulation.short_term_redemption.enabled` | CSRC 2017 short-term redemption fee (units held < `days` pay >= `min_fee_rate`); `disclose: true` adds one prompt line | only with `disclose` | `act.st_units/st_fee`, `co.st_fee_cf` (always) | `python -m flowmirror.analysis.sell_side`, `.disposition` |
+
+The pre-registered micro grid runs with all four off (three modality arms only). Emergence runs (150 x 40, one modality arm) turn the first three on; with one arm the `h_arm_balance` invariant is reported as skipped rather than failed.
+`llm.decision_failure_min_calls` (default 100) is the sample floor for the 2% halt (section above).
