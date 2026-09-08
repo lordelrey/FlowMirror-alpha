@@ -424,6 +424,7 @@ class Inv:
     # an investor woke up in: inv.cost is a CLOSING basis (a later subscription blends it), so it
     # can no more answer "did this investor open at a loss" than it can seed invariant (b).
     __slots__ = ("id", "jid", "cell", "risk", "rc", "core", "strat_weight", "cash", "other", "hold", "cost", "lots",
+                 "followers", "following_users",
                  "fam", "aff", "follow", "flag", "entry", "dca", "dca_target", "realized", "fees", "w0",
                  "expo", "memory", "reflection", "beliefs", "market_view", "risk_mood", "attention",
                  "gain_loss", "pnl0", "pnl0_misses", "arm", "arm_tally", "rng")
@@ -638,6 +639,9 @@ def init_investors(world: World, cfg: dict) -> list:
         inv.pnl0, inv.pnl0_misses = pnl0, n_miss
         inv.attention, inv.gain_loss = {c: 0.0 for c in hold}, {}
         inv.fam, inv.aff, inv.follow, inv.flag = {}, {}, set(), {}
+        # Social graph (E): followers = how many agents follow this one (reported as of t-1);
+        # following_users = the agent ids this one follows. Zero/empty when the feature is off.
+        inv.followers, inv.following_users = 0, set()
         ev = rec.get("entry_day", 0)              # population entry spread over 365d -> run window
         spread = float(cfg.get("entry_spread_days", 30))
         ev_days = (date.fromisoformat(ev) - world.start).days if isinstance(ev, str) else int(ev)

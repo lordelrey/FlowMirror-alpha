@@ -309,6 +309,18 @@ def _trend_line(code, fund, hist):
             f"3月最大回撤{dd:.1%} {_trend_position(navs)}")
 
 
+def handle_of(agent_id):
+    """Public, stable, non-reversible handle for an agent: derived from the id alone, so it is
+    identical across runs and seeds and never exposes the id. Five hex chars keep 400 agents
+    collision-free in expectation."""
+    return "@u" + sha256_text(str(agent_id))[:5]
+
+
+# Chinese stance words for the followee digest lines live loop-side so prompt templates stay
+# free of engine vocabulary.
+_STANCE_ZH_LOOP = {"bullish": "看多", "bearish": "看空", "watching": "观望"}
+
+
 def _top_view(top):
     out = []
     for c in top or ():
@@ -394,7 +406,7 @@ def _resolve_tv_image(note, images_root, policy, rng):
 
 
 def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur, n_prev,
-               image=None, likes_prev=None):
+               image=None, likes_prev=None, followers_prev=None, social_graph_on=False):
     """One impression card with the keys flowmirror.agents.prompt reads.
 
     Text fields prefer masked variants; n_comments_prev is the FULL t-1 comment
@@ -436,7 +448,10 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
             # that attaches everything is unchanged.
             **({"image_status": image_status} if image_status else {}),
             "comments_prev": [{"stance": c.get("stance"), "text": c.get("text"),
-                               "fam_phrase": c.get("fam_phrase", "")}
+                               "fam_phrase": c.get("fam_phrase", ""),
+                               **({"handle": handle_of(c.get("i")),
+                                   "followers": int((followers_prev or {}).get(c.get("i"), 0))}
+                                  if social_graph_on and c.get("i") else {})}
                               for c in (top_prev.get(pid) or []) if isinstance(c, dict)],
             "climate_label": clim_prev.get(pid),
             "n_comments_prev": int(n_prev.get(pid, 0) or 0)}
@@ -450,7 +465,7 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
 
 def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba_view,
                 last_trade, declined, prev_navdays=(), index_5d=None,
-                index_label=None):
+                index_label=None, social_graph_on=False, following_recent=None):
     """Frozen pre-LLM agent state with exactly the keys prompt.py reads.
 
     prev_navdays is (navday_{t-1}, navday_{t-2}) -- the only extra input holdings_1d
@@ -474,6 +489,8 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             "last_reflection": inv.reflection,
             "market_view": inv.market_view, "risk_mood": inv.risk_mood,
             "c_class": inv.rc, "cash": round(inv.cash, 2), "holdings": hold,
+            "social_graph_on": bool(social_graph_on),
+            "following_recent": list(following_recent or []),
             # CSRC 2017 short-term redemption disclosure; None when off keeps the prompt byte-identical.
             "fee_notice": (f"持有不足 {int(_st.get('days', 7))} 日赎回将收取 {float(_st.get('min_fee_rate', 0.015)) * 100:.1f}% 赎回费。"
                            if ((_st := (cfg.get("regulation") or {}).get("short_term_redemption") or {}).get("enabled")
@@ -761,6 +778,7 @@ def _adapt_record(rec, shown, inv):
             if org:
                 follows.append(org)
     out["likes"], out["saves"], out["follows"] = likes, saves, sorted(set(follows))
+    out["follow_users"] = list(row.get("follow_users") or [])
     out["aff"] = {k: v for k, v in (row.get("org_affinity_delta") or {}).items() if v}
     out["comments"] = [{"p": c.get("post_id"), "stance": c.get("stance"), "text": c.get("text", "")}
                        for c in (row.get("comments") or ()) if c.get("stance") != "no_comment"]
@@ -775,15 +793,17 @@ def _adapt_record(rec, shown, inv):
     return out
 
 
-def _dec_counts(adapted, n_cards, social_on):
+def _dec_counts(adapted, n_cards, social_on, social_graph_on=False):
     """Post-feasibility decision tallies for the dec row; all null on parse failure.
 
     The counts mirror the adapted record after the same feasibility rules
     apply_decision enforces (comments exist only with the social channel on);
     cache_hit/attempts stay OUT of dec by design (invariant l, byte-identical
     replays -- they live in llm_cache.jsonl and run_meta.counters)."""
+    # Social graph (E): the per-post follow list is a key only when the graph is on, so an
+    # off run's dec rows stay byte-identical to the pre-E baseline (PREREG D31).
     keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum",
-            "p_like", "p_save")
+            "p_like", "p_save") + (("p_follow_users",) if social_graph_on else ())
     if adapted is None:
         return {k: None for k in keys}
     aff = adapted.get("aff") or {}
@@ -795,7 +815,9 @@ def _dec_counts(adapted, n_cards, social_on):
             "n_comment": len(adapted.get("comments") or ()) if social_on else 0,
             "aff_sum": int(round(sum(float(v) for v in aff.values()))),
             "p_like": sorted(adapted.get("likes") or ()),
-            "p_save": sorted(adapted.get("saves") or ())}
+            "p_save": sorted(adapted.get("saves") or ()),
+            **({"p_follow_users": sorted(adapted.get("follow_users") or ())}
+               if social_graph_on else {})}
 
 
 def _bump_fees(inv, fee):
@@ -846,6 +868,24 @@ def apply_decision(inv, rec, shown, day, fees=None):
             inv.follow.add(org)
             logd("st", t=t, d=dstr, i=inv.id, org=org, what="follow", lv=2,
                  fam=round(inv.fam.get(org, 0.0), 3), aff=round(inv.aff.get(org, 0.0), 3))
+    # Social graph (E): follow_users arrive as handles; the day object carries the
+    # handle->agent map for everyone visible today (built by the loop), so we resolve,
+    # dedupe, forbid self-follow, and count the target's followers. Off -> the list is
+    # always empty and nothing below runs, so the log is byte-identical.
+    by_handle = getattr(day, "handle_to_agent", None) or {}
+    for h in sorted(set(rec.get("follow_users") or ())):
+        target = by_handle.get(h)
+        if target is None or target.id == inv.id:
+            continue
+        following = getattr(inv, "following_users", None)
+        if following is None:
+            inv.following_users = following = set()
+        if target.id in following:
+            continue
+        following.add(target.id)
+        target.followers = int(getattr(target, "followers", 0) or 0) + 1
+        logd("st", t=t, d=dstr, i=inv.id, org=None, what="follow_user", lv=None,
+             fam=None, aff=None, handle=h)
     aff_first = None
     for org in sorted(rec.get("aff") or {}):
         dv = float((rec.get("aff") or {}).get(org) or 0.0)
@@ -933,6 +973,10 @@ def apply_decision(inv, rec, shown, day, fees=None):
                         logd("act", t=t, d=dstr, i=inv.id, p=pid, kind="subscribe", fund=code,
                              amt=round(amt, 2), units=round(units, 6), nav=nav,
                              fee=round(fee, 2))
+                        # Record the public act for tomorrow's followee digest; guarded because
+                        # the self-test _fake_day namespace has no acts_today.
+                        if getattr(day, "acts_today", None) is not None:
+                            day.acts_today.setdefault(inv.id, []).append((act, code))
                 else:
                     u = float(inv.hold.get(code) or 0.0)
                     # defaults for the no-holdings `co` row; the filled path overwrites both
@@ -993,6 +1037,8 @@ def apply_decision(inv, rec, shown, day, fees=None):
                              fee=round(fee, 2), pnl=round(units * (nav - cst), 2),
                              hold_days=hold_days, st_units=round(st_units, 6),
                              st_fee=round(st_extra if st_on else 0.0, 2))
+                        if getattr(day, "acts_today", None) is not None:
+                            day.acts_today.setdefault(inv.id, []).append((act, code))
             checkout_oc[oc] += 1
             day.checkout_oc_cf[oc_cf] += 1
             if act == "redeem":              # a redeem checkout has no post context
@@ -1146,6 +1192,10 @@ def run_simulation(cfg, rt=None):
     flows = {fa: {q: {"sub": 0.0, "red": 0.0} for q in quarters}
              for fa in sorted({f.family for f in W.funds.values()})}
     comments, likes, saves, cw, heat, birth = {}, {}, {}, {}, {}, {}
+    acts_today, acts_prev, followers_prev = {}, {}, {}
+    # One flag for the whole run: when off, every social-graph branch below stays empty and
+    # the event log / prompts are byte-identical to the pre-E baseline.
+    social_graph_on = bool((cfg.get("social_graph") or {}).get("enabled"))
     snapshots, signal_audit, active_per_day = {}, [], {}
     last_trade, declined = {i.id: "" for i in invs}, {i.id: 0 for i in invs}
     guba_codes = {c for c in (W.guba or {}) if c in W.funds}
@@ -1313,6 +1363,30 @@ def run_simulation(cfg, rt=None):
             heat_prev, clim_prev, top_prev = dict(heat), dict(clim_now), dict(top_now)
             # Freeze cumulative likes at t-1 beside heat_prev so cards show one snapshot point and never leak same-day interactions.
             likes_prev = dict(likes)
+            # Social graph (E): follower counts and yesterday's public acts, frozen with the
+            # other t-1 signals so nothing from today leaks into today's cards.
+            followers_prev = {inv.id: int(getattr(inv, "followers", 0) or 0) for inv in invs}
+            acts_prev = dict(acts_today)
+            acts_today = {}
+            # Everyone visible today keyed by handle, plus each agent's digest of what their
+            # followees did yesterday; both stay empty when the graph is off, so prompts and
+            # logs are byte-identical to the pre-social baseline.
+            handle_to_agent = {handle_of(inv.id): inv for inv in invs} if social_graph_on else {}
+            following_recent_by_agent, following_handles_by_agent = {}, {}
+            if social_graph_on:
+                cmts_prev_by_agent = {}
+                for c in (comments.get(t - 1) or []):
+                    cmts_prev_by_agent.setdefault(c.get("i"), []).append(c)
+                for inv in invs:
+                    lines, hs = [], set()
+                    for fid in sorted(getattr(inv, "following_users", None) or ()):
+                        h = handle_of(fid); nf = followers_prev.get(fid, 0); hs.add(h)
+                        for kind, code in (acts_prev.get(fid) or [])[:2]:
+                            lines.append(f"{h}（粉丝 {nf}）昨天{'申购了' if kind == 'subscribe' else '赎回了'} {code}")
+                        for c in (cmts_prev_by_agent.get(fid) or [])[:1]:
+                            lines.append(f"{h}（粉丝 {nf}）昨天评论{_STANCE_ZH_LOOP.get(c.get('stance'), '观望')} #{c.get('p')}")
+                    following_recent_by_agent[inv.id] = lines[:3]
+                    following_handles_by_agent[inv.id] = hs
             # News channel (audit E1): the view needs the RAW weekly signal row, not the
             # stance label. The label is still the climate seed above (clim.source stays
             # "guba_seed" wherever it fired) -- these are two different consumers of the
@@ -1334,6 +1408,7 @@ def run_simulation(cfg, rt=None):
             day = SimpleNamespace(t=t, dstr=dstr, dt_cur=dt_cur, cfg=cfg, S=S, logd=logd,
                                   FUNDS=FUNDS, qdii_blk=qdii_blk, navday=navday, flows=flows,
                                   weights=wmap, comments=comments[t], likes=likes, saves=saves,
+                                  acts_today=acts_today, handle_to_agent=handle_to_agent,
                                   cw=cw, checkout_oc=checkout_oc, checkout_oc_cf=checkout_oc_cf,
                                   last_trade=last_trade, declined=declined)
             jobs, touched, trend_cache = [], {}, {}
@@ -1407,12 +1482,15 @@ def run_simulation(cfg, rt=None):
                     continue
                 cards = [_feed_card(W, shown[pid], notes_by_id, arm_by_pid[pid],
                                     heat_prev, clim_prev, top_prev, dt_cur, n_prev,
-                                    image=img_by_pid.get(pid), likes_prev=likes_prev)
+                                    image=img_by_pid.get(pid), likes_prev=likes_prev,
+                                    followers_prev=followers_prev, social_graph_on=social_graph_on)
                          for pid in shown]
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined,
                                    prev_navdays=(prev_navday, prev2_navday),
-                                   index_5d=idx_5d, index_label=benchmark_label)
+                                   index_5d=idx_5d, index_label=benchmark_label,
+                                   social_graph_on=social_graph_on,
+                                   following_recent=following_recent_by_agent.get(inv.id))
                 jobs.append({"inv": inv, "shown": shown, "cards": cards, "view": view,
                              "llm": _make_llm(cfg)})
             active_per_day[t] = len(jobs)
@@ -1420,10 +1498,16 @@ def run_simulation(cfg, rt=None):
             def _job(job):                          # (6) LLM phase, barrier via run_parallel
                 # decide() takes the parser's feasibility scope, not the pid->post map used by apply_decision
                 sh = job["shown"]
+                # Offer only handles the agent can genuinely see (card commenters plus their
+                # own followees), so the parser can never echo back unknown users.
+                card_handles = {c["handle"] for card in job["cards"]
+                                for c in (card.get("comments_prev") or []) if c.get("handle")}
+                vis_handles = sorted(card_handles | set(following_handles_by_agent.get(job["inv"].id, ())))
                 scope = {"pids": list(sh),
                          "codes": sorted({p.get("code") for p in sh.values() if p.get("code")}),
                          "held": sorted(job["inv"].hold),
-                         "orgs": sorted({p.get("org") for p in sh.values() if p.get("org")})}
+                         "orgs": sorted({p.get("org") for p in sh.values() if p.get("org")}),
+                         "handles": vis_handles}
                 return decide(job["view"], job["cards"], cfg, llm_cache, gov, job["llm"], scope)
 
             for job, rec in zip(jobs, run_parallel(jobs, _job, workers) or []):  # (7) apply
@@ -1450,7 +1534,8 @@ def run_simulation(cfg, rt=None):
                      arm=inv.arm, mood=(row or {}).get("mood"), reason=(row or {}).get("reason"),
                      violations=list(rec.get("violations") or ()),
                      failure_kind=rec.get("failure_kind"),
-                     **_dec_counts(adapted, len(job["cards"]), bool(cfg.get("social"))))
+                     **_dec_counts(adapted, len(job["cards"]), bool(cfg.get("social")),
+                                   social_graph_on=social_graph_on))
                 if row is None:
                     S["decision_failures"] += 1
                     # Decision 9: threshold and halt condition UNCHANGED -- this splits
@@ -1797,11 +1882,16 @@ def _self_test():
                     "trade": None}}, shown2, _fake_inv())
     chk("dec_counts_match_adapted_row",
         _dec_counts(adapted, 2, True) == {"n_read": 2, "n_like": 1, "n_save": 1,
-                                          "n_follow": 1, "n_comment": 1, "aff_sum": 0})
+                                          "n_follow": 1, "n_comment": 1, "aff_sum": 0,
+                                          "p_like": ["P1"], "p_save": ["P1"]})
     chk("dec_counts_all_null_when_parse_failed",
         _dec_counts(None, 2, True) == {k: None for k in
                                        ("n_read", "n_like", "n_save", "n_follow",
-                                        "n_comment", "aff_sum")})
+                                        "n_comment", "aff_sum", "p_like", "p_save")})
+    chk("dec_counts_follow_users_key_only_when_graph_on",
+        "p_follow_users" not in _dec_counts(adapted, 2, True)
+        and _dec_counts(adapted, 2, True, social_graph_on=True)["p_follow_users"] == []
+        and _dec_counts(None, 2, True, social_graph_on=True)["p_follow_users"] is None)
     chk("dec_counts_drop_comments_when_social_off",
         _dec_counts(adapted, 2, False)["n_comment"] == 0)
     chk("memory_line_shape", _memory_line(3, 4, None, None, None, "neutral", "r" * 99)
