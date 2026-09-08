@@ -78,17 +78,17 @@
 |---|---|---|---|
 | D20 | Feed 卡片的「热度：N 赞」改为显示**截至 t−1 的累计（人口加权）点赞计数取整**；此前是 `hot_score` 复合分（首日恒为 0）。一次性 `prompt_sha` 变更。排序仍用 `hot_score`。 | 提示变更 | 已落地（X1a） |
 | D21 | `dec` 行新增 `p_like` / `p_save`（排序后的帖子 id 列表，解析失败为 null）；`post` 行新增 `note`（内容池 note_id）；`run_meta.openings` 记录每人开局持仓与成本。 | 日志变更 | 已落地（X1a/X1b） |
-| D22 | TC 组定义：跑通 `data_pipeline/cn/caption_frozen.py` 批量（801 张图，脚本默认模型 **glm-5.3-flash**，与 §A1 写的 glm-4.6v 不一致，以脚本文档为准并在此记录）并业主抽检 30 张 ≥8/10 后按 §A1；否则改为「TC = OCR only」并记录。 | 定义 | 待批量 |
+| D22 | TC 组定义：`data_pipeline/cn/caption_frozen.py` 批量**已跑完**（2026-09-08，800/801，glm-5.3-flash，prompt_sha `141b1e70dd82…`，产物 `data/creatives/cn/content_pool_v1_captioned.jsonl` 已登记 MANIFEST）。词级复审：真含颜色描述 3/801（脚本单字报警 435 条全是"基金/红包/粉丝"假阳性）；**550/801 在 40 字硬上限处被截断且多在抄写图中文字**。业主三选一：(a) 接受现批次；(b) 改提示"不抄文字、只写版式与视觉元素、≤30 字"重跑（卡 `CAP2` 已写，新 prompt_sha，约 ¥1）；(c) TC = OCR only。抽检 30 张 ≥8/10 后冻结。 | 定义 | 批量完成，待抽检定稿 |
 | D23 | 五个重复 = 五个不同的 (run_tag, seed) 对（agent 随机流挂 run_tag，只有平台流挂 seed）。十份主网格配置的 sha 在冻结时列出。 | 设计 | 待配置 |
-| D24 | HTTP 429 归类为传输失败 `rate_limited`，不计入 `decision_failure_halt` 的模型侧；限流不消耗重试梯；传输洞可用 `--retry-transport-holes` 重试。模型失败阈值维持 2%，或业主在 100×12 试跑后修订。 | 传输层 | A1 进行中 |
+| D24 | HTTP 429 归类为传输失败 `rate_limited`，不计入 `decision_failure_halt` 的模型侧；限流不消耗重试梯；传输洞可用 `--retry-transport-holes` 重试；无 `Retry-After` 时默认等待拟由 30·k 调为 10·k。**实测**（100×12 试跑首日，glm-4.6v，6 并发）：首次尝试失败 16/100（全为 `schema_invalid`，全部在重试梯内救回，最多 5 次），终态失败 0，限流等待 0，约 270–310 次/小时。模型失败阈值维持 2%，业主在试跑结束后复核。 | 传输层 | A1 完成，试跑中 |
 | D25 | 七日惩罚性赎回费（证监会 2017）：`regulation.short_term_redemption` 默认关；关闭时也记反事实 `st_fee_cf`；`disclose: true` 臂另列（开启时 `prompt_sha` 动）。 | 机制（开关） | 待 B2 |
 | D26 | 处置效应 PGR/PLR 为新增次终点（Odean 1998）；方向：文字描述组与真图组的 DE ≤ 纯文本组（Chen & Ren 2025）；SESOI 待 100×12 试跑定。规则型基线 DE > 0 为阳性对照。 | 终点 | 待 B3 |
 | D27 | 种子热度实验（Muchnik–Aral–Taylor 2013）：`heat_seed {enabled, k, p_treat, focus_fund}`，默认关；主因变量**级联乘数** = 到 t+2 累计多出互动 ÷ k；方向 > 0；> 1 且逐日增长作为"正反馈存在"的探索性判定。k 在试跑后按首日展示计数中位数定。 | 新实验 | 待 C |
 | D28 | 合规规则清单 `config/compliance_rules_cn_v1.yaml`（2020 宣传推介暂行规定 + 2026《金融产品网络营销管理办法》第十条）与打标提示 sha 冻结；结论只作描述性（`descriptive`）。 | 数据 | 待 D |
 | D29 | `run_meta.provider` 记录端点主机名与模型（不记 key）；所有真模型运行三组决策用同一 vision_model（隔离模态）。 | 记录 | 待 A2 |
 | D30 | `focus_fund` 单基金集中为独立臂；修正阶段终点：注意力爆发后 5 日赎回率与舆论翻转 vs 对照基金。 | 终点 | 待 C |
-| D31 | 大 V 层 `social_graph.enabled` 默认关：句柄由 agent id 派生；`follow_users` schema；热评按粉丝数排；「你关注的人昨天」块（≤3 条，t−1）。开启时 `prompt_sha` 动。终点：粉丝分布集中度、跟单率、影响 vs 同质性（Aral 等 2009）、关注图同质性。零结果措辞：「在本模型下未形成意见领袖 / 所有人趋同关注同一人」均为结论。 | 新机制 | 待 E |
-| D32 | 机构适应 `institutions.adaptive` 默认关：η=0.5、下限 0.05、周期 5 日；候选笔记抽样改派生流 `rng_for(run_tag,"note_pick",org,t)`（**关闭时也换流，一次性日志哈希变更，与 X1 同批**）。终点：全平台 I2 占比路径、机构权重收敛/分化、适当性开/关下的差。 | 新机制 | 待 F |
+| D31 | 大 V 层 `social_graph.enabled` 默认关：句柄 `"@u" + sha256(agent_id)[:5]`；`follow_users` schema（只接受当日可见作者的句柄，否则 `unknown_handle` 违规）；热评按 (粉丝数↓, 熟悉度↓, id↑) 排；「你关注的人昨天」块（≤3 条，t−1，含申购/赎回/评论立场）；`st.what == "follow_user"` 事件；`dec.p_follow_users` **只在开启时写入**。开启时 `prompt_sha` 动。终点：粉丝分布集中度、跟单率、影响 vs 同质性（Aral 等 2009）、关注图同质性。零结果措辞：「在本模型下未形成意见领袖 / 所有人趋同关注同一人」均为结论。 | 新机制 | E1/E2b 落地；E2a 落地待关闭态修复 |
+| D32 | 机构适应 `institutions.adaptive` 默认关：η=0.5、下限 0.05、周期 5 日；**响应计数** = 该机构帖子到达结账 +1、适当性匹配成交再 +1；周期末 `w_new=(1−η)·w_old+η·share`，下限后归一化，无响应则不变；每机构每周期一条 `inst` 事件 `{org, w, conv}`。候选笔记抽样改派生流 `rng_for(run_tag,"note_pick",org,t,slot)`（**关闭时也换流，一次性日志哈希变更，与 X1 同批，网格前完成**）；意图抽样仍走平台流。终点：全平台 I2 占比路径、机构权重收敛/分化（两两 L1）、适当性开/关下滑向推品的速度差。 | 新机制 | 卡 F1/F2 已写，待落地 |
 | D33 | 两种运行形状：微观网格 400×12（§H 主网格）；涌现运行 150×40（或 200×30），3–5 种子，模态固定单组，E/F/C 全开。涌现层终点措辞档 `collective_qualitative`（Wu & Peng 2025）；财富 Gini 时间路径为第一层（微观真实）新增描述量。 | 设计 | 待配置 |
 
 **新增禁止事项**
