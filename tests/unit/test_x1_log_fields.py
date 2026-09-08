@@ -36,7 +36,8 @@ class X1LogFieldsTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(tmp.cleanup)
         cmd = [sys.executable, "-m", "flowmirror.cli", "run",
-               "runs/mock_10x3_3arm.json", *MOCK_ARGS, "--out", tmp.name,
+               # demo_three_arm ships with the repo (synthetic NAV); mock_10x3* needs the unshipped real NAV cache and fails on a clean clone.
+               "runs/demo_three_arm.json", *MOCK_ARGS, "--out", tmp.name,
                *extra]
         proc = subprocess.run(cmd, cwd=str(REPO), check=False,
                               capture_output=True, text=True)
