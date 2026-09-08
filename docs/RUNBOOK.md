@@ -315,6 +315,9 @@ Also useful, and NOT wired into the CLI:
 
 ```
 python -m flowmirror.analysis.modality <run_dir> [<run_dir> ...]   # arm contrasts
+python -m flowmirror.analysis.society_metrics <run_dir> [...]         # concentration, herding (LSV), stance entropy
+python -m flowmirror.analysis.sell_side <run_dir> [...]               # redemptions, holding periods, 7-day rule exposure
+python -m flowmirror.analysis.disposition <run_dir> [...]             # Odean PGR/PLR disposition effect (needs run_meta.openings + nav cache)
 python -m flowmirror.analysis.export_bundle <run_dir>              # same exporter, direct
 python -m flowmirror.channels.feed                                 # channel self-test
 python -m flowmirror.engine.world --self-test
