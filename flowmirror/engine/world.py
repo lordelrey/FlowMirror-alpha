@@ -51,6 +51,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict, deque
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flowmirror.channels import feed
 from flowmirror.config.loader import deep_merge, load_config
@@ -1583,6 +1584,20 @@ def _invariant_report(checks) -> tuple:
     return entries, summary
 
 
+def _provider_meta(cfg):
+    """Which provider and models produced this run -- host and model names only, never
+    a key. Reads the same resolution runtime.call_glm uses (api.yaml / env), so run_meta
+    records what was actually called rather than what the config wished for."""
+    from flowmirror.agents import runtime as _rt      # local import: avoid an import cycle
+    ep, _key, vis, txt = _rt._load_glm_config()
+    llm = cfg.get("llm") or {}
+    return {"endpoint_host": urlparse(ep).netloc or ep,
+            "vision_model": llm.get("model") or vis,
+            "text_model": llm.get("text_model") or txt,
+            "mock": bool(cfg.get("mock_llm")),
+            "agent_policy": cfg.get("agent_policy")}
+
+
 def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, counters, elapsed) -> None:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1645,6 +1660,7 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
             for c0 in [(state.get("cost0") or {}).get(aid) or {}]
             if hold
         },
+        "provider": _provider_meta(cfg),
         "modality": {"level": _mod_level_of(cfg),
                      "arms": list(cfg.get("modality_arms") or ("T", "TV")),
                      "run_arm": cfg.get("modality_run_arm") or "TV"},

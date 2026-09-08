@@ -146,12 +146,15 @@ def _load_glm_config():
 
     1. config/api.yaml                 flat keys endpoint / api_key / vision_model / text_model
                                        (template: config/api_example.yaml; config/api.yaml is
-                                       git-ignored; endpoint/model values apply even when the
-                                       key itself comes from a later source)
-    2. env FLOWMIRROR_GLM_KEY          key only; default endpoint and models apply
-    3. env FLOWMIRROR_LEGACY_KEY_FILE  OPT-IN legacy fallback: path to a one-line key file
-    4. none of the above               empty key; call_glm() then fails fast with an
-                                       actionable error naming all three ways above
+                                       git-ignored)
+    2. env FLOWMIRROR_ENDPOINT /       override the endpoint / vision_model / text_model
+       FLOWMIRROR_VISION_MODEL /       read from api.yaml; lets CI and containers point
+       FLOWMIRROR_TEXT_MODEL           at a provider without editing the yaml (no key here)
+    3. env FLOWMIRROR_API_KEY          key only; recommended environment variable name
+       env FLOWMIRROR_GLM_KEY          legacy alias, consulted only if API_KEY is empty
+    4. env FLOWMIRROR_LEGACY_KEY_FILE  OPT-IN legacy fallback: path to a one-line key file
+    5. none of the above               empty key; call_glm() then fails fast with an
+                                       actionable error naming all the ways above
     """
     ep, key, vis, txt = GLM_EP_DEFAULT, "", MODEL, TEXT_MODEL
     if os.path.isfile(API_YAML):

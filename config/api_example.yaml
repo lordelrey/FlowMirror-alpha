@@ -1,19 +1,42 @@
-# FlowMirror LLM provider template -- the FLAT shape that
-# flowmirror/agents/runtime.py::_load_glm_config() actually reads.
-# (Older templates with nested provider:/images:/cache: blocks were never read by the loader.)
-#
-# Copy this file to config/api.yaml (config/api.yaml is git-ignored) and fill in api_key.
-# Never commit real keys. The runtime never prints or logs a key or any part of one.
-#
-# Credential resolution order (first non-empty key wins; endpoint/model values from
-# config/api.yaml apply even when the key itself comes from a later source):
-#   1. config/api.yaml                 -> api_key (+ endpoint / vision_model / text_model)
-#   2. env FLOWMIRROR_GLM_KEY          -> key only; the defaults below apply
-#   3. env FLOWMIRROR_LEGACY_KEY_FILE  -> OPT-IN legacy fallback: path to a one-line key file
-#   4. none of the above               -> live calls fail fast with an actionable error
-# Mock runs (mock_llm: true) and agent_policy "null" need no credentials at all.
+# FlowMirror LLM credentials -- TEMPLATE.
+# Copy this file to config/api.yaml (same directory; config/api.yaml is git-ignored)
+# and fill in your key. The runtime reads config/api.yaml, not flowmirror/agents/.
 
 endpoint: https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
 api_key: sk-REPLACE_ME
-vision_model: glm-4.6v      # decision calls (reads creative cards: text + image)
-text_model: glm-4.6         # reflection calls (text-only)
+vision_model: glm-4.6v   # decision calls (reads cards: text + images)
+text_model: glm-4.6      # reflection calls (text only)
+
+# Resolution order (mirrors flowmirror/agents/runtime.py):
+#   1. config/api.yaml   flat keys endpoint / api_key / vision_model / text_model
+#   2. env FLOWMIRROR_ENDPOINT / FLOWMIRROR_VISION_MODEL / FLOWMIRROR_TEXT_MODEL
+#                        override the endpoint and model names from api.yaml
+#   3. env FLOWMIRROR_API_KEY (recommended), then FLOWMIRROR_GLM_KEY (legacy alias)
+#   4. env FLOWMIRROR_LEGACY_KEY_FILE   opt-in path to a one-line key file
+#   5. none of the above                empty key; call_glm() fails fast
+
+# --- Example: OpenAI ---
+# endpoint: https://api.openai.com/v1/chat/completions
+# api_key: sk-...
+# vision_model: gpt-4o
+# text_model: gpt-4o-mini
+
+# --- Example: vLLM / local OpenAI-compatible server (models follow your deployment) ---
+# endpoint: http://127.0.0.1:8000/v1/chat/completions
+# api_key: dummy
+# vision_model: <served-vision-model>
+# text_model: <served-text-model>
+
+# --- Example: Ollama (OpenAI-compatible) ---
+# endpoint: http://127.0.0.1:11434/v1/chat/completions
+# api_key: ollama
+# vision_model: <vision-tag>
+# text_model: <text-tag>
+
+# NOTE 1: run-config llm.model / llm.text_model override the model names in this file;
+#         keep the two places consistent.
+# NOTE 2: request payload is {model, messages, temperature, max_tokens} plus a Bearer
+#         header; images are sent as image_url data-URIs. Any endpoint accepting that
+#         shape works. Anthropic's native API differs -- use an OpenAI-compatible proxy.
+
+# Never commit real keys. The runtime never prints or logs a key.
