@@ -459,7 +459,10 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
         if cls == "rate_limited":
             if gate is not None:
                 gate.on_rate_limited()                        # shrink process-wide width: stop feeding the storm
-            retry_after = 30.0 * k
+            # No Retry-After from this provider (probe 0c): 30*k stalled the whole pool and
+            # throughput fell below the 4-worker baseline. 10*k plus the adaptive gate's width
+            # cut is enough back-off; rate_cap still bounds it (PREREG D24).
+            retry_after = 10.0 * k
             try:
                 retry_after = float(resp.headers.get("Retry-After"))
             except Exception:
