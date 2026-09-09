@@ -632,3 +632,132 @@ python -c "import sqlite3;con=sqlite3.connect('file:D:/Desktop/ABM paper/fundmar
 | 跟踪文件总数 / `.git` 体积 | 223 个 / 9.1 MB |
 
 远端另有一个分支 `copilot/fix-failing-github-actions-job-test`（GitHub Copilot 早前创建），与 `main` 无关，未合并，不影响交接。
+
+---
+
+## 15. 2026-09-09 15:40 收尾：大 V 层三项改动已落地，交由 Codex 接续
+
+业主指示"三个都可以做"，指 §14.3 里列出的三个选项。三项已全部实现、提交、推送。本节是本会话的最终状态与 Codex 的接续清单。
+
+### 15.1 已实现的三项（提交 `69f6da2`）
+
+| 卡 | 改的是什么 | 为什么 | 实测效果 |
+|---|---|---|---|
+| **E7** | 句柄与粉丝数不再受舆论标签约束；只要该帖 t−1 有评论就渲染摘录，`no_signal` 时表头只报条数、不断言舆论倾向。`climate_for(min_n=4)` 门槛保留不动 | `render_social` 在 `no_signal` 时整块返回空串，而句柄只住在这个块里，于是 100 人真跑只有 22.4% 的曝光带句柄，模型被要求关注它从未看见的人 | 替身 100 人复测：句柄曝光 18.5% → **49.4%**；转储实测单次提示里出现 **6 个真实句柄**，其中两个来自过去被吞掉的 `no_signal` 帖 |
+| **E7**（同卡第二项） | 热评平手规则由 `agent_id` 升序改为 `sha256(run_tag\|t\|post_id\|agent_id)`，粉丝数仍是主键 | 粉丝全为 0 时 id 成了唯一有效键，实测只有 id 最小的 **60/100** 人可能被摘录，"谁成名"由编号决定，不是涌现 | 改后 **78/100** 人有机会；实测无 salt 保持 `a1,a2,a3`，`salt="s\|2\|P1"` 变为 `a2,a1,a3`，粉丝 5 的那条在任意 salt 下仍第一 |
+| **E8A** | 卡片摘录改为**每 agent 各自**：前 2 个位置优先给该 agent 关注对象写的评论（即使全平台前三未选中），标记「（你关注的）」，其余按共享排名填并按作者去重 | 全平台共享的前三名让关注不产生任何后果，一个关注者可能整轮再也见不到被关注者，反馈边不存在 | 7 项单测通过；无关注或关闭态时返回与改前一致的列表 |
+| **E8B** | 新增平台级「平台推荐关注（按粉丝数）」块，展示 t−1 粉丝最多的 3 个账号（句柄、粉丝数、昨日发言条数，**不含立场**以免诱导），仅当至少一人粉丝 ≥1 时出现 | 真实平台的推荐关注模块是富者愈富最直接的放大器 | 6 项单测通过；冷启动时块正确缺席（替身运行确认） |
+
+设计与每个选择背后的测量：`docs/DESIGN_SOCIAL_GRAPH_E7_20260909.md`。预注册 **D31 已按四项修订**，含零结果措辞。
+
+### 15.2 验收结果（全部不产生付费调用）
+
+| 检查 | 结果 |
+|---|---|
+| 全套测试 | **502 passed**（新增 20 项：`test_social_visibility.py` 7、`test_followed_excerpt.py` 7、`test_suggest_follow.py` 6） |
+| `loop` / `feed` 自检 | 均 exit=0，零 FAIL |
+| 关闭态与 `runs/out/acc_e6` 逐字节相同 | **三次分别验证通过**（E7 后、E8A 后、E8B 后） |
+| 替身 100 人 × 5 日开启态一致性检查 | PASS |
+| 冷启动行为 | 「（你关注的）」标记与两个依赖关注的块正确缺席（替身从不关注） |
+
+**关闭态逐字节不变**这条守住了，意味着主网格与预注册 D23 的十六份配置 sha 完全不受影响；只有 `runs/emerge_*.json`（开关开）的 `prompt_sha` 变动，而这三次运行尚未开始。
+
+### 15.3 尚未验证的部分：需要一次真模型探针
+
+替身模型从不关注任何人，所以"模型愿不愿意关注"只能用真模型验。**这是大 V 层唯一剩下的未知**。
+
+```bash
+# 100 人 × 5 日，社交图开启，约 600 次调用、约 2 小时
+# 探针规模必须是 100 人：20 人规模下每人看到评论块的机会接近 0，
+# 今天的 20 人探针就栽在这里，零边不能证明任何事
+cd "D:/Desktop/ABM paper/flowmirror_v7"
+python - <<'PY'
+import json, io
+c = json.load(io.open('runs/main_ref_s2027.json', encoding='utf-8'))
+c['_what'] = 'Real-model probe of the influencer layer after cards E7/E8A/E8B.'
+c['run_tag'] = 'probe_social_100x5'; c['out_dir'] = 'runs/out/probe_social_100x5'
+c['n_agents'] = 100
+c['window'] = dict(c['window'], max_trading_days=5)
+c['social_graph'] = {'enabled': True}
+c['llm'] = dict(c['llm'], cache='runs/out/probe_social_100x5/llm_cache.jsonl')
+io.open('runs/probe_social_100x5.json', 'w', encoding='utf-8', newline='\n').write(
+    json.dumps(c, ensure_ascii=False, indent=2) + '\n')
+PY
+python -m flowmirror.cli validate runs/probe_social_100x5.json
+python -m flowmirror.engine.loop runs/probe_social_100x5.json --workers 6 --out runs/out/probe_social_100x5
+```
+
+判读（一条命令）：
+
+```bash
+python -c "
+import json,io,collections
+e=[]
+for l in io.open('runs/out/probe_social_100x5/event_log.jsonl',encoding='utf-8'):
+    l=l.strip()
+    if l:
+        try: e.append(json.loads(l))
+        except ValueError: pass
+fu=[r for r in e if r['ev']=='st' and r.get('what')=='follow_user']
+dec=[r for r in e if r['ev']=='dec']
+print('关注边 %d 条 | 关注过人的 agent %d | dec 带 p_follow_users %d/%d'%(
+    len(fu), len({r['i'] for r in fu}), sum(1 for r in dec if r.get('p_follow_users')), len(dec)))
+print('违规:', dict(collections.Counter(x for r in dec for x in (r.get('violations') or []))) or '无')
+"
+```
+
+**判据**：
+
+- **有边** → 大 V 层可行，直接进 `runs/emerge_*.json` 三次涌现运行，粉丝分布、关注图同质性、跟单率都能算。
+- **零边且无 `unknown_handle` 违规** → 这才是真发现：**这一代 LLM 散户看得见也不自发建立社交连接**，与"12 日内从不卖出"同一个模式。此时按 D31 的零结果措辞写进论文边界，涌现章节改由「注意力级联」（种子热度）与「机构规范收敛」两条支撑。**不要再加机制去逼它关注**——那会把发现变成人工制品。
+- **零边但有 `unknown_handle` 违规** → 说明模型想关注但句柄解析有问题，回头查 `parse_decision` 的 `visible_handles` 传参。
+
+### 15.4 本会话结束时的确切状态
+
+| 项 | 值 |
+|---|---|
+| HEAD | `69f6da2` |
+| 工作树 | 干净 |
+| 与 `origin/main` | 一致（`0 0`） |
+| 全套测试 | 502 passed |
+| **正在运行的进程** | **无**（引擎、发卡、探针全部已停） |
+
+各运行目录的停机点（**一律不要删**）：
+
+| 目录 | 缓存调用数 | 完成 | 说明 |
+|---|---|---|---|
+| `runs/out/main_ref_s2027` | 1,713 | 否 | 主网格第一个种子，第 3/12 日。**含 §13.2 的双进程污染**：174→247 次重复调用、事件日志 1 行损坏 2 行重复。**重启会备份并重写事件日志，污染自愈**；缓存可复用 |
+| `runs/out/smoke_social_20x5` | 120 | 是 | 20 人社交探针，**已作废**：跑在 E7 之前的代码上，且 20 人规模看不到句柄，零边无意义 |
+| `runs/out/smoke_inst_20x6` | 140 | 是 | 机构适应真模型探针，跑完 |
+| `runs/out/smoke_heat_20x5` | 68 | 否 | 种子热度真模型探针，中途停 |
+| `runs/out/flash_probe_20x3` | 60 | 是 | flash 模型测速，结论见 §7.4 |
+| `runs/out/relay_probe_20x3` | 16 | 否 | autodl 中转测速，结论见 §7.4 |
+| `runs/out/mock_sg_on_100x5`、`mock_sg_on_100x5b`、`mock_sg_off_100x5`、`mockcheck_social` | 0（替身） | 是 | 句柄曝光面的免费验证证据 |
+
+### 15.5 Codex 接手后的执行顺序
+
+**第一步（必做，需向业主确认后执行）**：清理主网格并单实例重启。
+
+```powershell
+# 先确认进程数；若非 0，全部停掉
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*main_ref_s2027*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+```bash
+cd "D:/Desktop/ABM paper/flowmirror_v7"
+python -m flowmirror.engine.loop runs/main_ref_s2027.json --workers 6 --out runs/out/main_ref_s2027
+```
+**必须只启动一个实例**，`--workers` 保持 6（实测 6 并发 367 次/小时，10 并发反而掉到 91 并触发账户级限流）。
+
+**其后按此顺序**：
+
+1. 种子 1 跑完 → `--replay-check` 必须 `identical=True`（双进程污染在重启后应已自愈；若仍不通过，停下报告，不要继续）。
+2. 跑八个分析模块（`modality` 必须带 `--out`），把数字填进 `paper/DRAFT_S3_S5_20260909.md` 的 §4.2 与 §5。
+3. 依次跑 `main_ref_s3031/4049/5057/6071`，**每次只跑一个**。五个齐了跑跨运行 `modality`，得到 df=4 的模态主终点——这是论文的头条结果。
+4. 插入 §15.3 的社交图真模型探针（约 600 次调用），按判据决定涌现章节的写法。
+5. `main_nosuit_s*` 五次 → `heat_seed_s*` 三次 → `emerge_s*` 三次。
+6. 请业主抽检两份样本：`data/creatives/cn/compliance_review_sample.md`、`caption_review_sample.md`。
+7. 补做 v2 描述的颜色词稳健性检查（剔除 57 张含颜色词的图所属笔记后重算 TV−TC）。
+8. 决定 guba `bull_ratio` 全缺（442 条记录 0 条有值）是补跑立场打标还是写进论文局限——**需业主定**。
+
+**红线复述**：不删 `runs/out/` 下任何文件；不改数据库；不改十六份配置（sha 已冻结在 D23）；key 不入库；代码由 GLM 5.3 写。
