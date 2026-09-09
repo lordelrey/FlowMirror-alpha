@@ -129,9 +129,11 @@ INSTR_V3 = """请以你的人设，按下面四个互相独立的步骤给出今
 只输出一个 JSON 对象（键用英文，值中的文字用中文）：
 """ + DECISION_SCHEMA_TEXT
 
+# The example handle must match handle_of()'s real shape (six hex chars since card E6);
+# a five-char example teaches the model a format that never appears in its cards.
 INSTR_FOLLOW_ZH = (
-    "\n补充：评论区的作者带有句柄（如 @u3f9a）。如果你想以后优先看到某个人的看法与动向，"
-    "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a\"]）；不关注任何人则不写这个键。"
+    "\n补充：评论区的作者带有句柄（如 @u3f9a2）。如果你想以后优先看到某个人的看法与动向，"
+    "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a2\"]）；不关注任何人则不写这个键。"
 )
 
 RETRY_SUFFIX = "上次输出不是合法 JSON。请只输出一个符合下面 schema 的 JSON 对象："
@@ -308,6 +310,26 @@ def render_following(agent_view):
     return "你关注的人昨天：\n" + "\n".join(f"- {x}" for x in lines[:3])
 
 
+def render_suggest_follow(agent_view):
+    """block F3: the platform's "worth following" module -- the most-followed accounts as of t-1.
+
+    This is the amplifier of the preferential-attachment loop: a real platform pushes accounts
+    with many followers to everybody, which is how a few of them become influencers. The engine
+    only fills the list when somebody actually has a follower, so the block is absent at cold
+    start and the first follows must still come from the comment excerpts. No stance is shown --
+    telling an agent that a popular account is bullish would prime it, which the anti-priming
+    rule forbids. '' when the graph is off, so the prompt is byte-identical without it.
+    """
+    rows = [r for r in (agent_view.get("suggest_follow") or []) if isinstance(r, dict) and r.get("handle")]
+    if not rows:
+        return ""
+    out = ["平台推荐关注（按粉丝数）："]
+    for r in rows[:3]:
+        out.append("- %s（粉丝 %d，昨日发言 %d 条）"
+                   % (r["handle"], int(r.get("followers") or 0), int(r.get("n_cmt") or 0)))
+    return "\n".join(out)
+
+
 def render_social(card):
     """social channel (block F, per card): t-1 top comments + climate; '' when the label is no_signal.
 
@@ -320,17 +342,29 @@ def render_social(card):
     """
     cps = card.get("comments_prev") or []
     label = str(card.get("climate") or card.get("climate_label") or "no_signal")
-    if not cps or label == "no_signal":
+    # Authorship and the climate label are two different things. The no_signal gate exists so a
+    # thin comment thread cannot manufacture a fake majority (climate_for's min_n=4 floor, kept
+    # as is), but it was also swallowing the author handles that the social graph rides on: on a
+    # 100-agent run only 22.4% of impressions carried this block, so agents were told to follow
+    # handles they were never shown. When the graph is on (the engine attaches a handle to each
+    # excerpted comment) the excerpt is rendered even without a label -- and the header then
+    # states only the count, never a majority.
+    has_handle = any(isinstance(c, dict) and c.get("handle") for c in cps)
+    if not cps or (label == "no_signal" and not has_handle):
         return ""
     n = card.get("n_comments_prev")
     if isinstance(n, bool) or not isinstance(n, int) or n < len(cps):
         n = len(cps)
-    out = [f"昨日评论（共 {n} 条，{_CLIMATE_ZH.get(label, '看法分歧')}）："]
+    out = [f"昨日评论（共 {n} 条）：" if label == "no_signal"
+           else f"昨日评论（共 {n} 条，{_CLIMATE_ZH.get(label, '看法分歧')}）："]
     for i, c in enumerate(cps[:3]):
         c = c if isinstance(c, dict) else {}
         stance = _STANCE_ZH.get(str(c.get("stance", "")), "观望")
         who = f"{c['handle']}（粉丝 {int(c.get('followers') or 0)}）：" if c.get("handle") else ""
-        out.append(f"{'①②③'[i]} {who}“{c.get('text', '')}” —{stance} · {c.get('fam_phrase', '')}")
+        # Say so when a line is here because the agent follows its author: an invisible effect is
+        # no effect, and the agent needs to see that following changed what it was shown.
+        tag = "（你关注的）" if c.get("followed") else ""
+        out.append(f"{'①②③'[i]} {tag}{who}“{c.get('text', '')}” —{stance} · {c.get('fam_phrase', '')}")
     return "\n".join(out)
 
 
@@ -441,7 +475,8 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     c_text = "最近五个交易日的记录（从早到晚）：\n" + ("\n".join(mem) if mem else "（这几天没有特别的事。）")
     e_lines = list(news_lines or []) + list(trend_lines or [])
     head = "\n\n".join(t for t in (render_belief(agent_view), c_text, "\n".join(d_lines),
-                                   "\n".join(e_lines), render_following(agent_view)) if t)
+                                   "\n".join(e_lines), render_following(agent_view),
+                                   render_suggest_follow(agent_view)) if t)
 
     check_anti_priming(sys_text, "block A (persona + frame)")   # our framing, not data
     messages = [{"role": "system", "content": sys_text}]

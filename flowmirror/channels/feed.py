@@ -219,7 +219,7 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None,
     return (label, counts)
 
 
-def top_comments(post_id, comments_prev, k=3, weights=None):
+def top_comments(post_id, comments_prev, k=3, weights=None, salt=None):
     """Pick the k most authoritative day-(t-1) comments for a post.
 
     Follower count (followers/nf, present only when social_graph is enabled) DESC first; when the field is missing every comment ties at 0 and the order below applies unchanged.
@@ -238,9 +238,22 @@ Familiarity with the posting org (fam_level) DESC, then agent_id ASC as
     # author ranks first -- this is the preferential-attachment loop (more followers -> shown
     # more -> more followers). Without the field every comment ties at 0 and the historical
     # order (familiarity desc, agent id asc) is unchanged byte for byte.
+    # Follower count stays the primary key -- that is the preferential-attachment loop. The LAST
+    # key used to be the agent id ascending, and with every follower count at zero on day 0 that
+    # made the id the only effective key: measured on a 100-agent run only the 60 lowest ids could
+    # ever be excerpted, so "who becomes an influencer" was decided by agent numbering rather than
+    # by anything that emerges. A deterministic digest of (salt, agent id) gives every commenter
+    # the same initial chance while staying replay-identical; salt=None reproduces the old order
+    # byte for byte, so callers that do not pass it are unchanged.
+    def _tiebreak(c):
+        aid = str(_cmt_field(c, "agent_id", "i") or "")
+        if not salt:
+            return aid
+        return hashlib.sha256((str(salt) + "|" + aid).encode("utf-8")).hexdigest()
+
     pool.sort(key=lambda c: (-int(_cmt_field(c, "followers", "nf") or 0),
                              -int(_cmt_field(c, "fam_level", "fam") or 0),
-                             str(_cmt_field(c, "agent_id", "i") or "")))
+                             _tiebreak(c)))
     return pool[: max(0, k)]
 
 

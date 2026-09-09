@@ -413,9 +413,40 @@ def _resolve_tv_image(note, images_root, policy, rng):
     return (path, got, idx, None)
 
 
+def _merged_excerpt(pid, top_prev, pool_by_pid, following, social_graph_on, k=3):
+    """The t-1 comments one card shows: this agent's followees first, then the shared top-k.
+
+    The platform-wide top-3 is one selection shared by every viewer, so following somebody could
+    change nothing at all -- a follower might never be shown that author again, and then the
+    influencer loop has no feedback edge. Up to k-1 slots go to comments written by people this
+    agent follows, taken in the engine's append order (deterministic, no new random stream); the
+    remaining slots come from the shared ranking, deduplicated by author. With the graph off or
+    with no follows this returns exactly top_prev.get(pid), so those cards are byte-identical.
+    """
+    base = [c for c in (top_prev.get(pid) or []) if isinstance(c, dict)]
+    if not (social_graph_on and following and pool_by_pid):
+        return base
+    seen, out = set(), []
+    for c in (pool_by_pid.get(pid) or []):
+        if len(out) >= max(1, k - 1):
+            break
+        aid = c.get("i")
+        if aid in following and aid not in seen:
+            seen.add(aid)
+            out.append(c)
+    for c in base:
+        if len(out) >= k:
+            break
+        aid = c.get("i")
+        if aid not in seen:
+            seen.add(aid)
+            out.append(c)
+    return out
+
+
 def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur, n_prev,
                image=None, likes_prev=None, followers_prev=None, social_graph_on=False,
-               seed_bonus=0):
+               seed_bonus=0, following=None, pool_by_pid=None):
     """One impression card with the keys flowmirror.agents.prompt reads.
 
     Text fields prefer masked variants; n_comments_prev is the FULL t-1 comment
@@ -461,9 +492,12 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
             "comments_prev": [{"stance": c.get("stance"), "text": c.get("text"),
                                "fam_phrase": c.get("fam_phrase", ""),
                                **({"handle": handle_of(c.get("i")),
-                                   "followers": int((followers_prev or {}).get(c.get("i"), 0))}
+                                   "followers": int((followers_prev or {}).get(c.get("i"), 0)),
+                                   "followed": bool(following and c.get("i") in following)}
                                   if social_graph_on and c.get("i") else {})}
-                              for c in (top_prev.get(pid) or []) if isinstance(c, dict)],
+                              for c in _merged_excerpt(pid, top_prev, pool_by_pid, following,
+                                                       social_graph_on)
+                              if isinstance(c, dict)],
             "climate_label": clim_prev.get(pid),
             "n_comments_prev": int(n_prev.get(pid, 0) or 0)}
     if arm == "TC":                 # text-complement arm: OCR text in, pixels still out
@@ -476,7 +510,8 @@ def _feed_card(W, post, notes_by_id, arm, heat_prev, clim_prev, top_prev, dt_cur
 
 def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba_view,
                 last_trade, declined, prev_navdays=(), index_5d=None,
-                index_label=None, social_graph_on=False, following_recent=None):
+                index_label=None, social_graph_on=False, following_recent=None,
+                suggest_follow=None):
     """Frozen pre-LLM agent state with exactly the keys prompt.py reads.
 
     prev_navdays is (navday_{t-1}, navday_{t-2}) -- the only extra input holdings_1d
@@ -502,6 +537,7 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             "c_class": inv.rc, "cash": round(inv.cash, 2), "holdings": hold,
             "social_graph_on": bool(social_graph_on),
             "following_recent": list(following_recent or []),
+            "suggest_follow": list(suggest_follow or []),
             # CSRC 2017 short-term redemption disclosure; None when off keeps the prompt byte-identical.
             "fee_notice": (f"持有不足 {int(_st.get('days', 7))} 日赎回将收取 {float(_st.get('min_fee_rate', 0.015)) * 100:.1f}% 赎回费。"
                            if ((_st := (cfg.get("regulation") or {}).get("short_term_redemption") or {}).get("enabled")
@@ -1420,9 +1456,15 @@ def run_simulation(cfg, rt=None):
                 del comments[t - 2]
             prev_cmts = comments.get(t - 1, [])
             n_prev = {}                    # full t-1 comment count per pid (header 共 n 条)
+            # Social graph (E8): the full t-1 pool per post, so a card can promote a comment
+            # written by someone THIS agent follows even when the shared top-3 misses it. Built
+            # only when the graph is on; an off run never allocates it and never uses it.
+            prev_by_pid = {}
             for c in prev_cmts:
                 p = c.get("p")
                 n_prev[p] = n_prev.get(p, 0) + 1
+                if social_graph_on:
+                    prev_by_pid.setdefault(p, []).append(c)
             clim_now, top_now = {}, {}
             for post in cand:                      # (3) social lag, one trading day
                 pid, code = post["post_id"], post.get("code")
@@ -1434,7 +1476,12 @@ def run_simulation(cfg, rt=None):
                 if label is None:
                     label, counts = climate_for(pid, prev_cmts, weights=wmap,
                                                 margin=clim_margin)
-                top = top_comments(pid, prev_cmts, k=3, weights=wmap) or []
+                # salt keyed by (run_tag, day, post): a fair initial draw among tied commenters,
+                # deterministic and therefore replay-identical. Only passed when the social graph
+                # is on, so an off run keeps the historical id ordering byte for byte.
+                top = top_comments(pid, prev_cmts, k=3, weights=wmap,
+                                   salt=(f"{cfg.get('run_tag') or ''}|{t}|{pid}"
+                                         if social_graph_on else None)) or []
                 clim_now[pid], top_now[pid] = label, top
                 logd("clim", t=t, d=dstr, p=pid, label=label, counts=_jsonable(counts),
                      top=_top_view(top), source=src)
@@ -1454,6 +1501,7 @@ def run_simulation(cfg, rt=None):
             # logs are byte-identical to the pre-social baseline.
             handle_to_agent = {handle_of(inv.id): inv for inv in invs} if social_graph_on else {}
             following_recent_by_agent, following_handles_by_agent = {}, {}
+            suggest_prev = []              # platform "worth following" rows, empty at cold start
             if social_graph_on:
                 cmts_prev_by_agent = {}
                 for c in (comments.get(t - 1) or []):
@@ -1468,6 +1516,15 @@ def run_simulation(cfg, rt=None):
                             lines.append(f"{h}（粉丝 {nf}）昨天评论{_STANCE_ZH_LOOP.get(c.get('stance'), '观望')} #{c.get('p')}")
                     following_recent_by_agent[inv.id] = lines[:3]
                     following_handles_by_agent[inv.id] = hs
+                # Platform-level amplifier (E8B): the three most-followed accounts as of t-1, and
+                # only accounts that actually have a follower -- at cold start the list is empty and
+                # the block never renders, so the first follows still have to come from the comment
+                # excerpts. Ties break on agent id so the row order is replay-identical.
+                suggest_prev = [{"handle": handle_of(aid), "followers": nf,
+                                 "n_cmt": len(cmts_prev_by_agent.get(aid) or [])}
+                                for aid, nf in sorted(followers_prev.items(),
+                                                      key=lambda kv: (-kv[1], kv[0]))[:3]
+                                if nf > 0]
             # News channel (audit E1): the view needs the RAW weekly signal row, not the
             # stance label. The label is still the climate seed above (clim.source stays
             # "guba_seed" wherever it fired) -- these are two different consumers of the
@@ -1567,14 +1624,17 @@ def run_simulation(cfg, rt=None):
                                     image=img_by_pid.get(pid), likes_prev=likes_prev,
                                     followers_prev=followers_prev, social_graph_on=social_graph_on,
                                     seed_bonus=(hs_k if (hs_on and shown[pid].get("heat_seed") == "plus"
-                                                         and birth.get(pid) == t) else 0))
+                                                         and birth.get(pid) == t) else 0),
+                                    following=getattr(inv, "following_users", None),
+                                    pool_by_pid=prev_by_pid)
                          for pid in shown]
                 view = _agent_view(inv, persona.get(inv.id), shown, W, cfg, navday, hist,
                                    trend_cache, guba_view, last_trade, declined,
                                    prev_navdays=(prev_navday, prev2_navday),
                                    index_5d=idx_5d, index_label=benchmark_label,
                                    social_graph_on=social_graph_on,
-                                   following_recent=following_recent_by_agent.get(inv.id))
+                                   following_recent=following_recent_by_agent.get(inv.id),
+                                   suggest_follow=suggest_prev)
                 jobs.append({"inv": inv, "shown": shown, "cards": cards, "view": view,
                              "llm": _make_llm(cfg)})
             active_per_day[t] = len(jobs)
