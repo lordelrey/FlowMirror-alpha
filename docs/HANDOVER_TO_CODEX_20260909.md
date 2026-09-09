@@ -556,7 +556,7 @@ python -c "import sqlite3;con=sqlite3.connect('file:D:/Desktop/ABM paper/fundmar
 
 | 运行 | cache 行 | run_meta | 说明 |
 |---|---|---|---|
-| `runs/out/main_ref_s2027` | 约 1,720 | 无 | 主网格种子 1，按业主指示停止；缓存可复用，将来重启不丢已完成调用 |
+| `runs/out/main_ref_s2027` | 1,713 | 无 | 主网格种子 1，按业主指示停止；缓存可复用，将来重启不丢已完成调用 |
 | `runs/out/smoke_social_20x5` | 120 | 无 | 大 V 层冒烟探针，跑到第 2 日停 |
 | `runs/out/smoke_inst_20x6` | 140 | 无 | 机构适应探针 |
 | `runs/out/smoke_heat_20x5` | 68 | 无 | 种子热度探针 |
