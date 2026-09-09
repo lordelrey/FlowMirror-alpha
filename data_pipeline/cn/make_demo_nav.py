@@ -1,16 +1,13 @@
 #!/usr/bin/env python
-"""data_pipeline/cn/make_demo_nav.py -- deterministic SYNTHETIC NAV cache for offline demos.
-
-Card E4_nav (task 4). Offline artefact builder:
+"""Build a deterministic synthetic NAV cache for the offline demos.
 
   python data_pipeline/cn/make_demo_nav.py \
-      --pool data/creatives/cn/content_pool_v1_masked.jsonl \
+      --pool data/creatives/cn/content_pool_demo.jsonl \
       --out data/funds/nav_demo_2025q4.json
 
-Why: the real NAV cache (data/funds/nav_cache.json, 4.4 MB, third-party) is
-git-ignored, so a fresh clone cannot run any demo. This script reads the
-SHIPPED content pool, harvests every valid fund code it references, and
-writes one synthetic NAV series per code so the demo configs work offline.
+The script reads the bundled synthetic content pool, collects the fictional
+six-digit product codes it references, and writes one generated series per
+code so a fresh clone can run without market data or network access.
 
 Output shape (compact UTF-8 JSON, ASCII content, `_meta` first):
 
@@ -28,19 +25,18 @@ Guarantees:
   - the first weekday NAV is exactly 1.0 (no draw consumed on the anchor
     day); NAVs are rounded to 4 decimals; dates ascend strictly;
   - `_meta` (first key) labels the file synthetic=True with the generator
-    path, the seed rule and a never-use-for-research warning. It is the
+    path, the seed rule and a never-use-as-market-data warning. It is the
     ONLY non-6-digit key; consumers that iterate raw top-level keys should
     skip keys not matching ^[0-9]{6}$ (--no-meta exists as a last-resort
     escape hatch if such a consumer cannot be fixed);
-  - fund risk levels / families are NOT written here; they live in the
-    existing fund metadata inputs and are untouched.
+  - fund risk levels and families are supplied by the separate demo metadata.
 
 Determinism: same pool + same flowmirror.io.hashing.rng_seed_from =>
 byte-identical output (the post-write self-check regenerates the first and
 last series and compares). Sets are sorted before iteration; no hash().
 The output is written atomically (tempfile in the target dir + os.replace);
-the pool file is never modified. Expected size for the 341-code pool is
-~1.9 MB (target: < ~3 MB; the script warns if exceeded).
+the pool file is never modified. The script warns if output exceeds roughly
+3 MB.
 
 Console output is ASCII-only. Pure stdlib + the flowmirror package (hashing
 helpers only; no network, no engine behaviour changed). The repo bootstrap
@@ -318,10 +314,10 @@ def main(argv: list[str] | None = None) -> int:
                      "the output is labelled synthetic in its '_meta' block)."),
         epilog=("documented invocation:\n"
                 "  python data_pipeline/cn/make_demo_nav.py "
-                "--pool data/creatives/cn/content_pool_v1_masked.jsonl "
+                "--pool data/creatives/cn/content_pool_demo.jsonl "
                 "--out data/funds/nav_demo_2025q4.json"),
     )
-    ap.add_argument("--pool", default="data/creatives/cn/content_pool_v1_masked.jsonl",
+    ap.add_argument("--pool", default="data/creatives/cn/content_pool_demo.jsonl",
                     help="content pool to harvest codes from (.jsonl, or .json list/dict)")
     ap.add_argument("--out", default="data/funds/nav_demo_2025q4.json",
                     help="output NAV cache path (written atomically)")

@@ -1,4 +1,4 @@
-"""Game-master facade (PROJECT_ARCHITECTURE_v7.1 S2).
+"""Game-master facade for the public layer API.
 
 Gives layer-stable names to the adjudication entry points that currently
 live inside the engine loop, plus the regulator outcome and the log

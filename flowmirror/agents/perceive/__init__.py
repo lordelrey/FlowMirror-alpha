@@ -1,4 +1,4 @@
-"""Agent perception facade (PROJECT_ARCHITECTURE_v7.1 S2).
+"""Agent perception facade for the public layer API.
 
 Re-exports the prompt renderers that today implement perception; every
 name is the *same object* as in ``flowmirror.agents.prompt`` (no

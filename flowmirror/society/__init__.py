@@ -1,4 +1,4 @@
-"""Society layer facade (PROJECT_ARCHITECTURE_v7.1 S2).
+"""Society layer facade for the public layer API.
 
 Re-exports the world/population functions that today implement the
 society layer; every name is the *same object* as in its original module

@@ -1,36 +1,7 @@
-"""Card L1: the agent view and the mock switches (flowmirror.engine.loop).
+"""Tests for agent-view fields and nested mock-model options.
 
-Four independent defects, one test class each:
-
-E5  ``_make_llm`` read the top-level names ``mock_force_c2_r4`` /
-    ``mock_malformed_rate``, which appear in no schema and no config.  The real
-    keys are nested under ``mock_options`` and every runs/*.json sets
-    ``force_c2_r4_click: true``, so the switch was silently dead and the
-    acceptance runs never reached the suitability-confirmation branch they
-    claim to cover.  ``test_mock_options_nested_keys_reach_mockllm`` fails
-    against the old code (force_c2_r4 comes back False).
-
-E1  ``_agent_view`` stored ``{code: label_string}`` while
-    ``prompt.render_news`` calls ``.get`` on the value -- an AttributeError
-    that has never fired only because ``world.guba_seed_label`` returns None
-    on every real signal file (no stance is computed upstream).  The view now
-    carries the contract-2.1 dict-of-dicts built from the RAW weekly signal
-    row.  ``test_render_news_survives_a_real_shaped_signal_row`` raises
-    AttributeError against the old code.
-
-E10 ``beliefs`` was parsed at reflection, clamped, stored on ``inv.beliefs``
-    and then read by nobody.  The view now supplies the key (decision 11:
-    feed-forward into the DECISION prompt only; the rendering itself is
-    prompt.py's card).
-
---  ``holdings_1d`` is rendered by ``prompt.render_news`` as "your funds moved
-    X yesterday" but was never supplied.  It is the holdings-weighted one-day
-    return of day t-1, so it reads the NAVs of t-1 and t-2 -- never today's,
-    which would be look-ahead (invariant (a)) and would also make the rendered
-    sentence false.
-
-Every fixture is built from tests/conftest.py's build_demo_cfg (base
-runs/demo_two_arm.json), the one config whose inputs all ship in git.
+The view exposes structured weekly attention, prior beliefs, and lagged
+holding returns without look-ahead. Fixtures derive from the offline demo.
 """
 from __future__ import annotations
 
@@ -57,9 +28,7 @@ needs_demo = pytest.mark.skipif(
 FORCE_AGENTS = 40
 FORCE_DAYS = 3
 
-# One real row out of data/attention/guba_signal_v1.json, verbatim shape: no
-# bull_ratio / bull / bear anywhere, which is why guba_seed_label returns None
-# and why bull_ratio must stay None until the stance-labelling task lands.
+# A volume-only attention row with no directional stance fields.
 REAL_SIGNAL_ROW = {"n_posts": 2, "reply_n": 0, "read_n": 229,
                    "z_abnormal": 2.121, "ratio_vs_baseline": 4.0,
                    "baseline_weeks_used": 8}
@@ -176,7 +145,7 @@ def test_render_news_survives_a_real_shaped_signal_row(tmp_path):
     assert set(entry) == {"name", "mult", "bull_ratio"}
     assert entry["name"] == "示例混合基金"                 # via _fund_name(W, code)
     assert entry["mult"] == pytest.approx(4.0)             # = ratio_vs_baseline
-    assert entry["bull_ratio"] is None                     # decision 4: no stance yet
+    assert entry["bull_ratio"] is None                     # no stance measurement
 
     lines = render_news(view)                              # AttributeError pre-fix
     assert lines and any("示例混合基金" in ln for ln in lines)

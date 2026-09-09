@@ -1,22 +1,7 @@
-"""Card CFG guard: config/engine_defaults.yaml must say what the owner decided.
+"""Keep engine defaults, the run schema, and bundled configurations aligned.
 
-Every value here was a bare literal inside the engine until the 2026-09-07
-remediation round, which is exactly why the code and the decision record had
-drifted apart (climate margin 1/3 vs 1/6, fam_decay 0.1 vs 0.2, fees 0/0 vs
-0.12%/0.5%).  Moving a parameter into the config surface only fixes that drift
-if something keeps watch on the value, so this module pins each default to the
-owner decision that set it -- see docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md
-section 5 for the numbered decisions cited below.
-
-Two separate jobs, hence two groups of tests:
-
-  * the DELIBERATE changes (decisions 1, 2, 8 and the DECISIONS #5 attention
-    lambda): these move an event-log sha on purpose, and the test states the
-    intended value so a "fix" that reverts one is caught;
-  * the INERT additions: keys whose default must equal the literal the engine
-    hardcodes today, so that a config which omits them stays byte-identical.
-    A wrong value here is the dangerous case -- it silently changes results
-    with no diff in any run config.
+The tests pin deliberate default values and verify that inert configuration
+keys retain the engine's previous behavior when omitted.
 
 The last test re-validates every runs/*.json against the edited schema through
 flowmirror.config.validate, the same entry point flowmirror/engine/loop.py's
@@ -40,83 +25,56 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.par
 RUNS_DIR = os.path.join(ROOT, "runs")
 
 
-# --- the deliberate changes: each one is expected to move an event-log sha ---------------------
+# --- fixed public defaults ---------------------------------------------------------------
 
 def test_fees_default_to_the_decided_schedule():
-    """Decision 8: 0.12% subscription / 0.5% redemption, not the old 0.0/0.0.
-
-    apply_decision already reads cfg["fees"], so unlike every other key on this
-    card these two take effect the moment the default lands: any run whose own
-    config does not set fees changes its event-log sha."""
+    """The public default is 0.12% on subscriptions and 0.5% on redemptions."""
     fees = DEFAULT_CONFIG["fees"]
     assert fees["subscribe_rate"] == 0.0012
     assert fees["redeem_rate"] == 0.005
 
 
 def test_fam_decay_defaults_to_the_decided_value():
-    # Decision 2: 0.2, against the 0.1 fallback loop.py carries today.
+    # Keep the YAML and engine fallback aligned.
     assert DEFAULT_CONFIG["dynamics"]["fam_decay"] == 0.2
 
 
 def test_attention_has_its_own_retention():
-    # DECISIONS #5: att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba.
-    # Today the attention stock reuses fam_decay, so a separate 0.8 is the point of the key.
+    # att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba.
     assert DEFAULT_CONFIG["dynamics"]["lambda_attention"] == 0.8
 
 
 def test_beta_guba_is_exactly_zero():
-    """Decision 3: the guba channel is WIRED but its coefficient is ZERO.
-
-    The decision is explicit that beta_guba must be 0.0 and must NOT be written
-    as 0.1: keeping it at zero is what makes this round's attention series
-    byte-identical to today's while the pipeline becomes real code, and the
-    owner signs off on a non-zero value separately, before the main grid.  An
-    exact == 0.0 (not a tolerance) is deliberate, so a helpful edit to 0.1
-    fails here loudly instead of quietly changing every downstream result."""
+    """The attention channel is wired but inert by default."""
     assert DEFAULT_CONFIG["dynamics"]["beta_guba"] == 0.0
 
 
 def test_climate_margin_defaults_to_one_sixth():
-    # Decision 1: 1/6, half as strict as the 1/3 hardcoded in feed.climate_for.
-    # Compared with a tolerance because the yaml carries a decimal expansion.
+    # Compared with a tolerance because YAML carries a decimal expansion.
     assert abs(DEFAULT_CONFIG["feed"]["climate_margin"] - 1.0 / 6.0) < 1e-12
 
 
 # --- the inert additions: each default must equal the literal it replaces ---------------------
 
 def test_initial_pnl_defaults_to_lookback():
-    """Decision 13: the three demo configs keep today's lookback sampling.
-
-    Only research-grade configs opt into mode "target"; if the default ever
-    flipped, every demo run's opening holdings -- and so every demo hash --
-    would move without a single config file changing."""
+    """The demos use lookback sampling unless target mode is explicit."""
     assert DEFAULT_CONFIG["initial_pnl"]["mode"] == "lookback"
 
 
 def test_llm_sampling_parameters_equal_the_runtime_constants():
-    # E9: temperature and the physical HTTP retry budget were unconfigurable
-    # module constants in agents/runtime.py (TEMP = 0.3, MAX_ATTEMPTS = 5) and
-    # never reached run_meta.  Surfacing them must not change what a run does,
-    # so both defaults equal those constants exactly.
+    # Keep engine defaults aligned with the runtime fallbacks.
     assert DEFAULT_CONFIG["llm"]["temperature"] == 0.3
     assert DEFAULT_CONFIG["llm"]["max_provider_attempts"] == 5
 
 
 def test_benchmark_is_unset_by_default():
-    # Decision 6: the 510760 proxy series is machine-local (data/market/ is
-    # gitignored), so the default must be null -- which leaves index_5d absent
-    # from the agent view, today's behaviour, and keeps the demo hashes still.
+    # Benchmark data are opt-in, so the default leaves index_5d absent.
     assert DEFAULT_CONFIG["market"]["benchmark_path"] is None
     assert DEFAULT_CONFIG["market"]["benchmark_label"] is None
 
 
 def test_qdii_blocked_has_no_default():
-    """Decision 10: schema only -- no default, and no shipped config sets it.
-
-    loop._qdii_blocked_set reads cfg["qdii_blocked"], so a default here would
-    not merely be unused: it would activate the suspension path on every run
-    before the real suspension calendar exists.  The key must stay absent until
-    that calendar lands as its own data task."""
+    """A QDII suspension calendar is opt-in and has no default."""
     assert "qdii_blocked" not in DEFAULT_CONFIG
 
 
@@ -133,10 +91,9 @@ def test_qdii_blocked_has_no_default():
     (("dca", "min_ticket"), 100.0),
     (("initial_pnl", "lookback_days_min"), 60),
     (("initial_pnl", "lookback_days_max"), 250),
-    # target-mode only (decision 13); no literal exists today, this IS the value
+    # Target-mode tolerance.
     (("initial_pnl", "tolerance"), 0.02),
-    # decision 17: attention finally has a reader, and 0.0 keeps every run
-    # byte-identical to before the key existed
+    # Attention is inert at the default weight.
     (("feed", "w_att"), 0.0),
     # E13: the fit bands, equal to the literals feed.fit() carried
     (("feed", "fit_band_narrow"), 0.15),
@@ -167,8 +124,7 @@ def test_run_config_still_validates(name):
 
     Reuses flowmirror.config.validate -- the single validator loop.py's
     _load_cfg and the CLI already call -- rather than building a second one.
-    Only the config file is read, so this passes on a clean clone even for the
-    research configs whose data inputs deliberately never ship."""
+    Only the config file is read, so this passes on a clean clone."""
     validate(load_config(os.path.join(RUNS_DIR, name)), "run")
 
 
@@ -177,9 +133,7 @@ def test_every_new_key_is_accepted_by_the_schema():
 
     additionalProperties is false, so a key that reached engine_defaults.yaml
     without reaching the schema would make any config setting it unloadable --
-    the exact failure mode (mock_options, fam_decay, qdii_blocked) that the
-    audit traced this whole round back to.  qdii_blocked is included here
-    because a test fixture is the one place decision 10 allows it to appear."""
+    qdii_blocked is included here through a synthetic fixture."""
     cfg = load_config(os.path.join(RUNS_DIR, "demo_two_arm.json"))
     cfg["dynamics"] = {"fam_decay": 0.2, "fam_threshold": 1.0, "lambda_trust": 0.9,
                        "lambda_attention": 0.8, "beta_guba": 0.0}
@@ -199,8 +153,7 @@ def test_every_new_key_is_accepted_by_the_schema():
 def test_qdii_blocked_rejects_a_non_date_key():
     """The suspension calendar is keyed by ISO date, so mistyping one must fail.
 
-    Decision 10 leaves this key unset everywhere, which means the FIRST config
-    to carry it will be written by hand from a suspension calendar; a key that
+    The key is normally unset; a key that
     is not a date would otherwise be silently ignored by _qdii_blocked_set."""
     cfg = load_config(os.path.join(RUNS_DIR, "demo_two_arm.json"))
     cfg["qdii_blocked"] = {"2025-10": {"codes": ["001234"]}}
@@ -208,11 +161,11 @@ def test_qdii_blocked_rejects_a_non_date_key():
         validate(cfg, "run")
 
 
-# --- event.schema.json: the dec row's new failure_kind (decision 9) --------------------------
+# --- event.schema.json: decision failure_kind -----------------------------------------------
 
 @pytest.mark.parametrize("kind", ["transport", "model", None])
 def test_dec_row_accepts_failure_kind(kind):
-    """Decision 9 splits the diagnosis, not the halt threshold.
+    """The field splits diagnosis without changing the halt threshold.
 
     A dead endpoint or a bad key ("transport") used to be counted as the same
     event as a model returning unparseable JSON ("model"), which made a broken
@@ -236,17 +189,16 @@ def test_dec_row_rejects_an_unknown_failure_kind():
 
 
 def test_dec_row_without_failure_kind_still_validates():
-    # Optional: every dec row written before this round omits the field.
+    # Optional for compatibility with older event rows.
     ev = {"ev": "dec", "t": 540, "d": "2025-10-09", "i": "inv_00001",
           "prompt_sha": "0" * 64, "status": "ok", "arm": "TV"}
     validate(ev, "event")
 
 
-# --------------------------------------------------- owner decisions 15-19
+# --------------------------------------------------- mechanism defaults
 
 def test_share_at_loss_has_no_default_on_purpose():
-    """Decision 18. Its old 0.05 was exactly the one-sided environment target mode
-    exists to escape, so inheriting it would silently reproduce the pathology."""
+    """Target mode requires callers to state the desired loss share."""
     ipnl = DEFAULT_CONFIG.get("initial_pnl") or {}
     assert "share_at_loss" not in ipnl, (
         "a mode whose purpose is to CONTROL the loss share must not inherit one")
@@ -254,7 +206,7 @@ def test_share_at_loss_has_no_default_on_purpose():
 
 
 def test_target_mode_refuses_to_run_without_its_manipulation(tmp_path):
-    """Decision 18: state the share, or do not ask for target mode."""
+    """State the share explicitly when using target mode."""
     from flowmirror.engine import world as W
     with pytest.raises(SystemExit):
         W._initial_pnl_cfg({"initial_pnl": {"mode": "target"}})
@@ -268,9 +220,7 @@ def test_target_mode_refuses_to_run_without_its_manipulation(tmp_path):
 
 
 def test_no_unconditional_modality_run_arm_default():
-    """Decision 19. The old "TV" default sat in every merged config and validation then
-    required it to appear in modality_arms at ANY level, so a reference cell running
-    only T/TC was rejected -- with an error naming the user's arms, not the default."""
+    """Agent-level configurations do not inherit a run-level arm."""
     assert "modality_run_arm" not in DEFAULT_CONFIG
 
 

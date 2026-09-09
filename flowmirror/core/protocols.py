@@ -1,10 +1,10 @@
-"""Layer Protocols for FlowMirror (PROJECT_ARCHITECTURE_v7.1 S2).
+"""Layer Protocols for the public FlowMirror API.
 
 Structural interfaces only: no behaviour, no imports of engine modules,
 so adding this file cannot change any existing run. Each Protocol states
 (a) which architecture layer it names and (b) its lag rule: the clock it
 runs on and how far behind the engine tick it may lag. Today most layers
-are facades (see docs/LAYERS.md); new code must be written against these
+are facades (see docs/ARCHITECTURE.md); new code must be written against these
 Protocols so the facades can be removed as modules are refactored.
 """
 

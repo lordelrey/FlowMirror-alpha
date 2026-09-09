@@ -1,14 +1,9 @@
-# sha256  path  bytes  source  generated_at(UTC)
-c555ac61041b6b65757fe54abe10dccf6328bf237b3ec4ed74a9282a8b0b1618  data/attention/elasticity_real_v1.json  1504  research:sim/elasticity_real_v1.json  2026-09-05T09:11:17Z
-46afe5f3720d5e77d912110e894985ab2c6823b9d5219c0c788d93810ab1b2e8  data/attention/guba_signal_v1.json  1053194  research:sim/guba_signal_v1.json  2026-09-05T09:11:17Z
-33b8e183888f88b021c6e39b0d3e314e288f5b4dc8968d1526948235640942ab  data/creatives/cn/content_pool_v1_masked.jsonl  2278584  research:sim/content_pool_v1_masked.jsonl  2026-09-05T09:11:17Z
-6c09ee5998b76bd3e136e70c1ea78bab5a71a759facda90ba56b2625eaeb0cd3  data/creatives/cn/tables_frozen_meta.json  3319  research:paper/figs/tables_frozen_meta.json  2026-09-05T09:11:17Z
-6931d36db5e8bbde58327b2738e705e180a70870837b1b1cb0fb99dfd7ebf5f1  data/flows/flow_panel_v2.json  3336914  research:sim/flow_panel_v2.json  2026-09-05T09:11:17Z
-5774341a876b2af0d38cdbd0e373ddec0f66783184bcfc3f071f5eb8071fbb67  data/flows/stylized_facts_real.json  2048  research:sim/stylized_facts.json  2026-09-05T09:11:17Z
-68ee03c28cc681149689ee102cc0554b319a31c598a4ce6f0102728ed44238cf  data/funds/README.md  295  research:sim/nav_cache.json  2026-09-05T09:11:17Z
-3073743ee9dd530ce59d0f078de5f3802e7e9fb73e2dc558b883e7f4d305ca69  data/funds/nav_codes.txt  2793  research:sim/nav_cache.json  2026-09-05T09:11:17Z
-75f5b7a1d8914ceeb41fab49fa5737b5d8c270cbe32618a4f6b512a429fb057a  data/population/agents_seed2027.json  438305  research:sim/agents_seed2027.json  2026-09-05T09:11:17Z
-23a5f66024fc8013cc7c25d70f329c505d04203052e8bd8aaac594a1d3535ef9  data/population/persona_grid_v3.json  145024  research:data/persona_grid_v3.json  2026-09-05T09:11:17Z
-1af2854ce4c7280ff418084a9c2ff679b0c51ba87156b760140a8cf90eba1531  data/population/population_10k_v3.json  4561946  external:flowmirror/flowmirror/data/population_10k_v3.json  2026-09-05T09:11:17Z
-a17007dd169bfd909f9e6ce7c4281bbf73753bcd319dd2057d52ddd81bdff18c  data/creatives/cn/content_pool_v1_captioned.jsonl  2490760  pipeline:data_pipeline/cn/caption_frozen.py(glm-5.3-flash,prompt_sha=141b1e70dd82)  2026-09-08T07:35:35Z
-a98519674b4747a7c7c1e1a9abcc0fae696f540b84efc4001a49d73d05dc5f78  data/creatives/cn/content_pool_v1_captioned_v2.jsonl  2442697  pipeline:data_pipeline/cn/caption_frozen.py(glm-5.3-flash,prompt_sha=dea5cb49039d)  2026-09-08T15:47:58Z
+# sha256  path  bytes  source
+f1810eaad351caeeead0ed8ee3a4c5c7b5beebc8a0635be7d4e9d778bd0dd624  data/attention/attention_demo.json  1378  synthetic:bundled
+5702370defb03daff8d6257d89f368f5307b46e9dcd1e2763160384c9d137675  data/creatives/cn/content_pool_demo.jsonl  9706  synthetic:bundled
+03d79211e40eeeb2175d1dcf36a6508780bc85d0805291ca94631a8b0099bd21  data/flows/flow_holdout_demo.json  174  synthetic:empty-placeholder
+9298656671650b40df01f8de33104f2ec1d44bfddf8381fb1eb227a7ba5aab79  data/funds/fund_meta_demo.json  814  synthetic:bundled
+a37f8b691c0f4cea47758b9ab8f29e44f57e7960d0b99d95a449b2dea9d2c682  data/funds/nav_demo_2025q4.json  21407  synthetic:generated
+f62726fa630a88ace7f1160350fcd84fe663d3658dd77ed1d4e8c9296df7daf9  data/population/agents_seed2027.json  438299  synthetic:bundled
+3b05e4e3b797938e86a4783da850ec883dcd64c1c7904b2f070576be2b9f556b  data/population/persona_grid_v3.json  141880  synthetic:bundled
+9a2ae0394ed52c9700625f1f4dd54c7cde5767caf57c4d91c1484823f4bcdfc3  data/population/population_10k_v3.json  4381928  synthetic:bundled

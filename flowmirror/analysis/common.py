@@ -3,7 +3,7 @@
 
 Stdlib only, deterministic (no RNG lives here; bootstrap seeds belong to the
 callers). `seed_t_interval` implements the seed-level Student-t interval used
-as the inferential statement across run seeds (PREREG v1.3 B11):
+as the inferential statement across run seeds:
 df = n_seeds - 1, built-in two-sided 95% table for df 1..10, normal quantile
 beyond that. Frozen convention: only alpha = 0.05 is supported.
 
@@ -58,7 +58,7 @@ def seed_t_interval(values, alpha=0.05):
     sd is the sample sd (n-1 denominator); df = n-1; the table covers df 1..10,
     larger df uses the normal quantile. n == 1 collapses to the value itself
     (df = 0); empty / all-None input -> nan components. Only alpha = 0.05 is
-    supported (frozen prereg convention).
+    supported by this implementation.
     """
     if alpha != 0.05:
         raise ValueError("only alpha=0.05 is supported by the built-in t table")

@@ -92,7 +92,7 @@ def iter_json_objects(text):
 ANTI_PRIMING_WORDS = ["适当性", "监管", "配图", "跟风", "羊群", "假设", "研究", "实验"]
 # The spec mandates the literal arm-marker lines even though they contain the scanned
 # word 配图: those platform-mechanic lines are sanctioned literals, stripped before
-# scanning (T arm since v1.3; the TC no-payload fallback since PREREG v1.5 A).
+# scanning (T arm and the TC no-payload fallback are both intentional UI markers).
 _SANCTIONED_LITERALS = ("配图不展示", "配图信息不可用")
 
 
@@ -129,8 +129,7 @@ INSTR_V3 = """请以你的人设，按下面四个互相独立的步骤给出今
 只输出一个 JSON 对象（键用英文，值中的文字用中文）：
 """ + DECISION_SCHEMA_TEXT
 
-# The example handle must match handle_of()'s real shape (six hex chars since card E6);
-# a five-char example teaches the model a format that never appears in its cards.
+# The example handle matches handle_of()'s six-hex-character shape.
 INSTR_FOLLOW_ZH = (
     "\n补充：评论区的作者带有句柄（如 @u3f9a2b）。如果你想以后优先看到某个人的看法与动向，"
     "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a2b\"]）；不关注任何人则不写这个键。"
@@ -188,14 +187,9 @@ def render_belief(view):
     lines = [f"眼下你对后市的判断偏「{_MV_ZH[mv]}」；面对账户可能的亏损，你的心情是「{_RM_ZH[rm]}」。"]
     if view.get("last_reflection"):
         lines.append("你上次给自己的小结：" + str(view["last_reflection"]))
-    # Audit E10 / decision 11: the beliefs declared at the last reflection feed forward into
-    # the NEXT DECISION prompt only -- never into the reflection input, which is a separate
-    # enhancement the owner has not approved.  Until this line the key was asked for, parsed,
-    # clamped and stored on inv.beliefs and then read by nobody, so a declared cognitive
-    # dimension of the design had no behavioural consequence at all.
-    # Defensive by construction: card L1 is adding view["beliefs"] right now, and an agent
-    # that has not reflected yet carries []. Absent / empty / non-list must every one of them
-    # render nothing, so the surrounding text stays byte-identical.
+    # Beliefs from the last reflection feed into the next decision prompt only.
+    # Agents that have not reflected carry no beliefs; absent, empty, or non-list
+    # values render nothing so the surrounding text remains stable.
     bel = view.get("beliefs")
     if isinstance(bel, (list, tuple)):
         # parse_reflection already clamps to 3 x 30 chars; re-clamped here because
@@ -239,20 +233,15 @@ def render_experience(view):
 def render_news(view):
     """news channel: index 5-day move, holdings 1-day move, guba exogenous lines (no coverage -> omitted).
 
-    index_5d comes from a benchmark series that is a PROXY (decision 6: the SSE
-    Composite itself is not available from the data source, so an index-tracking ETF's
-    unit NAV stands in). Only its RETURN is ever shown, never a level, and every report
-    and paper sentence naming the series discloses the proxy.
+    index_5d may come from a labelled benchmark proxy. Only its return is shown,
+    never its level, and the configured label is preserved in user-facing text.
 
     A guba line states volume relative to the trailing baseline and adds a stance split
     ONLY when stance data exists -- which it does not until the labelling task runs.
     """
     lines = []
-    # The benchmark's subject comes from market.benchmark_label, never a hardcoded
-    # 大盘指数: the shipped series is a fund NAV standing in for an index (decision 6),
-    # and naming it an index in the stimulus would be the one disclosure failure that
-    # reaches the model itself. loop.py refuses a configured benchmark with no label,
-    # so index_label is present whenever index_5d is.
+    # The benchmark subject comes from market.benchmark_label, never a hardcoded
+    # name. loop.py requires a label whenever a benchmark is configured.
     idx_stem = str(view.get("index_label") or "").strip()
     for key, stem in ((("index_5d", idx_stem + "近五个交易日累计") if idx_stem else (None, None)),
                       ("holdings_1d", "你持有的基金昨日整体")):
@@ -272,9 +261,7 @@ def render_news(view):
         # It was rendered as "高 N 倍" (higher BY N times), which inverted the meaning
         # of every value below 1.0 -- most of the shipped signal file.
         head = f"近一周股吧里【{g.get('name') or code}】的讨论量约为上月均值的 {float(mult):.1f} 倍"
-        # bull_ratio stays None until stance labelling runs (decision 4). It used to be
-        # defaulted to 0.5 and printed as "多空比约 5:5", which tells the agent a stance
-        # split was measured when none was. No stance data -> no stance clause.
+        # No stance data means no stance clause; never infer a neutral split.
         if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
             bull = int(round(float(ratio) * 10))
             lines.append(f"{head}，多空比约 {bull}:{10 - bull}。")
@@ -335,7 +322,7 @@ def render_social(card):
 
     The header count is the TOTAL day-(t-1) comment count on the post when the card
     carries n_comments_prev (the loop supplies it from the t-1 comment list length,
-    PREREG analysis need B2); only the top-3 lines are ever shown.  Cards without
+    needed for comment-volume analysis); only the top-3 lines are ever shown. Cards without
     n_comments_prev (or with an inconsistent value below the excerpt count) fall
     back to the number of excerpted comments, which reproduces the original
     rendering byte-for-byte.
@@ -380,7 +367,7 @@ def _tc_image_text(card):
     """TC-arm text payload describing the image without pixels; None when unavailable.
 
     ocr_masked wins over ocr_text; whichever is used is hard-capped at 200 chars
-    (PREREG v1.5 A).  image_caption_frozen may be a str or a list[str]; list items
+    by design. image_caption_frozen may be a str or a list[str]; list items
     are concatenated in order.  Returns None when neither source exists, in which
     case render_card() writes 配图信息不可用。 and build_decision_messages()
     records the tc_no_caption degradation note.
@@ -421,7 +408,7 @@ def render_card(card, social_on=True):
     if arm == "T":
         lines.append("配图不展示。")
     elif arm == "TC":
-        # PREREG v1.5 A: no pixels; the image is conveyed by the note's OCR
+        # No pixels: the image is conveyed by the note's OCR
         # text (ocr_masked preferred, <=200 chars) plus the frozen caption.
         payload = _tc_image_text(card)
         lines.append(("图片信息（文字）：" + payload) if payload is not None else "配图信息不可用。")
@@ -442,7 +429,7 @@ def build_decision_messages(agent_view, feed_cards, cfg):
     text/image parts; a TV image part sits right after its card text part). prompt_sha
     hashes the concatenated TEXT of all blocks (base64 payloads excluded). notes records
     image degradations ("image_missing"/"image_unsupported"), the TC-arm degradation
-    "tc_no_caption" (PREREG v1.5 A: TC card with neither OCR text nor frozen caption),
+    "tc_no_caption" (TC card with neither OCR text nor frozen caption),
     and one "channel_sha:<name>=<8hex>" line per ENABLED channel.  Images are attached
     ONLY for arm == "TV"; T and TC cards are text-only by construction.
     """
@@ -814,7 +801,7 @@ def _self_test():
     except ValueError:
         check("build: creative text with sensitive word is NOT censored", False, "ValueError on data")
 
-    # --- TC arm (PREREG v1.5 A) + n_comments_prev header (analysis B2) ----
+    # --- TC arm + n_comments_prev header ----------------------------------
     tc_extra = [
         {"post_id": "p7", "org": "华夏基金", "title": "一张图看懂资产配置", "caption": "图解配置思路。",
          "landing": None, "likes": 9, "arm": "TC", "image_path": jpg, "image_sha": None,

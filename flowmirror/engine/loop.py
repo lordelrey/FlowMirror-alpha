@@ -1,84 +1,15 @@
-"""FlowMirror v7 trading-day loop, apply step and CLI (flowmirror.engine.loop).
+"""FlowMirror trading-day loop, apply step, and command-line entry point.
 
-Day order per card: clock -> publish -> social lag (freeze heat_prev/clim_prev)
--> feed -> prompt assembly (state frozen) -> LLM phase (parallel) -> apply
-(serial, sorted agent ids) -> DCA + lagged updates + heat -> reflection ->
-snapshots.  Verified call surfaces used (no invented signatures):
+Each simulated day publishes institutional posts, freezes lagged social
+signals, ranks a feed for every active agent, builds prompts, evaluates agent
+decisions in parallel, applies them in deterministic agent order, updates
+trades and social state, runs scheduled reflections, and writes snapshots.
 
-world:   init_investors(W, cfg) -> [Inv]; publish_day(W, cfg, t, recent,
-         rng_platform, log=EventLog) -> [{post_id, org, intent, intent_group,
-         note, code, img, t_pub}] (it emits the "post" rows itself);
-         guba_seed_label(W, code, week) -> label|None; check_invariants(state,
-         events_path, cfg) -> (checks, core) (card R2F: the loop must UNPACK the
-         tuple; core is the run's invariant decision); write_reports(out_dir,
-         state, cfg, W, checks, counters, elapsed); quarter_of(date) -> str;
-         event_log_sha(path).
-runtime: decide(agent_view, feed_cards, cfg, cache, governor, llm, shown) and
-         reflect(agent_view, cfg, cache, governor, llm); records carry parsed,
-         violations, parser_status, prompt_sha, raw_sha256, image_shas,
-         cache_hit, attempts, notes; run_parallel(jobs, fn, workers);
-         BudgetGovernor(hard_cap_attempts); MockLLM(force_c2_r4, malformed_rate).
-         Card C: cfg agent_policy == "null" swaps every job's llm for
-         NullPolicyLLM(cfg null_params, run_tag) from flowmirror.agents.null_policy,
-         regardless of mock_llm -- the rule-based anti-A1 baseline.
-prompt:  agent_view keys persona_card_zh_rich, memory, last_reflection,
-         market_view, risk_mood, c_class, cash, holdings[{code,name,r,units,
-         nav,pnl_pct}], last_trade, declined_confirms, familiarity{org:level},
-         guba{code:{name,mult,bull_ratio}} (card L1: dict-of-dicts, contract
-         2.1 -- render_news calls .get on the value), beliefs (list, decision
-         11: feeds the DECISION prompt only), holdings_1d (absent unless the
-         agent holds funds priced on days t-1 AND t-2), trend, direct;
-         feed_card keys post_id, org, title, caption
-         (masked preferred), landing{code,name,R,ret_3m,ret_1y,min_buy}, likes,
-         arm in {T,TC,TV}, image_path, image_sha, comments_prev[{stance,text,
-         fam_phrase}], climate_label, n_comments_prev (full t-1 count);
-         TC-only ocr_text and image_caption_frozen (str or list[str]).  TV
-         attaches image_path as data-URI; T and TC never attach pixels.
-         build_decision_messages(view, cards, cfg) -> (messages, prompt_sha,
-         image_shas, prompt_notes) is PURE, so the loop can re-render the very
-         same bytes for --dump-prompt (E1) without touching any state.
-feed:    rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg["feed"],
-         rng, mode); climate_for(post_id, comments_prev, min_n=4, weights) ->
-         (label, counts); top_comments(post_id, comments_prev, k=3, weights);
-         assign_arms(rng, k, tally, arms=('T','TV')); check_arm_balance(
-         agent_arms, agent_cells, arms=None) -> (ok, rep).
-Inv:     slots only -- units in inv.hold[code] (float), cost NAV in
-         inv.cost[code], familiarity level inv.flag[org], follows inv.follow,
-         trust adstock inv.aff, EMA familiarity inv.fam, per-agent inv.rng,
-         per-arm impression tally inv.arm_tally; the A2 world card adds the
-         inv.fees slot (accumulated subscription/redemption fees).
-Loop A2: modality_level {agent, run, exposure} (legacy arm_level alias) picks
-         per-agent / whole-run / per-impression arms from cfg["modality_arms"];
-         apply_decision(..., fees={"subscribe_rate","redeem_rate"}) charges
-         cash-side fees, logged as act.fee on every act row.
-Card L:  redeem checkouts emit NO click row (a redeem is not a feed click);
-         their co rows carry p=None/ig=None with oc=oc_cf="match" (invariant
-         i, no CxR gate on redeem -- the counterfactual obeys it too; only
-         the engine refusal no_holdings can still override oc), their act rows
-         keep p=None, and QDII purchase_blocked stays subscribe-only.
-E1:     --dump-prompt <agent_id>@<day> | first writes
-         <out_dir>/prompts/<agent>_d<day>.txt -- the exact rendered system+user
-         text with image parts replaced by "[image: <sha256 prefix>, <bytes>
-         bytes]" placeholders (never base64) -- plus a .json sidecar with
-         prompt_sha, arm, the card ids shown and the channel shas.  The spec
-         travels in RuntimeOpts (card R2D), a CLI-only runtime-options object
-         threaded main() -> run_simulation(cfg, rt); it is NOT a run-config
-         key (run.schema.json is additionalProperties:false and rejects one on
-         purpose -- the parallel-card API mismatch this fixes).  It is a
-         side artifact ONLY: no event-log row, no RNG draw, no hash change, so
-         --replay-check stays byte-identical with or without the flag.  The
-         live branch of _make_llm forwards the caller's model kwarg and only
-         falls back to cfg["llm"]["model"] (decide passes the vision model,
-         reflect the text model); tests/unit/test_live_path.py pins that.
-R2F:    check_invariants returns (checks, core) and _finish UNPACKS it (a
-         malformed return raises TypeError -- never a silent pass); the run's
-         invariant decision is core AND-ed with the engine-side extra checks,
-         each failing invariant key is printed with its detail, and an
-         invariant failure exits 4 (2 = cap stop, 3 = decision_failure_halt /
-         --replay-check mismatch keep their codes).  The old >=300-agent
-         recheck that wrote arm balance under the bogus key "e_arm_balance"
-         is gone: arm balance is registry key h_arm_balance, which
-         check_invariants already evaluates for every cohort size.
+RuntimeOpts contains operational switches such as worker count and prompt
+dumping; experiment-defining values remain in the validated run configuration.
+The module supports deterministic mock, rule-based, and optional live-model
+execution. Invariant failures, budget stops, and replay mismatches have distinct
+exit codes so local automation can stop safely.
 """
 from __future__ import annotations
 
@@ -131,12 +62,11 @@ _FAM_PHRASE = {0: "不熟悉该机构", 1: "略有耳闻", 2: "关注已久"}
 
 
 class RuntimeOpts:
-    """CLI-only runtime switches (card R2D); never keys of the validated run config.
+    """CLI-only runtime switches; never keys of the validated run config.
 
     run.schema.json is additionalProperties:false (with a '^_' patternProperties
     escape hatch) and run_simulation re-validates the merged cfg it is handed,
-    so parking a CLI flag's value in cfg -- as the original --dump-prompt card
-    did with `dump_prompt` -- killed the run at schema time with
+    so parking a CLI flag's value in cfg, such as `dump_prompt`, fails schema validation with
     "'dump_prompt' does not match any of the regexes: '^_'" before day 0.  The
     rule this class enforces:
       * keys that DEFINE the experiment stay in cfg; their CLI overrides
@@ -145,8 +75,8 @@ class RuntimeOpts:
         are correct as config overrides and deliberately NOT moved here;
       * switches that only change what the engine does AROUND the experiment
         travel in this object and are threaded explicitly to their use site.
-    Flag audit (card R2D): --replay-check never reaches run_simulation
-    (main()-level orchestration, writes nothing to cfg); --days/--agents/
+    --replay-check stays in main-level orchestration and writes nothing to cfg;
+    --days/--agents/
     --seed/--out/--map-to-schema-keys as above; only --dump-prompt was
     laundered, so only it moved.  Future CLI-only switches (--profile,
     --dry-run, ...) get a slot here, never a schema key."""
@@ -154,8 +84,8 @@ class RuntimeOpts:
     # workers: operational concurrency override. It changes wall-clock only -- the parallel
     # phase collects decisions and applies them serially in sorted agent order, so
     # --replay-check is byte-identical across worker counts. It lives here rather than in cfg
-    # because the sixteen grid configs are sha-frozen in PREREG D23 and a speed knob must not
-    # invalidate that table. None = use cfg["llm"]["workers"].
+    # because worker count is an operational setting, not a simulation input.
+    # None = use cfg["llm"]["workers"].
     __slots__ = ("dump_prompt", "retry_transport_holes", "workers")
 
     def __init__(self, dump_prompt=None, retry_transport_holes=False, workers=None):
@@ -199,8 +129,7 @@ def _guba_row(W, code, week):
     """The RAW weekly guba signal row for a fund, or None when the week is uncovered.
 
     world.guba_seed_label does this same two-key lookup but returns a stance LABEL; the
-    news channel needs the row itself (contract 2.2), and world.py belongs to another lane
-    this round, so the lookup is mirrored here instead of exported.  The key order is
+    news channel needs the row itself, so the lookup is mirrored here. The key order is
     world.guba_seed_label's verbatim, so the climate seed and the news line can never
     disagree about which ISO week they read for the same day.
     """
@@ -215,15 +144,11 @@ def _guba_row(W, code, week):
 
 
 def _guba_line(W, code, row):
-    """One view["guba"] entry, built from the raw signal row (contract 2.1).
+    """One view["guba"] entry, built from the raw signal row.
 
-    Shape is dict-of-dicts because prompt.render_news calls .get on the value; the old
-    {code: label_string} shape raised AttributeError there and survived only because
-    guba_seed_label returns None on every real signal file (audit E1, latent crash).
+    Shape is dict-of-dicts because prompt.render_news calls .get on the value.
     mult is the row's ratio_vs_baseline, 1.0 when the field is absent or unparseable.
-    bull_ratio stays None until the stance-labelling data task lands: decision 4 makes
-    the signal file's "no stance is computed here" the correct current behaviour, and
-    render_news already reads None as 0.5, so no caller has to special-case it.
+    bull_ratio stays None when the input carries no stance measurement.
     """
     row = row or {}
     # A week with no posts has nothing to report, and its ratio_vs_baseline is 0.0 --
@@ -239,11 +164,8 @@ def _guba_line(W, code, row):
         mult = float(row.get("ratio_vs_baseline"))
     except (TypeError, ValueError):
         mult = 1.0
-    # Decision 4: read the field rather than hardcoding None, so the stance-labelling
-    # output (guba_signal_v2.json) becomes visible the day it lands with no code change.
-    # The shipped v1 file carries no bull_ratio -- its own _meta says no stance is
-    # computed there -- so this is None today, and prompt.render_news then omits the
-    # stance clause instead of asserting an unmeasured 5:5 split.
+    # Read the field rather than inferring a neutral stance. The prompt omits the
+    # stance clause when bull_ratio is absent.
     try:
         br = row.get("bull_ratio")
         br = None if br is None or isinstance(br, bool) else float(br)
@@ -377,11 +299,8 @@ def _resolve_tv_image(note, images_root, policy, rng):
     under images_root) or image_sha_mismatch (the bytes are not the ones the pool
     recorded).
 
-    Before this card the engine read note["image_path"|"image"|"cover"], none of which
-    the shipped pool carries -- so image_path was always None, prompt.py's TV branch
-    always took its image_missing path, and arm TV was byte-identical to arm T.  The
-    pool's real keys are image_ids (0-based names in a FLAT store) and a parallel
-    image_sha256.
+    The pool uses image_ids (zero-based names in a flat store) with a parallel
+    image_sha256 list.
 
     The digest check is not ceremony.  Because the ids are bare filenames in a flat
     store, a partially synced or re-exported images_root would hand the agent a
@@ -547,21 +466,18 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
             "declined_confirms": ([f"你此前有 {int(declined.get(inv.id, 0))} 次在《风险不匹配确认书》前放弃了申购。"]
                                   if int(declined.get(inv.id, 0)) > 0 else []),
             "familiarity": {org: inv.flag.get(org, 0) for org in orgs},
-            # guba_view carries the RAW weekly signal rows; the per-code line is built here
-            # so the day loop stays free of prompt-shape knowledge (contract 2.1).
-            # decision 6: only present when a benchmark is configured AND the series
-            # covers this day; render_news skips an absent key, which is the honest
-            # degradation. The value is a RETURN -- the series is a fund NAV proxy for
-            # 上证综指, not index points, so its level would be meaningless.
+            # guba_view carries raw weekly signal rows; the per-code line is built here
+            # so the day loop stays free of prompt-shape knowledge.
+            # The benchmark is present only when configured and covered for this day.
+            # render_news skips an absent key. The value is a return, not an index level.
             **({"index_5d": index_5d, "index_label": index_label}
                if index_5d is not None else {}),
             "guba": {c: ln for c, row in sorted(guba_view.items())
                      if (ln := _guba_line(W, c, row)) is not None
                      if c in inv.hold or c in codes},
-            # Audit E10 / decision 11: the beliefs stored at the last reflection feed forward
-            # into the NEXT DECISION prompt. Supplying the key is this card's whole job --
+            # Beliefs stored at the last reflection feed into the next decision prompt.
             # prompt.render_belief owns the rendering, and build_reflection_messages never
-            # calls it, so the reflection INPUT stays untouched as the decision requires.
+            # calls it, so the reflection input stays untouched.
             "beliefs": list(inv.beliefs or []),
             "direct": []}
     h1d = _holdings_1d(inv.hold, prev_navdays)
@@ -580,30 +496,21 @@ def _agent_view(inv, persona_rec, shown, W, cfg, navday, hist, trend_cache, guba
 
 
 def _make_llm(cfg):
-    if cfg.get("agent_policy") == "null":   # Card C: null policy wins over mock/live
+    if cfg.get("agent_policy") == "null":   # null policy wins over mock/live
         return NullPolicyLLM(cfg.get("null_params") or {}, cfg["run_tag"])
     if cfg.get("mock_llm"):
-        # Audit E5: the real keys are NESTED under mock_options -- that is what
-        # run.schema.json types, what engine_defaults.yaml defaults and what every
-        # runs/*.json sets. The old top-level mock_force_c2_r4 / mock_malformed_rate
-        # names exist in no schema and no config, so force_c2_r4_click: true has been
-        # silently dead and the acceptance runs never reached the suitability-confirmation
-        # branch they claim to cover. The fallbacks equal config/engine_defaults.yaml,
-        # which is what actually supplies them after the merge -- the schema declares no
-        # default for either, and the old 0.05 literal disagreed with the file it cited.
+        # Mock options live under the schema-validated mock_options block.
         mock_opts = cfg.get("mock_options") or {}
         return MockLLM(bool(mock_opts.get("force_c2_r4_click", False)),
                        float(mock_opts.get("malformed_rate", 0.0)))
     llm_cfg = cfg["llm"]
-    # E9: temperature and the provider-side retry budget are experiment parameters and
-    # belong in the run config, not in runtime.TEMP / runtime.MAX_ATTEMPTS. runtime.call_glm
-    # is growing both parameters in a parallel lane, so probe its signature ONCE here
+    # Temperature and the provider-side retry budget are run parameters and
+    # belong in the run config, not in runtime constants. Probe the callable signature once
     # instead of wrapping every call in try/except TypeError: a TypeError raised deep inside
     # call_glm (a malformed message payload, say) is indistinguishable at the call site from
     # a signature mismatch, and a retry with fewer kwargs would silently swallow it. Only
     # keys the config actually carries are forwarded, so on a config that omits them
-    # call_glm keeps its own defaults -- which contract 3 fixes at exactly 0.3 and 5, the
-    # values hardcoded today. Hence no hash change from this branch.
+    # call_glm keeps its own defaults.
     params, var_kw = {}, False
     gate = None  # fallback if signature introspection fails
     try:
@@ -620,11 +527,8 @@ def _make_llm(cfg):
         knobs = ()
 
     def _call(messages, max_tokens, **kw):
-        # Task E1-1 (permanent): runtime.decide() passes the vision model and runtime.reflect()
-        # the text model as model=, so the CALLER's choice must win; cfg["llm"]["model"] is only
-        # a fallback. The old one-liner passed model=llm_cfg.get("model") explicitly AND
-        # forwarded **kw, so every live run died with "TypeError: call_glm() got multiple
-        # values for keyword argument 'model'". tests/unit/test_live_path.py pins this.
+        # decide() passes the vision model and reflect() passes the text model;
+        # the caller's choice wins and cfg["llm"]["model"] is only a fallback.
         kw.setdefault("model", llm_cfg.get("model"))
         for key, val in knobs:          # same caller-wins precedence as model
             kw.setdefault(key, val)
@@ -636,7 +540,7 @@ def _make_llm(cfg):
 
 
 # ---------------------------------------------------------------------------
-# --dump-prompt (task E1-3): side artifacts for the paper appendix.
+# --dump-prompt writes optional local diagnostic artifacts.
 # Pure post-hoc rendering from the frozen job; never touches the event log,
 # the RNG or any hash, so replays stay byte-identical with or without it.
 # ---------------------------------------------------------------------------
@@ -785,7 +689,7 @@ def _last_meta(out_dir):
 
 
 def _report_entry(report, key):
-    """Depth-first lookup of `key` in a parsed invariants_report.json (card R2F).
+    """Depth-first lookup of `key` in a parsed invariants_report.json.
 
     Tolerant of the nesting write_reports chooses -- flat mapping, nested under
     an "invariants" key, or a list of {key/name: ...} rows -- so callers (the
@@ -868,7 +772,7 @@ def _dec_counts(adapted, n_cards, social_on, social_graph_on=False):
     cache_hit/attempts stay OUT of dec by design (invariant l, byte-identical
     replays -- they live in llm_cache.jsonl and run_meta.counters)."""
     # Social graph (E): the per-post follow list is a key only when the graph is on, so an
-    # off run's dec rows stay byte-identical to the pre-E baseline (PREREG D31).
+    # disabled runs keep their decision rows byte-identical to earlier runs.
     keys = ("n_read", "n_like", "n_save", "n_follow", "n_comment", "aff_sum",
             "p_like", "p_save") + (("p_follow_users",) if social_graph_on else ())
     if adapted is None:
@@ -888,7 +792,7 @@ def _dec_counts(adapted, n_cards, social_on, social_graph_on=False):
 
 
 def _inst_update(w_old, conv, eta, floor):
-    """Institution adaptation step (F, PREREG D32): reinforcement-style share update.
+    """Institution adaptation step: reinforcement-style share update.
 
     w_new = (1-eta)*w_old + eta*share, where share is this period's response share per
     intent; every weight is floored so no intent can die, then renormalised. Pure so the
@@ -904,9 +808,7 @@ def _inst_update(w_old, conv, eta, floor):
 
 
 def _bump_fees(inv, fee):
-    """Accumulate cash-side fees on inv.fees (getattr-safe: the slot ships with
-    the A2 world card; a pre-A2 slots-only Inv just drops it, and pre-A2 configs
-    carry no fees anyway, so both worlds stay runnable)."""
+    """Accumulate cash-side fees on inv.fees when the state supports that slot."""
     if fee:
         try:
             inv.fees = float(getattr(inv, "fees", 0.0) or 0.0) + float(fee)
@@ -917,14 +819,14 @@ def _bump_fees(inv, fee):
 def apply_decision(inv, rec, shown, day, fees=None):
     """Serial apply of one decision record; returns (comment, affinity, trade) views.
 
-    fees (keyword, default None -> both rates 0, so pre-A2 callers keep working)
+    fees (keyword, default None -> both rates 0)
     is cfg["fees"]: subscribe pays fee = amt*subscribe_rate out of the ticket,
     so units = (amt - fee)/nav at cost basis amt - fee; redeem pays
     fee = gross*redeem_rate out of the proceeds, so cash += gross - fee.  Fees
     leave cash, accumulate on inv.fees, and every act row carries fee (2dp,
     0.0 when fees are off) so cash can be replayed from the event log.
 
-    Card L-fix: a redeem is not a feed click (there is no post behind it), so
+    A redemption is not a feed click because there is no source post, so
     it never emits a click row nor bumps the click counters; its co row carries
     p=None, ig=None with oc=oc_cf="match" (invariant i -- no CxR gate applies
     to a redeem, the counterfactual included; only the engine refusal
@@ -1000,7 +902,7 @@ def apply_decision(inv, rec, shown, day, fees=None):
         code = post.get("code")
         if code is None and act == "redeem" and trade.get("fund") in inv.hold:
             code = trade.get("fund")
-        # Card L-fix: a redeem is not a feed click -- no click row, no click counter.
+        # A redemption is not a feed click: no click row and no click counter.
         if code is None:                     # I2 note without in-universe common-support code
             if act != "redeem":
                 logd("click", t=t, d=dstr, i=inv.id, p=pid, oc="click_no_landing")
@@ -1166,11 +1068,11 @@ def _apply_workers_override(cfg, rt):
 
 def run_simulation(cfg, rt=None):
     """One simulation pass; returns 0 ok, 2 cap_stopped, 3 decision_failure_halt,
-    4 invariant failure (card R2F-loop: the run's invariant decision -- world
+    4 invariant failure (the run's invariant decision -- world
     check_invariants' core flag AND-ed with any engine-side extra check -- came
     out false; a --replay-check mismatch at the main() level stays 3).
 
-    rt carries CLI-only runtime switches (RuntimeOpts, card R2D) that must NOT
+    rt carries CLI-only runtime switches (RuntimeOpts) that must not
     be laundered through cfg: cfg is re-validated against run.schema.json
     below, and the schema rightly rejects keys that do not define the
     experiment.  Defaults to an empty RuntimeOpts so legacy single-argument
@@ -1193,12 +1095,12 @@ def run_simulation(cfg, rt=None):
     W = load_world(cfg)
     rng_platform = random.Random(cfg["seed"])
     invs = sorted(init_investors(W, cfg), key=lambda x: x.id)
-    hold0 = {inv.id: dict(inv.hold or {}) for inv in invs}   # FIX4: each agent's OPENING
+    hold0 = {inv.id: dict(inv.hold or {}) for inv in invs}   # each agent's opening holdings
     cost0 = {inv.id: dict(inv.cost or {}) for inv in invs}   # snapshot of opening cost basis so run_meta.openings can rebuild disposition effects
     # holdings, snapshotted before any day runs (inv.hold mutates in place during the run, so
     # this is a copy, never the live dict). The run-bundle exporter reuses this exact key and
     # {agent_id: {fund_code: units}} shape.
-    for inv in invs:        # fees slot ships with the A2 world card; stay runnable without it
+    for inv in invs:        # stay runnable with state objects that lack the fees slot
         if not hasattr(inv, "fees"):
             try:
                 inv.fees = 0.0
@@ -1216,39 +1118,31 @@ def run_simulation(cfg, rt=None):
                              or cfg["llm"].get("cap_attempts") or 100000))
     feed_cfg = cfg.get("feed") or {}
     K, gamma = int(feed_cfg.get("K", 5)), float(feed_cfg.get("gamma", 1.8))
-    # Decision 1: the majority margin is 1/6, not the 1/3 the code carried. Passing it
-    # explicitly means a run records the threshold it actually used, and a sensitivity
-    # arm needs no code change.
+    # Pass the majority margin explicitly so a run records the value it used and
+    # sensitivity configurations need no code change.
     clim_margin = float(feed_cfg.get("climate_margin", 1.0 / 6.0))
-    # E4 / DECISIONS #5: these were bare literals plus an unreachable cfg["fam_decay"]
-    # (never in the schema, and additionalProperties is false, so a config that set it
-    # was rejected outright). Worse, ONE constant drove two conceptually different
-    # processes -- familiarity decay AND attention decay -- so no run could vary them
-    # independently. They are separate parameters now.
+    # Familiarity, attention, and trust use independent dynamics parameters.
     _dyn = cfg.get("dynamics") or {}
     delta = float(_dyn.get("fam_decay", 0.2))            # familiarity EMA decay
     lam_att = float(_dyn.get("lambda_attention", 0.8))   # attention adstock retention
     lam_trust = float(_dyn.get("lambda_trust", 0.9))     # institution-trust adstock
     fam_thr = float(_dyn.get("fam_threshold", 1.0))      # exposure/affinity -> level 1
-    # Decision 3: the guba attention term is WIRED but its coefficient is ZERO. The
+    # The guba attention term is wired but its default coefficient is zero. The
     # pipeline reads the lagged week z_abnormal and multiplies it in, so enabling the
     # channel later is a one-value config change; at 0.0 the term is exactly inert and
-    # the attention series is unchanged. Do not "fix" this to 0.1 -- the owner set 0.
+    # the attention series is unchanged. Do not change this default without explicit configuration.
     beta_guba = float(_dyn.get("beta_guba", 0.0))
     p_active = float(cfg["p_active"])
     refl_every, mem_days = int(cfg["reflection_every_days"]), max(1, int(cfg["memory_days"]))
     workers = int(cfg["llm"]["workers"])
     modality_arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
     modality_level = cfg.get("modality_level") or cfg.get("arm_level") or "agent"
-    # TV-arm pixels. images_root is machine-local and null by default, so every shipped
-    # demo is text-only; the WARNING below exists because a text-only run used to be
-    # indistinguishable from a multimodal one, which is how the project's headline
-    # experiment ran for months attaching zero images.
-    # decision 6: the benchmark behind the news channel's market line. Absent by
+    # TV-arm pixels. images_root is machine-local and null by default, so bundled
+    # demos are text-only. The benchmark behind the news channel is absent by
     # default (data/market/ is gitignored third-party data), and a configured-but-
     # unreadable path raises rather than silently producing a text-only market line.
     _mkt = cfg.get("market") or {}
-    # Decision 6: a configured benchmark MUST carry its disclosing label, because the
+    # A configured benchmark must carry its disclosing label because the
     # label is what the agent-facing line names. Refusing to run without one is the only
     # way the disclosure cannot be forgotten; the alternative is a prompt that calls a
     # fund NAV proxy an index.
@@ -1280,11 +1174,7 @@ def run_simulation(cfg, rt=None):
                     and {cfg.get("modality_run_arm")} ) or set(modality_arms)):
         print("[world] WARNING: no images_root configured -- the TV arm degrades to "
               "text-only; the modality comparison measures nothing.")
-    # E6 / decision 10: qdii_blocked reaches the schema this round, which is what makes
-    # the suspension path reachable at all -- additionalProperties is false, so any config
-    # naming the key was rejected before. No shipped config sets it; a real suspension
-    # calendar is a data task. A calendar that can never bind is the same silent-no-op
-    # class of defect this round exists to remove, so say so rather than ignore it.
+    # Report a configured QDII suspension calendar that cannot bind to this universe.
     if cfg.get("qdii_blocked") and not any(getattr(f, "qdii", False)
                                            for f in W.funds.values()):
         print("[world] note: qdii_blocked is configured but no fund in this universe is "
@@ -1292,7 +1182,7 @@ def run_simulation(cfg, rt=None):
     wmap = ({inv.id: float(inv.strat_weight or 1.0) for inv in invs}
             if cfg.get("climate_weighting") else None)
     S = Counter()
-    # Contract 2.4: seeded at zero so run_meta.counters always carries both, and the
+    # Seeded at zero so run_meta.counters always carries both, and the
     # identity transport + model == decision_failures can be checked on any run.
     S["decision_failures_transport"] = 0
     S["decision_failures_model"] = 0
@@ -1305,7 +1195,7 @@ def run_simulation(cfg, rt=None):
     # One flag for the whole run: when off, every social-graph branch below stays empty and
     # the event log / prompts are byte-identical to the pre-E baseline.
     social_graph_on = bool((cfg.get("social_graph") or {}).get("enabled"))
-    # Institution adaptation (F, PREREG D32): each org re-weights its intent mix every
+    # Institution adaptation: each org re-weights its intent mix every
     # period from the responses its own posts drew (checkout reached +1, matched +1).
     # Off -> inst_w is None, publish_day gets intent_weights=None and nothing changes.
     inst_cfg = cfg.get("institutions") or {}
@@ -1333,8 +1223,7 @@ def run_simulation(cfg, rt=None):
     n_days = len(W.nav_days)
     inv_a_ok = True
     last_d = W.nav_days[0] if W.nav_days else W.start
-    # E1-3: --dump-prompt spec, a CLI-only runtime switch carried in rt (card
-    # R2D: never a cfg key -- the run schema rejects those); side artifact only.
+    # --dump-prompt is a CLI-only runtime switch carried in rt; side artifact only.
     dump_spec = rt.dump_prompt or None
     dump_target = _dump_target(dump_spec) if dump_spec else None
     dump_done = False
@@ -1364,7 +1253,7 @@ def run_simulation(cfg, rt=None):
                  "active_per_day": dict(active_per_day), "flows": flows,
                  "snapshots": snapshots, "checkout_oc": dict(checkout_oc),
                  "checkout_oc_cf": dict(checkout_oc_cf),
-                 # contract 2.3: world.write_reports copies this into run_meta["images"],
+                 # world.write_reports copies this into run_meta["images"],
                  # and m_tv_arm_carries_images reports it. attached is the number that
                  # answers "did pixels actually reach the agents" -- it is a count, so
                  # it needs no gate to be read.
@@ -1372,13 +1261,8 @@ def run_simulation(cfg, rt=None):
                             "attached": int(S["images_attached"]),
                             "missing": int(S["images_missing"]),
                             "sha_mismatch": int(S["images_sha_mismatch"])}}
-        # Card R2F-loop: check_invariants returns (checks, core). The old code
-        # asked isinstance(checks, dict) -- always False for that 2-tuple -- and
-        # fell into {"core": {"pass": bool(<tuple>)}}; bool() of a non-empty
-        # tuple is always True, so every per-invariant result was discarded
-        # before write_reports and the console printed PASS no matter what.
-        # Unpack, guard the contract hard, never coerce a malformed result
-        # into a pass.
+        # check_invariants returns (checks, core). Unpack and validate that shape;
+        # never coerce a malformed result into a pass.
         raw = check_invariants(state, os.path.join(out_dir, "event_log.jsonl"), cfg)
         if not (isinstance(raw, tuple) and len(raw) == 2
                 and isinstance(raw[0], dict) and isinstance(raw[1], bool)):
@@ -1416,7 +1300,7 @@ def run_simulation(cfg, rt=None):
             return rc
         if ok:
             return 0
-        # Fail loudly (card R2F-loop item 3): every failing invariant key was
+        # Fail loudly: every failing invariant key was
         # already printed with its detail by _print_summary; the run exits 4,
         # distinct from --replay-check mismatches (3, main() level).
         print("engine exit code 4: invariant failure"
@@ -1433,11 +1317,12 @@ def run_simulation(cfg, rt=None):
             qdii_blk = _qdii_blocked_set(cfg, dstr)
             navday = {c: f.nav_at(dt_cur) for c, f in sorted(FUNDS.items())
                       if f.active_from <= dt_cur and f.nav_at(dt_cur) is not None}
-            wk_prev = _week_key(dt_cur - ONE_DAY * (dt_cur.weekday() + 1))   # FIX3 Defect 2: lagged signal week = the ISO week that ENDED strictly before day t (anchor: the Sunday closing the week before dt_cur's own week), never the week containing dt_cur. Feeds both guba_seed_label call sites; matches world._expected_guba_week exactly.
+            # The lagged signal is the ISO week that ended strictly before day t.
+            wk_prev = _week_key(dt_cur - ONE_DAY * (dt_cur.weekday() + 1))
             # DECISIONS #5: att_t = lambda_attention * att_{t-1} + exposure
             # + beta_guba * z_abnormal, with z read from the LAGGED week only (invariant
             # (a)). The signal is exogenous, so the day z map is shared by every
-            # investor; at beta_guba == 0 (decision 3) it is not even built.
+            # investor; at beta_guba == 0 it is not built.
             # the benchmark is exogenous, so one value serves the whole cohort; pct_5d
             # reads only observations strictly before dt_cur (invariant (a)).
             idx_5d = pct_5d(benchmark, benchmark_days, dt_cur) if benchmark else None
@@ -1545,7 +1430,7 @@ def run_simulation(cfg, rt=None):
                                 for aid, nf in sorted(followers_prev.items(),
                                                       key=lambda kv: (-kv[1], kv[0]))[:3]
                                 if nf > 0]
-            # News channel (audit E1): the view needs the RAW weekly signal row, not the
+            # The news channel needs the raw weekly signal row, not the
             # stance label. The label is still the climate seed above (clim.source stays
             # "guba_seed" wherever it fired) -- these are two different consumers of the
             # same week key, so both call sites keep reading wk_prev.
@@ -1704,11 +1589,9 @@ def run_simulation(cfg, rt=None):
                                    social_graph_on=social_graph_on))
                 if row is None:
                     S["decision_failures"] += 1
-                    # Decision 9: threshold and halt condition UNCHANGED -- this splits
-                    # only the diagnosis. An HTTP error, a dead socket or a revoked key
-                    # is a transport failure and used to be counted as model
-                    # instability: in one live smoke run three rate-limited calls looked
-                    # like an unstable model while the parse rate was 77 of 77.
+                    # The threshold and halt condition use the combined rate; this splits
+                    # only the diagnosis. HTTP errors, dead sockets, and credential
+                    # failures are transport failures rather than model parse failures.
                     S["decision_failures_" + (rec.get("failure_kind") or "model")] += 1
                     continue
                 cmt_out, aff_first, tr = apply_decision(inv, adapted, job["shown"], day,
@@ -1718,11 +1601,7 @@ def run_simulation(cfg, rt=None):
                 del inv.memory[:-mem_days]
             halt = cfg["llm"].get("decision_failure_halt", True)
             thr = halt if isinstance(halt, float) and 0.0 < halt < 1.0 else 0.02
-            # A failure RATE means nothing on a handful of calls: one terminal failure in 40
-            # decisions (a 10-agent mock run at t=3) read as 2.5% and killed a run whose true
-            # rate over 600 calls was 0.33%. Evaluate the halt only once the sample is large
-            # enough for a 2% threshold to be informative (PREREG D24); 0 restores the old
-            # behaviour.
+            # Evaluate the failure-rate halt only after the configured minimum sample.
             min_calls = int(cfg["llm"].get("decision_failure_min_calls", 100) or 0)
             if t >= 3 and halt and S["decisions"] >= max(1, min_calls) \
                     and S["decision_failures"] / S["decisions"] > thr:
@@ -1735,20 +1614,10 @@ def run_simulation(cfg, rt=None):
                 # those literals, so a config omitting the block is byte-identical.
                 dca_pct = float((cfg.get("dca") or {}).get("pct", 0.02))
                 dca_min = float((cfg.get("dca") or {}).get("min_ticket", 100.0))
-                # Owner decision 15: a plan instalment IS a subscription, so it pays
-                # fees.subscribe_rate exactly as apply_decision's subscribe branch does.
-                # It was the only purchase channel exempt from decision 8, which left
-                # every kind="dca" row at fee 0.0 while the RUNBOOK said act.fee is
-                # non-zero -- and decision 7 had just made this channel reachable for the
-                # roughly half of the cohort that opens with no holdings.
+                # Plan instalments use the same subscription fee path as direct purchases.
                 dca_fee_rate = float((cfg.get("fees") or {}).get("subscribe_rate", 0.0))
                 for inv in invs:
-                    # Audit E7 / decision 7: the guard used to require inv.hold, so a
-                    # plan could only TOP UP an existing position -- an investor flagged
-                    # for a plan who opened with nothing could never begin one, which is
-                    # roughly half the cohort at the smallest holdings setting.
-                    # world.init_investors now assigns those investors a dca_target from a
-                    # DERIVED rng stream, so inv.rng own sequence stays untouched.
+                    # Empty-holding plan investors use a deterministic explicit target.
                     if inv.dca and t >= inv.entry:
                         code = (min(inv.hold) if inv.hold      # deterministic: first held
                                 else getattr(inv, "dca_target", None))
@@ -1855,9 +1724,7 @@ def run_simulation(cfg, rt=None):
 
 
 def _check_detail_line(key, check):
-    """One ASCII console line carrying a failing check's full detail (card
-    R2F-loop item 3: the printed summary must show WHY each invariant failed,
-    not just that the run failed)."""
+    """One ASCII console line carrying a failing check's full detail."""
     try:
         body = json.dumps(_jsonable(check), ensure_ascii=True, sort_keys=True)
     except (TypeError, ValueError):
@@ -1882,8 +1749,7 @@ def _print_summary(cfg, counters, checks, days, elapsed, checkout_oc, checkout_o
     print(f"fees_cny={round(float(counters.get('fees_cny', 0.0) or 0.0), 2)} "
           f"factor_switches={counters.get('factor_switches', 0)} "
           f"elapsed_s={round(elapsed, 1)}")
-    # Card R2F-loop: `ok` is the run's invariant decision handed in by _finish
-    # (world core AND-ed with the extra checks); bool(<opaque tuple>) is gone.
+    # `ok` is the run's invariant decision handed in by _finish.
     # A skipped entry ({"skipped": True, "reason": ...}) has no "pass" key, so
     # it is neither a pass nor a failure here.
     if ok is None:                    # legacy callers: derive from the checks themselves
@@ -2101,18 +1967,17 @@ def _self_test():
     chk("runtime_opts_carry_cli_only_switches",
         RuntimeOpts().dump_prompt is None
         and RuntimeOpts(dump_prompt="first").dump_prompt == "first")
-    root = os.environ.get("FLOWMIRROR_DATA_ROOT") or os.path.join(ROOT, "data")
-    alt = os.environ.get("FLOWMIRROR_RESEARCH_ROOT") or "D:/Desktop/ABM paper/fundmarket-sim"
-    cfg_path = next((os.path.join(b_, "runs", "mock_10x3.json") for b_ in (root, alt, ROOT)
-                     if os.path.exists(os.path.join(b_, "runs", "mock_10x3.json"))), None)
+    bases = [ROOT]
+    data_root = os.environ.get("FLOWMIRROR_DATA_ROOT")
+    if data_root:
+        bases.insert(0, os.path.dirname(os.path.abspath(data_root)))
+    cfg_path = next((os.path.join(b_, "runs", "demo_two_arm.json") for b_ in bases
+                     if os.path.exists(os.path.join(b_, "runs", "demo_two_arm.json"))), None)
     if cfg_path is None:
-        print("SKIP: no runs/mock_10x3.json under FLOWMIRROR_DATA_ROOT/FLOWMIRROR_RESEARCH_ROOT")
+        print("SKIP: no runs/demo_two_arm.json under the repo (or parent of FLOWMIRROR_DATA_ROOT)")
         return 0 if ok else 1
     cfg = _load_cfg(cfg_path)
-    # Card R2F-loop: the engine now honors REAL invariant outcomes, so the
-    # end-to-end fixture mirrors the acceptance run's shape (mock_10x3.json,
-    # 40 agents x 5 days) -- cohort-scale-sensitive checks like cell exposure
-    # are only guaranteed at the sizes the acceptance card validates.
+    # Use enough agents and days for cohort-scale checks such as cell exposure.
     cfg.update({"mock_llm": True, "n_agents": 40,
                 "out_dir": tempfile.mkdtemp(prefix="fm_loop_st_")})
     cfg["window"]["max_trading_days"] = 5
@@ -2121,9 +1986,7 @@ def _self_test():
     chk("mock_end_to_end_rc0", rc == 0)
     if rc != 0:
         return 1
-    # Card R2F-loop: the report must carry real per-invariant results -- the
-    # discarded (checks, core) tuple used to leave every registered invariant
-    # as "skipped: not evaluated" plus one bogus "core: pass".
+    # The report must carry evaluated per-invariant results.
     with open(os.path.join(cfg["out_dir"], "invariants_report.json"),
               encoding="utf-8") as fh:
         inv_rep = json.load(fh)
@@ -2145,10 +2008,7 @@ def _self_test():
     sha1 = event_log_sha(logp)
     chk("replay_sha_identical", run_simulation(cfg) == 0 and sha1 is not None
         and sha1 == event_log_sha(logp))
-    # --- E1-3: --dump-prompt side artifact must not touch the log ------------
-    # Card R2D: the spec rides in RuntimeOpts (a CLI-only runtime-options
-    # object), never in cfgd -- the run schema rejects a literal dump_prompt
-    # key, which is exactly what made the flag unreachable before.
+    # --dump-prompt is a side artifact and must not touch the event log.
     cfgd = _load_cfg(cfg_path)
     cfgd.update({"mock_llm": True, "n_agents": 40,
                  "out_dir": tempfile.mkdtemp(prefix="fm_loop_dmp_")})
@@ -2177,18 +2037,18 @@ def _self_test():
             and len(side.get("card_ids") or []) > 0)
         chk("dump_prompt_leaves_event_log_byte_identical",
             event_log_sha(os.path.join(cfgd["out_dir"], "event_log.jsonl")) == sha1)
-    cfg3_path = next((os.path.join(b_, "runs", "mock_10x3_3arm.json") for b_ in (root, alt, ROOT)
-                      if os.path.exists(os.path.join(b_, "runs", "mock_10x3_3arm.json"))), None)
+    cfg3_path = next((os.path.join(b_, "runs", "demo_three_arm.json") for b_ in bases
+                      if os.path.exists(os.path.join(b_, "runs", "demo_three_arm.json"))), None)
     if cfg3_path is None:
-        print("SKIP: no runs/mock_10x3_3arm.json (A2-schema card adds it)")
+        print("SKIP: no runs/demo_three_arm.json in the repository")
     else:
         cfg3 = None
         try:
             cfg3 = _load_cfg(cfg3_path)
         except ConfigError:
-            print("SKIP: mock_10x3_3arm.json not accepted by the active schema yet")
+            print("SKIP: demo_three_arm.json not accepted by the active schema")
         if cfg3 is not None:
-            # R2F: acceptance shape for the 3-arm config (60 agents x 5 days).
+            # Exercise the three-arm config with 60 agents over five days.
             cfg3.update({"mock_llm": True, "n_agents": 60,
                          "out_dir": tempfile.mkdtemp(prefix="fm_loop_st3_")})
             cfg3["window"]["max_trading_days"] = 5
@@ -2227,7 +2087,7 @@ def main(argv=None):
                          "a run-config key); side artifact only, the event log is unaffected")
     ap.add_argument("--workers", type=int, default=None,
                     help="operational override for llm.workers: wall-clock only, results are "
-                         "identical (see --replay-check); leaves the sha-frozen config untouched")
+                         "identical (see --replay-check); leaves the source config untouched")
     ap.add_argument("--retry-transport-holes", action="store_true",
                     help="treat cached transport failures (429 / timeouts / empty) as cache misses and "
                          "re-ask the provider; model-side failures stay terminal; runtime-only switch")
@@ -2255,11 +2115,7 @@ def main(argv=None):
         # A run's cache lives with its outputs unless the config points elsewhere on purpose; otherwise an
         # --out override would silently replay another run's cached responses.
         cfg.setdefault("llm", {})["cache"] = os.path.join(cfg["out_dir"], "llm_cache.jsonl")
-    # Card R2D: --dump-prompt is a CLI-only runtime switch, so it rides in
-    # RuntimeOpts and never enters the validated run config. Parking it in cfg
-    # (the old behavior) made run_simulation's schema re-validation reject the
-    # whole run ("'dump_prompt' does not match any of the regexes: '^_'")
-    # before the first trading day, leaving the feature unreachable.
+    # --dump-prompt is a CLI-only runtime switch and never enters the validated config.
     rt = RuntimeOpts(retry_transport_holes=bool(getattr(args, "retry_transport_holes", False)),
                      workers=getattr(args, "workers", None))
     if args.dump_prompt:

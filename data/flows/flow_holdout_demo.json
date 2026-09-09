@@ -1,0 +1,7 @@
+{
+  "_meta": {
+    "synthetic": true,
+    "description": "Empty placeholder for scenario-schema demonstration; it contains no observed fund-flow values."
+  },
+  "rows": []
+}

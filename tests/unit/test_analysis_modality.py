@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for flowmirror.analysis.modality / common (Cards E / E-fix2).
+"""Unit tests for flowmirror.analysis.modality and common.
 
 Builds synthetic event logs with planted effects (TV engagement +0.10 over T
 in seeds 1 and 3, +0.15 in seed 2; no trade effect anywhere) for 3 fake seeds
@@ -8,7 +8,7 @@ with a 1e-9 floating-point tolerance), legacy-log fallbacks, arm-map fallback,
 run-level mode with homogeneous single-arm runs paired by seed, and the
 unpaired-seed warning path.
 
-Card E-fix2 (inferential guard): analyze([one_run]) must report every verdict
+With one run, analyze([one_run]) must report every verdict
 as "insufficient_runs" with null seed-level CIs on both scales (diff and
 effect) while still reporting the mean, with df = 0 and one
 "n_runs=1: descriptive only" warning per affected contrast/metric. The same
@@ -126,7 +126,7 @@ class TestAgentLevel(unittest.TestCase):
 
 
 class TestInsufficientRunsGuard(unittest.TestCase):
-    """Card E-fix2: a single run (or single seed pair) is descriptive only."""
+    """A single run or seed pair is descriptive only."""
 
     def test_single_run_agent_level(self):
         with tempfile.TemporaryDirectory() as td:

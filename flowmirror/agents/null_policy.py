@@ -1,4 +1,4 @@
-"""Rule-based null policy -- the anti-A1 baseline (Card C, DECISIONS #11, PREREG v1.5 draft section F).
+"""Rule-based null policy used as a deterministic comparison policy.
 
 `NullPolicyLLM(params, run_tag)` is a drop-in replacement for the `llm` callable that
 flowmirror.agents.runtime.decide()/reflect() drive: same call signature
@@ -36,9 +36,8 @@ build one per decision/reflection job.  Draw order is fixed: rule 1 holdings in 
 order, rule 2 subscribe coin (then sign coin only if it fires), then per card in prompt
 order like/save/follow/comment.  Sets are never iterated unsorted.
 
-PREREGISTRATION NOTE (PREREG v1.5 draft section F, forbidden item 12): every parameter
-in `null_params` MUST be fixed BEFORE any main-grid result is seen.  The defaults below
-are the preregistered values and must not be tuned after the fact.
+For reproducible comparisons, fix every `null_params` value before inspecting the
+results and do not tune the policy between runs being compared.
 """
 from __future__ import annotations
 
@@ -438,7 +437,7 @@ def _self_test():
                        )[0]["pnl"] == -2.5
         and pc[0]["code"] == "100099" and pc[0]["ret3m"] == -1.2)
     d = NullPolicyLLM()
-    chk("null_preregistered_defaults",
+    chk("null_default_parameters",
         (d.p_redeem_gain, d.p_redeem_loss, d.redeem_pct, d.p_sub_base, d.chase_slope,
          d.sub_pct, d.p_sign_mismatch, d.p_like, d.p_save, d.p_follow, d.p_comment,
          d.stance_probs) ==
@@ -449,7 +448,7 @@ def _self_test():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m flowmirror.agents.null_policy",
-                                 description="FlowMirror rule-based null policy (Card C)")
+                                 description="FlowMirror deterministic rule-based policy")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
     if args.self_test:

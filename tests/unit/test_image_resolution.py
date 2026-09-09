@@ -1,11 +1,6 @@
-"""Card L2: the TV arm attaches a real, digest-verified image.
+"""Tests for digest-verified TV-arm image attachment.
 
-Before this card `_feed_card` looked for note["image_path"|"image"|"cover"], none of
-which the shipped pool carries -- so image_path was always None, prompt.py's TV branch
-always fell through to its image_missing path, and arm TV was byte-identical to arm T.
-The project's headline modality experiment measured nothing, silently, for months.
-
-These tests pin the four properties that make the arm real: the pool's actual keys are
+These tests cover four properties: the pool's image keys are
 parsed, the attached bytes are verified against the digest the pool ships, only TV
 attaches, and a run with no images_root still produces exactly the text-only bytes.
 

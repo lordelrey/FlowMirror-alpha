@@ -1,16 +1,8 @@
-"""Owner decisions 15 and 17, taken 2026-09-07 after the adversarial review.
+"""Tests for DCA fees and the feed's external-attention weight.
 
-15. A plan (DCA) instalment pays `fees.subscribe_rate` like any other subscription. It
-    was the only purchase channel exempt from decision 8, so every `kind="dca"` row
-    carried fee 0.0 while the RUNBOOK said `act.fee` is non-zero -- and decision 7 had
-    just made the channel reachable for the roughly half of a cohort that opens with no
-    holdings, so the exempt path was about to carry real volume.
-
-17. `rank_feed` gains a `w_att` weight so the per-fund attention stock has a reader.
-    Nothing read `inv.attention` before, which meant `dynamics.beta_guba` and
-    `dynamics.lambda_attention` changed a series no agent could see -- decision 3's
-    claim that the guba channel is "wired, only the coefficient is zero" was not true of
-    the ranker. The default 0.0 keeps every existing run byte-identical.
+A DCA instalment pays the configured subscription fee like any other purchase.
+The feed weight `w_att` makes per-fund attention observable by the ranker while
+its default value of 0.0 leaves attention disabled.
 """
 from __future__ import annotations
 
@@ -24,12 +16,11 @@ from flowmirror.engine import loop as L
 from tests.conftest import build_demo_cfg
 
 
-# ------------------------------------------------ decision 15: the plan pays its fee
+# ------------------------------------------------ the plan pays its fee
 
 # The plan block fires on `dt_cur.day == 1`, i.e. only when the calendar first of a
 # month is itself a trading day. In the demo window that is 2025-10-01 and 2025-12-01
-# (2025-11-01 is a Saturday, so November's instalment never executes at all -- reported
-# to the owner as a separate mechanism question). Reaching December therefore needs the
+# (2025-11-01 is a Saturday, so November's instalment never executes at all). Reaching December therefore needs the
 # whole window, not the 3-day default.
 DCA_DAYS = 60
 
@@ -103,7 +94,7 @@ def test_units_are_bought_with_the_ticket_net_of_the_fee(tmp_path):
         assert r["units"] < r["amt"] / r["nav"]
 
 
-# --------------------------------------------- decision 17: attention has a reader
+# --------------------------------------------- attention ranking channel
 
 _POSTS = [{"post_id": "pA", "org": "O", "code": "F_HOT", "intent_group": "I2"},
           {"post_id": "pB", "org": "O", "code": "F_COLD", "intent_group": "I2"}]
@@ -126,15 +117,14 @@ def _order(w_att, attention):
 
 
 def test_attention_is_inert_at_the_default_weight():
-    """w_att defaults to 0.0, so every run made before attention had a reader is
-    byte-identical -- which is exactly what makes this safe to land."""
+    """w_att defaults to 0.0, so attention is inert unless enabled."""
     hot = {"F_HOT": 50.0, "F_COLD": 0.0}
     assert _order(0.0, hot) == _order(0.0, {}), \
         "at weight 0 the attention stock must not move the ordering at all"
 
 
 def test_a_non_zero_weight_lets_attention_move_the_ranking():
-    """Decision 17: raising one config value now really enables the channel."""
+    """A nonzero weight enables the attention ranking channel."""
     hot = {"F_HOT": 50.0, "F_COLD": 0.0}
     assert _order(1.0, hot)[0] == "pA", (
         "with every other weight zeroed, the attended fund's post must rank first -- "

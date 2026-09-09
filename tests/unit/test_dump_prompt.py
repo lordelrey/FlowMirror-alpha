@@ -1,15 +1,7 @@
-"""Card R2D tests: --dump-prompt must be reachable AND stay a pure side artifact.
+"""Tests for the CLI-only --dump-prompt diagnostic artifact.
 
-Two parallel cards collided: one added --dump-prompt and parked its value in
-the run-config dict as `dump_prompt`; the other shipped run.schema.json with
-additionalProperties:false, so the schema re-validation inside
-run_simulation() killed every dump run before day 0
-("'dump_prompt' does not match any of the regexes: '^_'" at path /).  The fix
-is architectural: the spec travels in flowmirror.engine.loop.RuntimeOpts, a
-CLI-only runtime-options object threaded main() -> run_simulation(cfg, rt),
-and never enters the validated config.  These tests pin both halves of the
-contract: the feature works from every entry point (engine main, control CLI
-`run`), and the event log stays byte-identical with vs without the flag."""
+The option travels through RuntimeOpts rather than the validated run config.
+It must work from both CLI entry points without changing the event log."""
 from __future__ import annotations
 
 import json
@@ -21,13 +13,7 @@ from flowmirror.config.validate import ConfigError, validate
 from flowmirror.engine.loop import (RuntimeOpts, event_log_sha, run_simulation)
 from flowmirror.io.jsonl import iter_jsonl
 
-# Card CI1: the fixture base is runs/demo_two_arm.json, the one run config whose
-# every input is tracked in git, so these tests pass on a clean clone.  The old
-# base, runs/mock_10x3.json, pointed at data/funds/nav_cache.json -- the 4.4 MB
-# third-party NAV cache, git-ignored on purpose -- so the suite was green only
-# on machines that happened to hold that file.  Construction now lives in
-# tests/conftest.py (demo_cfg_factory / demo_run_path) so this suite and
-# test_invariant_wiring.py cannot drift to different bases again.
+# The fixture derives from the self-contained demo configuration.
 
 
 from tests.conftest import build_demo_cfg, find_demo_run

@@ -63,7 +63,7 @@ _DEMO_NEXT: dict[str, str] = {
 _DEMO_NAV = "data/funds/nav_demo_2025q4.json"
 _DEMO_NAV_CMD = (
     "python data_pipeline/cn/make_demo_nav.py "
-    "--pool data/creatives/cn/content_pool_v1_masked.jsonl "
+    "--pool data/creatives/cn/content_pool_demo.jsonl "
     f"--out {_DEMO_NAV}"
 )
 
@@ -176,7 +176,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         argv += ["--workers", str(args.workers)]
     if args.dump_prompt:
         # Runtime-only switch: forwarded verbatim; the engine carries it in its
-        # RuntimeOpts object (card R2D) -- it must never be merged into the
+        # RuntimeOpts is operational and must never be merged into the
         # validated run config, whose schema (additionalProperties: false)
         # rejects unknown keys on purpose.
         argv += ["--dump-prompt", args.dump_prompt]

@@ -1,16 +1,7 @@
-"""Card PROMPT1 tests: the agent's own declared beliefs must reach the next decision prompt.
+"""An agent's declared beliefs must reach its next decision prompt.
 
-Audit E10: the reflection call asked for up to three `beliefs`, parse_reflection
-validated and clamped them (3 items x 30 chars) and the day loop stored them on
-`inv.beliefs` -- and then nothing ever rendered them into a later prompt, so a
-declared cognitive dimension of the design had zero behavioural consequence.
-
-Decision 11 scopes the fix to the DECISION prompt only (feeding them back into the
-reflection input is a separate, unapproved enhancement), so these tests pin two
-halves: the beliefs really do land in the rendered decision messages, and every
-shape that means "this agent has nothing declared yet" -- key absent (the state of
-the tree until card L1 adds it to `_agent_view`), empty list, non-list -- leaves the
-prompt text byte-identical, which is what keeps the four acceptance hashes still.
+Beliefs are clamped by parse_reflection and fed into decision prompts only.
+Absent, empty, and invalid shapes render no belief block.
 """
 from __future__ import annotations
 
@@ -19,9 +10,7 @@ import pytest
 from flowmirror.agents.prompt import (build_decision_messages, parse_reflection,
                                       render_belief)
 
-# Card CI1 fixture rule: every runnable fixture derives from runs/demo_two_arm.json via
-# tests/conftest.py, never from runs/mock_10x3*.json (its nav_cache is gitignored, so a
-# clean clone would go red).
+# Runnable fixtures derive from the self-contained demo configuration.
 from tests.conftest import build_demo_cfg, find_demo_run
 
 needs_demo = pytest.mark.skipif(
@@ -81,7 +70,7 @@ def _decision_sha(view, cfg):
 
 @needs_demo
 def test_two_beliefs_reach_the_decision_messages(tmp_path):
-    """The whole point of decision 11: declared beliefs become decision-prompt text."""
+    """Declared beliefs become decision-prompt text."""
     cfg = build_demo_cfg(tmp_path)
     text = _decision_text(_view(beliefs=list(_BELIEFS)), cfg)
     for b in _BELIEFS:
@@ -90,13 +79,7 @@ def test_two_beliefs_reach_the_decision_messages(tmp_path):
 
 @needs_demo
 def test_absent_key_renders_byte_identically(tmp_path):
-    """The tree's state until card L1 lands: `_agent_view` has no `beliefs` key at all.
-
-    render_belief is the only block this card touches, so equality against the frozen
-    pre-change text is the whole byte-identity proof for the assembled prompt; the
-    decision-text half just confirms the block travels into it verbatim and drops no
-    stray lead-in.
-    """
+    """A view with no beliefs key preserves the base prompt text."""
     cfg = build_demo_cfg(tmp_path)
     view = _view()
     assert "beliefs" not in view
@@ -110,10 +93,7 @@ def test_absent_key_renders_byte_identically(tmp_path):
 def test_empty_list_renders_byte_identically(tmp_path):
     """`inv.beliefs` is [] for every agent that has not reflected yet (world.py:473).
 
-    Every "nothing declared yet" shape must hash to the same prompt_sha as the absent
-    key -- that identity is what keeps the four acceptance hashes still, since with
-    reflection_every_days=5 over a 5-day run the reflection fires only at the end of
-    the final day and no decision prompt in those runs ever sees a non-empty list.
+    Every "nothing declared yet" shape must hash to the same prompt_sha as the absent key.
     """
     cfg = build_demo_cfg(tmp_path)
     assert render_belief(_view(beliefs=[])) == _BASELINE_BELIEF_TEXT
@@ -142,7 +122,7 @@ def test_at_most_three_beliefs_render():
 
 
 def test_parse_reflection_clamps_are_untouched():
-    """Decision 11 changes rendering only: the 3 x 30-char clamps stay exactly as they were."""
+    """Rendering keeps the three-item, 30-character clamps."""
     parsed, viol = parse_reflection({"summary": "s", "beliefs": ["x" * 40, "b", "c", "d"],
                                      "market_view": 4, "risk_mood": 2})
     assert viol == []

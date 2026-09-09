@@ -1,4 +1,4 @@
-# CN scenario: Xiaohongshu fund-market sandbox, 2025Q4 wave (live values).
+# Public CN-language demo scenario using distributable inputs and synthetic market data.
 name: cn_xhs_2025q4
 country: CN
 platform:
@@ -11,48 +11,48 @@ population:
   reported_class_field: reported_C
   classes: [C2, C3, C4]
 
-# All four orgs share one masked pool file; the engine filters rows by org.
+# All four synthetic organisations share one demo pool; the engine filters rows by org.
 institutions:
-  - name: 广发基金
-    pool: data/creatives/cn/content_pool_v1_masked.jsonl
+  - name: 示例基金甲
+    pool: data/creatives/cn/content_pool_demo.jsonl
     mode: rule
     policy:
       intent_mix: measured
-      cadence: 2
+      cadence: 1
       timing: none
       tactics: []
       targeting: platform
-  - name: 鹏华基金
-    pool: data/creatives/cn/content_pool_v1_masked.jsonl
+  - name: 示例基金乙
+    pool: data/creatives/cn/content_pool_demo.jsonl
     mode: rule
     policy:
       intent_mix: measured
-      cadence: 2
+      cadence: 1
       timing: none
       tactics: []
       targeting: platform
-  - name: 国联基金
-    pool: data/creatives/cn/content_pool_v1_masked.jsonl
+  - name: 示例基金丙
+    pool: data/creatives/cn/content_pool_demo.jsonl
     mode: rule
     policy:
       intent_mix: measured
-      cadence: 2
+      cadence: 1
       timing: none
       tactics: []
       targeting: platform
-  - name: 汇添富基金
-    pool: data/creatives/cn/content_pool_v1_masked.jsonl
+  - name: 示例基金丁
+    pool: data/creatives/cn/content_pool_demo.jsonl
     mode: rule
     policy:
       intent_mix: measured
-      cadence: 2
+      cadence: 1
       timing: none
       tactics: []
       targeting: platform
 
 market:
-  nav_file: data/funds/nav_cache.json
-  fund_meta_file: data/funds/fund_meta_v1.json
+  nav_file: data/funds/nav_demo_2025q4.json
+  fund_meta_file: data/funds/fund_meta_demo.json
   calendar: cn_trading
   settlement_days: 1
   fees:
@@ -74,9 +74,9 @@ channels:
   direct: false
 
 attention:
-  source: guba
-  file: data/attention/guba_signal_v1.json
+  source: guba  # channel shape only; bundled values are synthetic
+  file: data/attention/attention_demo.json
 
 holdout:
-  flows_file: data/flows/flow_panel_v2.json
-  lead_placebo_quarter: "2025Q3"
+  flows_file: data/flows/flow_holdout_demo.json
+  lead_placebo_quarter: "demo"

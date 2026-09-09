@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Card W3: a zero-holdings plan investor now has a fund to buy.
+"""A zero-holdings plan investor has a valid fund target.
 
-Audit E7 / decision 7 of docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07 §5.  The
-loop's plan block tops up `min(inv.hold)`, which has no argument on an empty
+The loop's plan block tops up `min(inv.hold)`, which has no argument on an empty
 holdings map, so an investor flagged `dca` who happened to draw zero holdings at
 initialisation could never place a single instalment -- at the smallest
 `n_funds` bin (`N_FUNDS_K["under_5"] == 1`) roughly half of the flagged planners.
 `init_investors` now names one buyable fund per such investor in the new
-`Inv.dca_target` slot; card L5 owns the loop side that spends it.
+`Inv.dca_target` slot; the loop then spends against that target.
 
 Three properties are pinned here:
 

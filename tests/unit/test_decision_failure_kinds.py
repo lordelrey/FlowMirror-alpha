@@ -1,4 +1,4 @@
-"""Card L3: a transport failure is no longer blamed on the model.
+"""Transport and model-output failures remain distinct diagnostics.
 
 `decision_failure_halt` exists to catch a MODEL that cannot produce parseable output.
 The engine used to count an HTTP error, a dead socket and malformed JSON into one
@@ -6,9 +6,7 @@ bucket, so a revoked key or a rate limit presented as model instability -- in on
 smoke run three rate-limited calls looked like an unstable model while the parse rate
 was 77 of 77.
 
-Decision 9 is explicit that only the DIAGNOSIS splits: the 0.02 threshold and the halt
-condition are untouched. These tests pin both halves - that the split is real, and that
-the gate did not move.
+The 0.02 threshold still applies to the combined failure rate.
 """
 from __future__ import annotations
 
@@ -88,7 +86,7 @@ def test_a_raising_provider_counts_as_transport(tmp_path, monkeypatch):
     total, transport, model = _counters(meta)
     assert total > 0, "an unreachable provider must produce failures"
     assert transport == total and model == 0, (
-        "a network failure counted as a model failure is the defect this card fixes")
+        "a network failure must not count as a model failure")
     assert transport + model == total
 
 
@@ -103,7 +101,7 @@ def test_successful_decisions_carry_a_null_failure_kind(tmp_path):
 
 
 def test_the_halt_threshold_and_condition_are_unchanged(tmp_path):
-    """Decision 9: this card splits the diagnosis and moves no gate.
+    """Failure categories split diagnosis without changing the halt policy.
 
     The rule is that the run halts once the OVERALL failure rate passes the threshold,
     regardless of kind -- so an all-transport run must still halt at the same rate a
@@ -112,16 +110,16 @@ def test_the_halt_threshold_and_condition_are_unchanged(tmp_path):
     import inspect
     src = inspect.getsource(L.run_simulation)
     assert 'cfg["llm"].get("decision_failure_halt", True)' in src
-    assert "0.02" in src, "the pre-registered default threshold must still be 0.02"
+    assert "0.02" in src, "the configured default threshold must still be 0.02"
     # the halt still tests the aggregate, never one kind
     assert 'S["decision_failures"] / S["decisions"] > thr' in src
     for kind in ("decision_failures_transport", "decision_failures_model"):
         assert f'S["{kind}"] / S["decisions"]' not in src, (
-            "a per-kind threshold would be a pre-registration change, not a diagnosis")
+            "a per-kind threshold would change the configured halt policy")
 
 
 def test_climate_margin_is_threaded_from_the_config(tmp_path):
-    """Decision 1: the run records the threshold it actually used.
+    """The run consumes the configured climate threshold.
 
     A margin of 1.0 can never be exceeded, so no post can reach a majority label; the
     default 1/6 can. If the value were still hardcoded the two runs would agree.

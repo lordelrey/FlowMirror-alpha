@@ -1,4 +1,4 @@
-"""Unit tests for social-graph visibility (card E7).
+"""Unit tests for social-graph visibility.
 
 Covers two coupled fixes:
 1. render_social no longer drops the whole yesterday-comments block when the

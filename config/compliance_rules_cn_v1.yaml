@@ -1,9 +1,9 @@
 # FlowMirror -- marketing-content compliance rules for Chinese public fund marketing, v1.
-# Frozen for PREREG D28: the labeler hashes this file (rules_sha256) into every label row.
+# Keep rule versions stable within a labelling batch; the labeler records rules_sha256 in each row.
 # lexicon_role: "hit"       -> a lexicon match alone is a hit (LLM may add evidence);
 #               "candidate" -> a lexicon match only nominates the note; the LLM decides.
 #               "none"      -> rule-only (R05) or LLM-only (R07).
-# Article numbers follow the public texts; the owner re-checks them during the 30-note spot check.
+# Article numbers follow the cited public regulatory texts and should be independently reviewed before use.
 version: 1
 rules:
   - id: R01

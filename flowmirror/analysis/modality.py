@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Analysis layer for the modality experiment and channel attribution
-(PREREG v1.5 draft A3; seed-level inference per PREREG v1.3 B11).
+"""Analysis layer for modality comparisons and channel attribution.
 
 Agent level (default): per run, each agent's arm comes from run_meta.arms
 (fallback: majority imp.arm per agent). Micro outcomes are read from dec fields
@@ -21,8 +20,8 @@ uses the effect-scale interval vs SESOI (h = 0.10, d = 0.20): lo > 0 ->
 supported, hi < SESOI -> bounded_null, else indeterminate. Inferential guard:
 with fewer than 2 finite per-run values (df = 0, e.g. a single run) the
 interval is withheld (lo/hi null; mean and per_run kept) and the verdict is
-"insufficient_runs" -- one seed is descriptive only and PREREG v1.3 B11 needs
-df >= 1 -- and each affected contrast/metric adds a warning
+"insufficient_runs" because one seed is descriptive only and df must be at
+least 1; each affected contrast or metric adds a warning
 "n_runs=<n>: descriptive only".
 
 Run level (--level run): each run's arm comes from cfg `modality_run_arm`, read
@@ -103,11 +102,9 @@ def _effect(metric, v1, v2):
 def _is_i2(pid, source=None):
     """LEGACY I2 heuristic: source == 'I2' or a post id carrying the I2 prefix.
 
-    Audit E2: the engine has never emitted either shape -- imp.source is a
-    ranking source in {follow, fit, trending, spill, random} and post ids are
-    numeric ({t:03d}{org_index}{slot}, e.g. "00031"). The authoritative I2 tag
-    is the `post` row's `ig` field, which _aggregate now reads. Kept, not
-    deleted, because run directories written by older/external producers exist
+    Current engine logs use numeric post ids and record the authoritative I2
+    tag in the `post` row's `ig` field. This heuristic remains for logs written
+    by older or external producers
     on disk with no `ig` on their post rows; _aggregate falls back to this only
     for those.
     """
@@ -223,7 +220,7 @@ def _aggregate(ev):
     dec_rows = ev.get("dec", [])
     modern = any(("n_like" in r) or ("n_save" in r) or ("n_read" in r) for r in dec_rows)
     imp_rows = ev.get("imp", [])
-    # Audit E2: I2 membership is a property of the POST, not of the impression.
+    # I2 membership is a property of the post, not of the impression.
     # The engine tags it on the `post` row's `ig` field (the intent GROUP in
     # {"I2","nonI2"}, world.intent_group; invariant (f) ties ig == "I2" to
     # intent == "I2"), while imp.source only says how the card was ranked
@@ -440,7 +437,7 @@ def _cross_agent(run_states):
     With fewer than 2 finite per-run values for a contrast/metric the
     t-interval is withheld: lo/hi are null, mean and per_run are kept, df = 0
     (verdict "insufficient_runs") and a "n_runs=<n>: descriptive only"
-    warning is recorded (PREREG v1.3 B11 needs df >= 1).
+    warning is recorded because an interval needs df >= 1.
     """
     all_arms = set()
     for rs in run_states:
@@ -490,7 +487,7 @@ def _cross_runlevel(run_states):
     warnings instead of being silently dropped. With fewer than 2 seed pairs
     the interval is withheld: lo/hi null, mean and per_run kept, df = 0
     (verdict "insufficient_runs") and a "n_runs=<n>: descriptive only"
-    warning is recorded (PREREG v1.3 B11 needs df >= 1).
+    warning is recorded because an interval needs df >= 1.
     """
     armed = [rs for rs in run_states if rs.get("arm")]
     warnings = ["run-level: run %s has no detectable arm (cfg modality_run_arm); excluded"
@@ -610,7 +607,7 @@ def analyze(run_dirs, level="agent"):
 
 
 def _print_report(res):
-    print("== flowmirror modality analysis (PREREG v1.5 draft A3) ==")
+    print("== flowmirror modality analysis ==")
     print("level=%s runs=%d bootstrap=%d reps seed=%d sesoi h=%.2f d=%.2f"
           % (res["level"], len(res["runs"]), BOOT_REPS, BOOT_SEED,
              SESOI["h"], SESOI["d"]))
@@ -659,8 +656,7 @@ def _synthetic_run(run_dir, seed, like_tv=None, run_arm=None, legacy=False,
                    with_meta_arms=True):
     """Write a tiny synthetic run for self-tests.
 
-    Audit E2: the fixture must exercise the REAL I2 path, so its rows carry what
-    world.publish_day / loop.py actually write -- `post` rows with NUMERIC ids
+    The fixture exercises the engine-shaped I2 path: `post` rows with numeric ids
     shaped {t:03d}{org_index}{slot} and the intent GROUP on `ig` ("I2"/"nonI2",
     half and half as in the demo runs' 20/20 split), impressions with an integer
     `slot` and a ranking `source` from the engine's real domain, and clicks
@@ -845,8 +841,7 @@ def _self_test():
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="python -m flowmirror.analysis.modality",
-        description="Modality experiment + channel attribution analysis "
-                    "(PREREG v1.5 draft A3; seed-level t per PREREG v1.3 B11).")
+        description="Modality comparison and channel-attribution analysis with seed-level inference.")
     ap.add_argument("run_dirs", nargs="*", metavar="run_dir",
                     help="one run directory per seed (each with event_log.jsonl)")
     ap.add_argument("--level", choices=("agent", "run"), default="agent",

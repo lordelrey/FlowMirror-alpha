@@ -29,8 +29,7 @@ either value of the flag (pinned by the exhaustive table test).
 observed outcome and its counterfactual coincide.  ``NoGate``
 deliberately breaks the alias (``checkout`` -> "match", while
 ``counterfactual`` -> what ``CNCXR`` would have decided); that is how
-``co.oc_cf`` is produced when suitability=false (PREREG v1.3 section B9
-/ engine spec).
+``co.oc_cf`` is produced when suitability=false.
 
 Redemptions are never gated by any Regulator: regulating the sell side
 is the caller's responsibility and is documented per implementation.

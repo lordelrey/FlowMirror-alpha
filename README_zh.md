@@ -1,74 +1,89 @@
 # FlowMirror（流动镜像）
 
-**一个开放、配置驱动的"基金市场 × 社交流"仿真沙盒。** 数千名由在线视觉大模型驱动的
-投资者智能体，在同一社交平台上浏览真实投放过的基金营销素材（图文），发帖、评论，并按
-真实基金净值完成申购 / 持有 / 赎回决策。我们把"证监会式适当性核验"做成可随机化的实验
-开关，并用真实基金份额流水量作为外部校准基准。FlowMirror 是研究"销售与分发如何塑造
-零售资金流"的科研工具，不是对任何真实市场的预测；当前预览版不包含任何结果。
+FlowMirror 是一个在本地运行、由配置驱动的“基金市场 × 社交平台”模拟沙盒。它由 Python 仿真引擎、可选的 LLM 投资者智能体、基金适当性规则、事件日志、分析模块和浏览器回放界面组成。
 
-## 状态
+这个仓库提供的是源代码，不是线上交易服务。用户需要把项目克隆到本地，运行离线示例，或者配置自己的模型凭据和输入数据，再通过本地网页查看模拟过程。FlowMirror 不会连接券商下单，不用于预测真实价格，也不构成投资建议。
 
-脚手架阶段（M0）：Schema、配置、场景与 CLI 已就绪；引擎将在 P3 里程碑接入
-（`bash script/run.sh ...` 目前只做输入校验并提示 `engine not wired yet (P3)`）。
+## 仓库包含什么
 
-## 目录结构
-
-```
-config/          api_example.yaml、engine_defaults.yaml、schemas/
-scenarios/       cn_xhs_2025q4（当前）、us_2025（路线图骨架）
-data/            L1 派生表 + DATA.md + MANIFEST.sha256
-data_pipeline/   cn/、us/ —— L0 -> L1/L2 加工脚本（P2）
-flowmirror/      Python 包：config、io 已可用，其余子包为规划占位
-script/          run.sh、fetch_data.sh
-tests/           单元测试（schemas、io）与 fixtures
-docs/            PERSONA.md、SCENARIOS.md、RUNBOOK.md
-runs/            仿真输出（git 忽略）
-legacy/          冻结的 v7 之前产物，仅供参考
-```
+- `flowmirror/` 下的 Python CLI 与仿真引擎。
+- 无需 API Key、不会联网的确定性 mock 策略和规则策略。
+- 通过本地配置启用的文本或视觉大模型调用。
+- 信息流、记忆、适当性核验、基金账户和机构策略模块。
+- JSON Schema、公开示例配置、自动测试和本地回放界面。
+- 一套完全合成的小型演示数据；运行产物与凭据不进入版本控制。
 
 ## 安装
 
-Python 3.10+：
+需要 Python 3.10 或更高版本。
 
 ```bash
-pip install -e .            # 运行依赖（jsonschema、PyYAML）
-pip install -e ".[dev]"     # 加 pytest
-pip install -e ".[images]"  # 可选图像处理（Pillow）
+git clone https://github.com/lordelrey/FlowMirror-alpha.git
+cd FlowMirror-alpha
+python -m venv .venv
+python -m pip install -e ".[dev]"
 ```
 
-## 快速开始
+## 运行离线示例
+
+以下命令使用确定性 mock 模型与合成净值，不需要 API Key，也不会产生网络调用：
 
 ```bash
-cp config/api_example.yaml config/api.yaml   # 填入你自己的 Key；已被 git 忽略
-flowmirror tree
-flowmirror schemas
-flowmirror validate tests/fixtures/run_mock_10x3.json --schema run
-flowmirror validate scenarios/cn_xhs_2025q4/scenario.yaml   # 自动识别 schema
-bash script/run.sh scenarios/cn_xhs_2025q4 tests/fixtures/run_mock_10x3.json
+python -m flowmirror.cli demo two-arm
+python -m flowmirror.cli demo three-arm --replay-check
+python -m flowmirror.cli demo null
 ```
 
-自带的 fixture 使用 `mock_llm: true`，可完全离线运行；校验与测试都不需要 API Key。
+输出写入 `runs/out/`，该目录默认不会被 Git 提交。
 
-## 数据政策（摘要）
+## 打开本地应用
 
-- **L0** 原始抓取（帖子、截图、爬虫输出）永不进入仓库或发布包。
-- **L1** 小型派生表随仓库存放于 `data/`。
-- **L2** 较大产物托管在 Hugging Face / Zenodo，校验和记录于 `data/MANIFEST.sha256`。
-- 素材**图片永不再分发**，仅保留元数据与派生文本。
+```bash
+python web/server.py --port 8765
+```
 
-完整清单见 [data/DATA.md](data/DATA.md)。
+然后访问 `http://127.0.0.1:8765/web/`。服务只监听本机地址，可以查看仓库自带的示例、回放已经完成的本地运行，并启动受支持的本地配置。
 
-## 场景
+## 接入大模型
 
-| 场景 | 状态 | 平台 | 监管 |
-|---|---|---|---|
-| `cn_xhs_2025q4` | 当前 | 小红书（中文），4 家基金公司 | `cn_cxr` 适当性核验 |
-| `us_2025` | 路线图 | 网页广告（英文） | `us_regbi`（Reg BI） |
+把 `config/api_example.yaml` 复制为已被 Git 忽略的 `config/api.yaml`，只在本地填入凭据，并准备一个符合 `config/schemas/run.schema.json` 的运行配置：
 
-## 引用
+```bash
+python -m flowmirror.cli validate path/to/run.json --schema run
+python -m flowmirror.cli run path/to/run.json
+```
 
-TODO：首个正式发布时补充 DOI 与引用信息（见 `CITATION.cff`）。
+不要提交 `config/api.yaml`、模型响应缓存、事件日志或原始数据。
 
-## 许可
+## 主要产物
 
-MIT，见 [LICENSE](LICENSE)。Copyright (c) 2026 FlowMirror authors。
+每次运行会生成 append-only 的 `event_log.jsonl`、响应缓存、运行元数据和不变量检查结果。事件覆盖发帖、曝光、决策、点击、适当性核验、交易、评论、社会气候、状态转移和反思。完成的运行可以导出给浏览器界面：
+
+```bash
+python -m flowmirror.cli export-bundle runs/out/<tag>
+```
+
+## 目录结构
+
+```text
+flowmirror/      仿真引擎、智能体、通道、监管和分析模块
+config/          默认配置、API 模板和 JSON Schema
+runs/            离线示例配置；生成结果默认忽略
+data/            仅包含可分发的演示输入
+scenarios/       示例场景
+web/             本地服务和回放界面
+tests/           自动测试
+docs/            面向公开用户的架构与使用说明
+```
+
+详细说明见 [系统架构](docs/ARCHITECTURE.md) 和 [运行手册](docs/RUNBOOK.md)。
+
+## 数据与安全边界
+
+仓库内的净值、帖子、注意力信号、机构名称和产品代码全部为合成演示数据，具体见 [data/DATA.md](data/DATA.md)。
+
+FlowMirror 是实验软件。模拟交易和模型生成内容不能被解释为对真实投资者的观察，也不能作为投资建议。
+
+## 许可证
+
+代码采用 [MIT License](LICENSE)。数据文件如有更窄的使用范围，以 [data/DATA.md](data/DATA.md) 为准。

@@ -1,20 +1,18 @@
-"""Unit tests for the three-arm modality (T / TC / TV) contract -- cards A1/R2E.
+"""Unit tests for the three-arm modality contract (T / TC / TV).
 
 Scope: flowmirror.channels.feed (arm_for_agent / assign_arms /
 assign_agent_arms / check_arm_balance) and flowmirror.agents.prompt (TC card
-rendering and the n_comments_prev social header).  Engine-side wiring
-(loop.py / world.py / schemas / defaults) belongs to card A2 and is
-deliberately NOT tested here.
+rendering and the n_comments_prev social header). Engine-side wiring is
+covered by separate tests.
 
-Arm contract as of the stratified-block card (PREREG v1.5 A; tolerances per
-the corrected v1.3 B10): the PRE-REGISTERED agent-level assignment is
+Arm contract: the reference agent-level assignment is
 assign_agent_arms(), a cohort-level stratified block randomisation over the
 population cells -- every cell receives floor(n_cell/k) or ceil(n_cell/k)
 agents per arm, no cell of size >= 2 is single-armed, the overall share
 stays within one agent of 1/k, and check_arm_balance must therefore pass
 for EVERY tag (zero failures, not "all but 2 of 20").  arm_for_agent() is
 the deliberately UNBALANCED per-agent coin used by the exposure path and by
-callers without a cohort; it is NOT the pre-registered assignment, and only
+callers without a cohort; it is NOT the cohort-balanced assignment, and only
 determinism, arm-set membership and large-n statistical shares are asserted
 for it.  check_arm_balance() now reports n_agents, the per-arm
 <arm>_share keys and the block-randomisation worst cases
@@ -56,8 +54,8 @@ def _legacy_arm(run_tag, agent_id):
 
 class ArmForAgentTests(unittest.TestCase):
     """arm_for_agent() is the deliberately UNBALANCED per-agent coin on the
-    frozen sha256(run_tag|arm|agent_id) stream.  It is NOT the pre-registered
-    assignment (an independent coin violated the pre-registration on ~35% of
+    frozen sha256(run_tag|arm|agent_id) stream. It is NOT the cohort-balanced
+    assignment (an independent coin violated the balance target on ~35% of
     run tags and gave whole cells a single arm); it survives for the exposure
     path and for callers without a cohort.  So these tests assert only what
     is true of a coin: determinism, membership in the arm set, and shares
@@ -95,10 +93,10 @@ class ArmForAgentTests(unittest.TestCase):
     def test_three_arm_shares_over_3000_agents(self):
         # Statistical law-of-large-numbers check ONLY for the unbalanced
         # per-agent draw (the exposure path): arm_for_agent is NOT the
-        # pre-registered assignment, so no balance invariant is asserted
+        # cohort-balanced assignment, so no balance invariant is asserted
         # here.  With 3,000 iid draws per tag the per-tag share bound 0.045
         # is a ~5.2-sigma envelope; the 20-tag pooled bound 0.012 is ~6.9
-        # sigma.  The pre-registered zero-failure contract lives in
+        # sigma. The deterministic balance assertions live in
         # AssignAgentArmsTests below.
         n_tags = 20
         pooled = dict.fromkeys(THREE, 0)
@@ -192,7 +190,7 @@ class AssignArmsTests(unittest.TestCase):
 
 
 class AssignAgentArmsTests(unittest.TestCase):
-    """The PRE-REGISTERED assignment (PREREG v1.5 A): assign_agent_arms()
+    """The reference assignment: assign_agent_arms()
     deals arms stratified by population cell (pure sha256 ordering, cells and
     ids in sorted order).  Contract asserted here, per tag with ZERO
     failures allowed: every cell is floor/ceil balanced, no cell of size

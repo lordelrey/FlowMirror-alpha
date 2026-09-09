@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """flowmirror.engine.world -- FlowMirror v7 world layer (everything but the day loop).
 
-Owns: run-config validation (incl. the A2 modality arms and fee keys), data loaders (World),
+Owns: run-config validation, data loaders (World),
 the Fund/Inv state classes, the institution posting policy, guba climate seeding, the event
 logger, the invariant checks and the report writers. flowmirror.engine.loop imports this module
 and owns only the trading-day loop, the apply step and the CLI.
@@ -19,21 +19,20 @@ those, so "did pixels reach the TV arm" is answered by the NUMBER run_meta.image
 "was the environment one-sided" by the opening-loss and bearish-climate counts, never by a
 failed run. event_log_sha256 is kept and the event log itself is untouched.
 
-INV-FIX: check results are consumed for real now, so every check compares like with like.
-(a) derives the expected guba week key from each audited day's date via datetime's
+Lag checks derive the expected guba week key from each audited day's date via datetime's
 isocalendar (the same ISO-week arithmetic the day loop's wk_prev rule uses) instead of
 comparing a week key against a date, and (b) seeds holdings from the agents' opening
 positions and clears a fund only when a redemption takes it to zero units. A check whose
 input rows are absent reports skipped+reason, never a silent vacuous pass.
 
 Arms: agent-level modality arms come from feed.assign_agent_arms() (stratified block
-randomisation within each population cell, PREREG v1.3 B10); feed.arm_for_agent() remains the
+randomisation within each population cell); feed.arm_for_agent() remains the
 unbalanced per-agent coin, kept only as the no-cohort fallback (exposure path, tests).
 
 NAV loading: top-level nav_cache keys that are not 6-digit fund codes (e.g. the demo file's
 `_meta` honesty block) are skipped and counted in the loader's summary line; a nav_cache with
 `_meta.synthetic == true` prints one warning line at run start and records
-`"synthetic_nav": true` in run_meta.json so demo runs are distinguishable from research runs.
+`"synthetic_nav": true` in run_meta.json so demo runs are clearly identified.
 
 Determinism: random.Random(rng_seed_from(run_tag, *parts)) streams only; hashlib
 sha256 via flowmirror.io.hashing; never built-in hash(); sets are never iterated
@@ -149,18 +148,13 @@ def _engine_defaults() -> dict:
 
 
 DEFAULT_CONFIG = _engine_defaults()   # nothing else merged; no config files are written here
-# A2: pick the modality/fee defaults up from engine_defaults.yaml when the yaml carries them,
-# and hard-code the same fallbacks so the engine also runs before the yaml lands.
+# Load modality and fee defaults from engine_defaults.yaml with local fallbacks.
 if DEFAULT_CONFIG.get("modality_level") not in _MOD_LEVELS:
     DEFAULT_CONFIG["modality_level"] = "agent"
 _ma = DEFAULT_CONFIG.get("modality_arms")
 if not isinstance(_ma, list) or not _ma or any(a not in _MOD_ARMS for a in _ma):
     DEFAULT_CONFIG["modality_arms"] = list(_FALLBACK_ARMS)
-# Decision 19: no unconditional modality_run_arm default. Forcing "TV" here put it in
-# every merged config, and validate_config then required it to appear in modality_arms
-# regardless of level -- so a reference cell running only T/TC was rejected outright,
-# with an error pointing at the user's modality_arms rather than at this default. It is
-# defaulted at run level only, where it is the only thing that means anything.
+# modality_run_arm is meaningful only for run-level assignment and is defaulted there.
 if (DEFAULT_CONFIG.get("modality_run_arm") is not None
         and DEFAULT_CONFIG.get("modality_run_arm") not in _MOD_ARMS):
     DEFAULT_CONFIG.pop("modality_run_arm", None)
@@ -179,7 +173,7 @@ def _mod_level_of(cfg: dict) -> str:
 
 
 def _modality_compat(cfg: dict) -> str:
-    """Backward compat (A2): a config that lacks modality_level but carries the legacy arm_level
+    """A config that lacks modality_level but carries the legacy arm_level
     alias is upgraded in place (modality_level = arm_level). Returns the effective level."""
     if "modality_level" not in cfg and "arm_level" in cfg:
         cfg["modality_level"] = cfg["arm_level"]
@@ -201,7 +195,7 @@ def _validate_modality(cfg: dict) -> None:
         die(f"config: modality_arms entries must be T|TC|TV (got {arms})")
     if len(set(arms)) != len(arms):
         die(f"config: modality_arms must not repeat an arm (got {arms})")
-    # Decision 19: modality_run_arm only means something at run level, so only there is
+    # modality_run_arm only means something at run level, so only there is
     # it defaulted and only there must it be one of modality_arms. At agent or exposure
     # level a stray value is still checked for spelling (a typo should not sit unnoticed
     # in run_meta) but never gates the run.
@@ -266,7 +260,7 @@ def validate_config(cfg: dict) -> None:
         die("config: strategy_mix must be measured|push_heavy|edu_heavy")
     if cfg.get("ranking") not in ("three_source", "random"):
         die("config: ranking must be three_source|random")
-    _validate_modality(cfg)                        # A2: level/arms/run_arm/fees (arm_level alias)
+    _validate_modality(cfg)
     if cfg["strategy_mix"] != "measured":
         if not (cfg.get("strategy_groups") or {}).get(cfg["strategy_mix"]):
             die("config: strategy_groups needs a non-empty list for this strategy_mix")
@@ -337,8 +331,7 @@ def load_world(cfg: dict) -> World:
     nav_cache = load_json(paths["nav_cache"])
     if not isinstance(nav_cache, dict):
         die(f"nav_cache must be a JSON object of fund code -> {{date: nav}}: {paths['nav_cache']}")
-    # DEFECT 3: only 6-digit fund codes are series; `_meta` & friends are skipped (counted,
-    # never parsed). `_meta.synthetic == true` marks the shipped demo file -> warn + run_meta.
+    # Only six-digit fund-code keys are NAV series; metadata keys are skipped.
     nav_skipped = sorted(k for k in nav_cache if not _is_fund_code(k))
     nav_series = {c: nav_cache[c] for c in sorted(nav_cache) if _is_fund_code(c)}
     if not nav_series:
@@ -398,12 +391,8 @@ def load_world(cfg: dict) -> World:
     print(f"[world] loaded {len(funds)} funds ({len(base_codes)} base, {len(deferred)} deferred), "
           f"{len(nav_days)} trading days, {len(agents)} agents, {len(orgs)} orgs, "
           f"{len(pool_rows)} pool notes{skip_txt}")
-    # Decision 4, track one: on the real signal file guba_seed_label returns None for every
-    # fund-week and the cold-start climate seed quietly falls back to agent comments.  That was
-    # invisible, so a reader assumed the guba sentiment seed was working.  Count the ONLY key
-    # the seed can fire from (see guba_seed_label) and state the answer at load time.  This is
-    # a report, never a gate: zero is the expected state until the stance-labelling data task
-    # lands, so it must not fail the run.
+    # Report whether weekly stance data are present. Zero is valid: cold-start
+    # climate then falls back to agent comments.
     guba_rows = [row for weeks in w.guba.values() if isinstance(weeks, dict)
                  for row in weeks.values() if isinstance(row, dict)]
     guba_stance = sum(1 for row in guba_rows if _stance_field(row.get("bull_ratio")) is not None)
@@ -419,7 +408,7 @@ def load_world(cfg: dict) -> World:
 
 # --- §3 investors -----------------------------------------------------------------------------
 class Inv:
-    # pnl0 / pnl0_misses (card W5+W6) are written once by init_investors and never touched
+    # pnl0 / pnl0_misses are written once by init_investors and never touched
     # again. pnl0 is the OPENING return of every held fund -- the only record of the environment
     # an investor woke up in: inv.cost is a CLOSING basis (a later subscription blends it), so it
     # can no more answer "did this investor open at a loss" than it can seed invariant (b).
@@ -450,21 +439,16 @@ def rng_for(run_tag: str, *parts) -> random.Random:
     return random.Random(rng_seed_from(run_tag, *parts))
 
 
-# Decision 13 defaults. They are repeated here rather than read from DEFAULT_CONFIG because
+# These defaults are repeated here rather than read from DEFAULT_CONFIG because
 # init_investors is also called with hand-built configs (the self-test's, the unit suite's)
-# that never went through the defaults merge; every value equals the literal it replaces, so a
-# config carrying no initial_pnl block behaves exactly as the pre-card tree did.
-# Decision 18: share_at_loss has NO default. Its old 0.05 was exactly the one-sided
-# environment target mode exists to escape (~4.9% of openings at a loss on the real NAV
-# series), so a research config that asked for target mode and forgot the share silently
-# reproduced the pathology it was reaching for. Target mode now requires it explicitly;
-# lookback mode never reads it, so every demo is unaffected.
+# that never went through the defaults merge. Target mode requires share_at_loss
+# explicitly; lookback mode never reads it.
 _IPNL_DEFAULTS = {"mode": "lookback", "lookback_days_min": 60, "lookback_days_max": 250,
                   "tolerance": 0.02}
 
 
 def _initial_pnl_cfg(cfg: dict) -> dict:
-    """Effective `initial_pnl` block: the config's values over the decision-13 defaults."""
+    """Return the effective `initial_pnl` block."""
     raw = cfg.get("initial_pnl") if isinstance(cfg.get("initial_pnl"), dict) else {}
     out = dict(_IPNL_DEFAULTS)
     for k in _IPNL_DEFAULTS:
@@ -476,14 +460,13 @@ def _initial_pnl_cfg(cfg: dict) -> dict:
     out["lookback_days_min"] = int(out["lookback_days_min"])
     out["lookback_days_max"] = int(out["lookback_days_max"])
     out["tolerance"] = float(out["tolerance"])
-    # Decision 18: the manipulation must be stated, not inherited.
+    # Target-mode loss share must be stated, not inherited.
     sal = raw.get("share_at_loss")
     if out["mode"] == "target":
         if sal is None or isinstance(sal, bool):
             die("config: initial_pnl.mode is 'target' but share_at_loss is not set. "
                 "Target mode exists to CONTROL the share of openings that start at a "
-                "loss, so it has no default: inheriting one would silently reproduce the "
-                "~4.9% one-sided environment the mode was added to escape. State the "
+                "loss, so it has no default. State the "
                 "share the experiment intends, e.g. initial_pnl.share_at_loss: 0.5")
         out["share_at_loss"] = float(sal)
         if not 0.0 <= out["share_at_loss"] <= 1.0:
@@ -503,13 +486,10 @@ def _initial_pnl_cfg(cfg: dict) -> dict:
 def _target_cost_index(navs, now_i: int, lo_i: int, hi_i: int, prng, share_at_loss: float,
                        tolerance: float):
     """Cost-basis index in [lo_i, hi_i] whose implied opening return is closest to a drawn
-    target (decision 13, `initial_pnl.mode == "target"`). Returns (index, missed).
+    target when `initial_pnl.mode == "target"`. Returns (index, missed).
 
-    Why a target at all: the lookback branch randomises the LENGTH of the walk back, not the
-    gain or loss it lands on. On the real NAV series that left 4.9% of openings at a loss with a
-    median of +39% -- an environment so one-sided that no agent had a losing position to be
-    reluctant to sell, and the disposition effect the paper claims to reproduce had nothing to
-    reproduce it from. `share_at_loss` names the share of openings that must sit under water.
+    The lookback branch randomises how far back to choose the basis, while target
+    mode controls the requested share of openings below the current NAV.
 
     The target is drawn INSIDE the span of returns this window can actually deliver on the
     wanted side of zero, so the requested share is honoured exactly whenever the window holds a
@@ -549,11 +529,11 @@ def init_investors(world: World, cfg: dict) -> list:
     lvl = _mod_level_of(cfg)
     run_arm = cfg.get("modality_run_arm") or "TV"
     force = cfg.get("force_arm")
-    ipnl = _initial_pnl_cfg(cfg)                  # decision 13: how the opening cost basis is drawn
+    ipnl = _initial_pnl_cfg(cfg)
     cohort = world.agents[:n]
-    # DEFECT 2 (world half): agent-level arms use stratified block randomisation within each
+    # Agent-level arms use stratified block randomisation within each
     # population cell via feed.assign_agent_arms(run_tag, [(agent_id, cell), ...], arms), so
-    # every cell is as balanced as its size allows (PREREG v1.3 B10). feed.arm_for_agent() is
+    # every cell is as balanced as its size allows. feed.arm_for_agent() is
     # the UNBALANCED per-agent coin and stays only as the no-cohort fallback used when the map
     # is unexpectedly missing an id; run-level and exposure-level behaviour is unchanged.
     arm_map = ({} if (force or lvl != "agent") else
@@ -582,12 +562,12 @@ def init_investors(world: World, cfg: dict) -> list:
         nh = inv.rng.randint(0, kk)               # sample 0..k held funds (spec §3)
         if nh:
             alloc = cash * inv.rng.uniform(0.3, 0.8)
-            # Decision 13: target mode draws from the DERIVED stream rng_for(run_tag,
+            # Target mode draws from the derived stream rng_for(run_tag,
             # "initial_pnl", inv.id), never from inv.rng -- the same discipline dca_target
             # follows below, and for a sharper reason here. inv.rng is what picks how many funds
             # an investor holds, which ones, and (seeded onward) every per-day draw; spending it
             # on the cost basis would make the two modes differ in the whole population, not just
-            # in its P&L, and E11 would stop being one manipulation. Left on the derived stream,
+            # in its P&L. Left on the derived stream,
             # switching mode moves the cost bases and nothing else.
             tprng = rng_for(run_tag, "initial_pnl", inv.id) if ipnl["mode"] == "target" else None
         # Both modes consume inv.rng IDENTICALLY. The lookback offset is drawn (and in
@@ -599,15 +579,13 @@ def init_investors(world: World, cfg: dict) -> list:
                 f = world.funds[code]
                 i0 = bisect_right(f.dates, world.start - timedelta(days=1)) - 1
                 # Drawn in BOTH modes. The lookback bounds are config keys whose defaults
-                # ARE 60 and 250, so this randint call, its arguments and its position in
-                # the stream are exactly the pre-card ones (decision 13 keeps every demo
-                # config on the lookback branch, so their hashes cannot move). Target mode
+                # are 60 and 250, so this randint call and its stream position remain stable.
+                # Target mode
                 # discards the value: consuming one fewer draw per held fund would shift
                 # every later inv.rng draw -- the daily p_active coin, rank_feed's
-                # tie-break, exposure-level arm draws -- and E11 would then confound the
-                # opening-P&L manipulation with who was active and how feeds were ordered.
+                # tie-break and exposure-level arm draws.
                 off = inv.rng.randint(ipnl["lookback_days_min"], ipnl["lookback_days_max"])
-                if tprng is None:                 # lookback: the pre-card behaviour, verbatim
+                if tprng is None:                 # lookback mode
                     ci = max(i0 - off, 0)         # clamped
                 else:
                     ci, missed = _target_cost_index(f.navs, max(i0, 0),
@@ -647,11 +625,11 @@ def init_investors(world: World, cfg: dict) -> list:
         ev_days = (date.fromisoformat(ev) - world.start).days if isinstance(ev, str) else int(ev)
         inv.entry = max(int(round(ev_days * spread / 365.0)), 0)
         inv.dca = (tr.get("dca") == "positive")
-        # Decision 7 (world half): a plan investor whose holdings map starts empty had nothing
+        # A plan investor whose holdings map starts empty needs an explicit
         # for the loop's plan block to top up -- it tops up min(inv.hold), which has no argument
         # on an empty map -- so at the smallest n_funds bin roughly half the flagged planners
         # could never place a single instalment and the plan channel measured nothing for them.
-        # The loop half (card L5) reads this slot; naming the fund here, once, keeps the target
+        # target fund. Naming it here once keeps the target
         # fixed for the whole run instead of drifting with whatever the investor happens to hold.
         #
         # The draw hangs off a DERIVED stream, rng_for(run_tag, "dca", inv.id), rather than
@@ -675,7 +653,7 @@ def init_investors(world: World, cfg: dict) -> list:
             if buyable:
                 inv.dca_target = rng_for(run_tag, "dca", inv.id).choice(buyable)
         inv.realized = 0.0
-        inv.fees = 0.0                            # A2: cumulative subscribe/redeem fees paid (CNY)
+        inv.fees = 0.0                            # cumulative subscribe/redeem fees paid (CNY)
         inv.w0 = cash + sum(u * cost[c] for c, u in hold.items()) + other   # == fin (identity check (d))
         inv.expo, inv.memory, inv.reflection, inv.beliefs = {}, [], {}, []
         inv.market_view = inv.risk_mood = 0
@@ -689,12 +667,8 @@ def init_investors(world: World, cfg: dict) -> list:
             inv.arm = "TV"
         inv.arm_tally = {a: 0 for a in arms}
         out.append(inv)
-    # Card W6, first half of the answer: state the opening valence at construction time, in one
-    # ASCII line, the same way the loader states the guba stance seed. The live smoke run that
-    # motivated this card returned mood 4 for all 77 decisions, no bearish comment and no
-    # negative affinity delta, and there was nothing on screen to say the environment had
-    # handed out almost no losses -- so the model got the blame. The numbers also travel to
-    # invariants_report.json (m_env_valence_warning); this is a report, never a gate.
+    # Report the opening P&L composition; the same values are included in the
+    # invariants report as diagnostics rather than a run gate.
     n_hold = sum(len(v.pnl0) for v in out)
     n_loss = sum(1 for v in out for r in v.pnl0.values() if r < 0.0)
     n_loss_inv = sum(1 for v in out if any(r < 0.0 for r in v.pnl0.values()))
@@ -719,7 +693,7 @@ def intent_group(intent: str) -> str:
 
 def _ig_of(note: dict):
     # Pool rows carry the three-way tag in `intent` (I1 brand / I2 product-push / I3 education) and a
-    # two-way `intent_group` (I2 / nonI2). The measured mix is over the three-way tag (PREREG v1.1 §B4).
+    # two-way `intent_group` (I2 / nonI2). The measured mix is over the three-way tag.
     it = note.get("intent")
     if it in _INTENTS:
         return it
@@ -775,7 +749,7 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 
 def _is_sha256_hex(s) -> bool:
     """A usable image digest: exactly 64 hex characters. An id whose parallel digest fails this
-    can never have pixels attached (contract 2.5 item 3 attaches only on an exact match), so
+    can never have pixels attached because attachment requires an exact match, so
     the pool summary counts it separately instead of implying the file would be used."""
     return isinstance(s, str) and len(s) == 64 and all(c in _HEX for c in s)
 
@@ -783,7 +757,7 @@ def _is_sha256_hex(s) -> bool:
 def _image_ref_list(value) -> list:
     """The pool's `image_ids` / `image_sha256` column as a list of strings.
 
-    Contract 2.5: the same column arrives in three shapes in the masked content pool -- a real
+    The same column may arrive in three shapes: a real
     JSON list, a JSON-encoded string ('["a_0.jpg"]'), and a Python repr with single quotes
     ("['a_0.jpg']") -- because the pool was assembled by more than one script. Parsing is
     therefore defensive by requirement, not by taste: a row this function cannot read costs
@@ -815,7 +789,7 @@ def image_pool_summary(pool, images_root) -> dict:
     machine-local absolute path and only the operator's own configuration should hold it) and
     no image byte is read -- existence is all a summary can honestly claim, and the sha256
     verification that decides whether pixels are actually attached happens per attachment in
-    the day loop (contract 2.5 item 3).
+    the day loop.
 
     `pool` accepts the World shape ({org: [note, ...]}, i.e. world.pool) and a flat sequence of
     note rows. Reference counts are over DISTINCT ids: several notes may reference the same
@@ -867,7 +841,7 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
         probs = {org: dict(intent_weights.get(org) or probs[org]) for org in world.orgs}
     ppd = int(cfg.get("posts_per_org_per_day", 1))
     run_tag = str(cfg.get("run_tag") or "")
-    # Seeded social proof (C, PREREG D27/D30): each post is randomised at publication on a
+    # Seeded social proof: each post is randomised at publication on a
     # DERIVED stream keyed by its id, so the platform stream and every agent stream are
     # untouched and an off run is byte-identical. focus_fund restricts the experiment to
     # one fund's posts (the only feasible "blockbuster" campaign with <=5 notes per fund).
@@ -928,21 +902,13 @@ def publish_day(world: World, cfg: dict, t: int, recent: dict, rng_platform: ran
 
 
 # --- §5 guba climate seeding -------------------------------------------------------------------
-# REAL FIELD SET of a guba signal row (data/attention/guba_signal_v1.json, built by
-# guba_signal_build.py) -- attention/volume only:
+# Supported field set for an external attention row:
 #     n_posts, reply_n, read_n, z_abnormal, ratio_vs_baseline, baseline_weeks_used
-# The file's own `_meta` states "no stance is computed here" and "stance_jobs_stripped": true,
-# so NONE of the stance fields guba_seed_label reads below exist today and it returns None for
-# every fund and every week.  Decision 4 of AUDIT_AND_REMEDIATION_PLAN_2026-09-07 §5 makes that
-# the CORRECT behaviour for now (two tracks: the code accepts the shape here, the stance
-# labelling is a separate data task).  z_abnormal must never be pressed into service as a
-# substitute: it is posting VOLUME, and volume carries no direction.
+# Stance fields are optional. When they are absent, guba_seed_label returns None.
+# z_abnormal must never substitute for stance because posting volume has no direction.
 #
-# `bull_ratio` is the per-fund-week key the stance-labelling pass will merge in (as a versioned
-# guba_signal_v2.json); `bull`/`bear` counts are the alternative shape the same merge could
-# take.  Both are read here so that data landing needs ZERO code change -- naming them is the
-# whole point of this block.  load_world() prints how many fund-weeks actually carry
-# `bull_ratio`, so the "no stance yet" state is stated out loud rather than inferred.
+# `bull_ratio` is the preferred per-fund-week stance key; `bull`/`bear` counts are
+# accepted as an alternative shape. load_world() reports how many rows carry stance.
 def _stance_field(value):
     """Coerce a stance field to float, or None when it is absent or unusable.
 
@@ -1039,7 +1005,7 @@ def event_log_sha(path) -> str:
 # write_reports() writes ONE invariants_report.json entry per key in this registry (union with
 # anything check_invariants returned), so a check that did not run shows up as `skipped` with
 # a reason instead of being silently absent from the report.
-# INV-FIX: every check below compares like-typed fields (week key vs week key, holdings vs
+# Every check below compares like-typed fields (week key vs week key, holdings vs
 # holdings seeded from opening positions, list lengths vs list lengths) and reports
 # skipped+reason when its input rows are absent, never a silent vacuous pass.
 INVARIANTS = {
@@ -1119,10 +1085,10 @@ def check_invariants(state: dict, events_path, cfg: dict):
     rows = load_jsonl(Path(events_path))
     co_oc, co_cf = defaultdict(int), defaultdict(int)
     hard_p = set()
-    pos_units = {}                       # FIX4 (b): (agent, fund) -> unit balance; presence in
+    pos_units = {}                       # (agent, fund) -> unit balance; presence in
     hold0 = state.get("hold0")           # this dict IS holdings (a None value marks a holder of
     for aid, holds in (hold0.items() if isinstance(hold0, dict) else []):  # unrecorded size, a
-        # missing key a non-holder). FIX4: seeded from state["hold0"] -- each agent's OPENING
+        # missing key a non-holder). Seeded from state["hold0"] -- each agent's OPENING
         # holdings, captured by the loop before day 0. The live Inv rows in state["agents"]
         # carry CLOSING positions (inv.hold is updated in place during the run), so they must
         # never seed this ledger.
@@ -1147,7 +1113,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
             exposed.add(id2cell.get(r.get("i")))
             if (r.get("arm") or "T") == "TV":     # (m) imp.img_idx is the per-impression record
                 imp_tv += 1                       # of which of the note's images was attached
-                if r.get("img_idx") is not None:  # (contract 2.5 item 6); None == nothing attached
+                if r.get("img_idx") is not None:  # None means nothing attached
                     imp_tv_img += 1
         elif ev == "act":
             i, fund, kind = r.get("i"), r.get("fund"), r.get("kind")
@@ -1163,7 +1129,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
                     pos_units[(i, fund)] = None         # holder, size not provable from this row
             elif kind == "redeem":
                 n_redeem_act += 1
-                # FIX3 (b): a units ledger, not membership. A redemption violates (b) only
+                # This is a units ledger, not membership. A redemption violates (b) only
                 # when the balance beforehand is non-positive (small epsilon for float
                 # drift) or the agent never held the fund; a partial redemption just
                 # subtracts units and the fund stays in the ledger.
@@ -1204,7 +1170,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
             if c_first is None:
                 c_first = {"i": r.get("i"), "p": r.get("p")}
     checks = {}
-    # (a) INV-FIX: `used` is a guba ISO WEEK key. Derive the expected key from day t's date
+    # `used` is a guba ISO week key. Derive the expected key from day t's date
     # (each entry's live_end) with the same rule the engine uses to pick wk_prev -- the most
     # recent week that ENDED strictly before day t -- and compare key to key. day_keys is a
     # LIST of day-level keys: record how many existed, never int() the list itself.
@@ -1244,7 +1210,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
             "unparseable_entries": a_bad, "first_mismatch": a_first, "day_keys_total": dk_total,
             "mechanism": "day t consumes the ISO week that ended strictly before day t "
                          "(expected key derived from live_end via date.isocalendar, the wk_prev rule)"}
-    # (b) FIX4: a pure units ledger seeded from state["hold0"] (opening holdings captured by
+    # A pure units ledger is seeded from state["hold0"] (opening holdings captured by
     # the loop before day 0); subscribe/dca add units, redeem subtracts. A violation is a
     # redemption whose balance beforehand is non-positive (epsilon for float drift) or a fund
     # the agent never held. First offender is reported with agent id, fund, units held and
@@ -1350,7 +1316,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
                                    "no per-agent arm assignments in state; agent-level balance not evaluable"}
     elif lvl == "agent" and len(arms) <= 1:
         # Balance ACROSS arms is vacuous with one arm: every cell is "single-armed" by design.
-        # Emergence runs fix one modality (PREREG D33) and must not exit 4 on a non-question.
+        # Single-arm runs fix one modality and must not exit 4 on a non-question.
         checks["h_arm_balance"] = {"skipped": True, "level": "agent", "arms": list(arms),
                                    "agents_assigned": len(agent_arms_map), "reason":
                                    "single modality arm: balance across arms is not applicable"}
@@ -1389,7 +1355,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
                                        "agents_checked": checked, "violations": viol,
                                        "note": "per-impression arm shares (agent-level balance not applicable at exposure level)"}
     # (i) redemptions are never gated: a `co` row with act == "redeem" may carry match / no_holdings only.
-    # Suitability (PREREG v1.3 §B9) and the QDII purchase block apply to subscriptions alone.
+    # Suitability and the QDII purchase block apply to subscriptions alone.
     gated = {"hard_block", "confirm_signed", "confirm_declined", "purchase_blocked"}
     n_redeem_co = i_viol = 0
     i_first = None
@@ -1423,15 +1389,14 @@ def check_invariants(state: dict, events_path, cfg: dict):
                                           "first_mismatch": k_first,
                                           "dec_rows_on_inactive_days": k_extra,
                                           "dec_rows_total": sum(dec_day.values())}
-    # (m) images on the TV arm. This entry ALWAYS passes and can never raise the engine's exit
-    # code 4 (contract 2.6; plan 4.1 card W2 and section 7 item 7): gating belongs on
+    # Images on the TV arm are diagnostic. This entry always passes: gating belongs on
     # irreversible, cross-system, security or release boundaries, and one simulation run is
     # none of those. The honest answer to "did pixels actually reach the TV arm" is the number
     # run_meta.images.attached, which a reader can look at -- expressing it as a failed run
     # would say nothing extra. What the check owes the reader instead is WHICH of the three
     # situations the run is in, so `applicable` and `reason` name it rather than leaving three
-    # zeros to be interpreted. Counts come from state["images"] (contract 2.3) and are coerced
-    # to int here because a state built before card L2 landed carries none of them.
+    # zeros to be interpreted. Counts come from state["images"] and are coerced
+    # to int for compatibility with states that do not carry the block.
     imgs = state.get("images") if isinstance(state.get("images"), dict) else {}
     img_root = cfg.get("images_root") or imgs.get("root") or ""
     # At run level every agent gets modality_run_arm, so the run's effective arm set is that one
@@ -1462,18 +1427,12 @@ def check_invariants(state: dict, events_path, cfg: dict):
                               " -- zero attachments with a configured root and an active TV "
                               "arm is the state to investigate, reported here, never gating"))
     checks["m_tv_arm_carries_images"] = m_ent
-    # (m_env) environment valence. Same WARN form as (m) above -- pass is unconditionally True
+    # Environment valence uses the same warning form: pass is unconditionally True
     # and this entry can never raise exit code 4 -- and for the same reason: it describes the
     # world the run happened in, and no description of a world is a release boundary.
     #
-    # It exists because of a specific misdiagnosis. In a live smoke run all 77 decisions came
-    # back with mood 4, not one comment was bearish and not one affinity delta was negative,
-    # and the behaviour counts were fine, which pointed at the model. The cause was the
-    # ENVIRONMENT: the lookback cost basis had left only 4.9% of openings at a loss (median
-    # +39%), so almost no agent had anything to feel bearish about. These two numbers -- how
-    # many investors woke up holding a loss, and how many days the feed's climate was
-    # bearish_majority -- are what separates the two explanations, and neither was written down
-    # anywhere. Opening P&L comes from inv.pnl0 (written once by init_investors); the live
+    # Opening-loss and bearish-climate counts help distinguish environment effects
+    # from model effects. Opening P&L comes from inv.pnl0; the live
     # `cost` map is a CLOSING basis and can no more seed this than it can seed (b).
     pnl_rows = [_ag_get(a, "pnl0") for a in agents]
     have_pnl = [p for p in pnl_rows if isinstance(p, dict)]
@@ -1505,7 +1464,7 @@ def check_invariants(state: dict, events_path, cfg: dict):
         v_ent["tolerance"] = ipnl["tolerance"]
     if not have_pnl:
         v_ent["reason"] = ("opening P&L was not recorded for any agent row in this state "
-                           "(a replayed or hand-built state, or a run predating card W5): the "
+                           "(a replayed or hand-built state without opening records): the "
                            "environment's valence cannot be reported, only the climate labels "
                            f"({len(bearish_days)} day(s) bearish_majority of "
                            f"{sum(clim_labels.values())} climate row(s))")
@@ -1527,13 +1486,13 @@ def check_invariants(state: dict, events_path, cfg: dict):
     big = len(agents) >= 300                      # (e) fatal only at n_agents >= 300
     failed = [k for k, v in checks.items() if v.get("pass") is False
               and not (k == "e_all_cells_exposed" and not big)]
-    # FIX4: return the run's DECISION, not the failure list -- True when the run passed
+    # Return the run decision, not the failure list: True when the run passed
     # (no core check explicitly failed), False when at least one did.
     return checks, not failed
 
 
 def _selftest_invariants_decision():
-    """FIX4: assert check_invariants' second element both ways -- a clean state returns True
+    """Assert check_invariants' second element both ways: a clean state returns True
     (run passed), a state with one planted failing check returns False (run failed)."""
     import json
     import tempfile
@@ -1577,9 +1536,9 @@ def _selftest_invariants_decision():
     print("selftest check_invariants decision polarity: clean->True, planted->False [ok]")
 
 
-if __name__ == "__main__":            # FIX4: run the decision assertions under --self-test; a
-    import sys                        # guard placed beside the fix so the contract stays
-    if "--self-test" in sys.argv:     # asserted wherever this sits relative to the main block
+if __name__ == "__main__":
+    import sys
+    if "--self-test" in sys.argv:
         _selftest_invariants_decision()
 
 
@@ -1658,9 +1617,9 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
     agents = state.get("agents") or []
     agent_arms = state.get("agent_arms") or {}
     fees_cfg = cfg.get("fees") if isinstance(cfg.get("fees"), dict) else {}
-    # Contract 2.3: the day loop's image tally travels in state["images"] and is copied here
+    # The day loop's image tally travels in state["images"] and is copied here
     # verbatim (via _jsonable, so a Path in `root` cannot crash the report writer). A state
-    # without the key -- a run predating card L2, or a replayed/hand-built state -- gets the
+    # without the key, including a replayed or hand-built state, gets the
     # honest zero form rather than no block at all: the viewer's "this run carried no images"
     # chip reads run_meta.images, so with the block never written that chip showed
     # unconditionally -- on runs that did carry images too.
@@ -1676,15 +1635,15 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
         "universe": {"base": world.base_codes, "deferred": world.deferred, "size": len(world.funds)},
         "funds": {c: {"r": f.r, "qdii": f.qdii, "family": f.family, "org": world.fund_org.get(c, dflt_org),
                       "active_from": str(f.active_from)} for c, f in sorted(world.funds.items())},
-        # initial_pnl_misses joins the investor-level aggregates rather than counters (decision
-        # 13 / card W5): it is a property of the POPULATION as constructed -- how many openings
+        # initial_pnl_misses joins the investor-level aggregates rather than counters:
+        # it is a property of the population as constructed -- how many openings
         # the lookback window could not price at the drawn target -- not of the run's LLM calls,
         # which is what counters describes. Zero in lookback mode, where nothing is targeted.
         "investors": {"total": len(agents), "active_ever": sum(1 for a in agents if a.entry < len(world.nav_days)),
                       "initial_pnl_misses": sum(int(_ag_get(a, "pnl0_misses", 0) or 0) for a in agents)},
         "arms": {str(k): agent_arms[k] for k in sorted(agent_arms, key=str)},
         # Opening holdings and cost basis per funded agent, rebuilt from state["hold0"] /
-        # state["cost0"], so PGR/PLR accounting can recompute paper vs realized P&L from
+        # state["cost0"], so holding-period accounting can recompute unrealized versus realized P&L from
         # day one. run_meta.json is excluded from every hash, so this key is replay-safe.
         # non-holders are omitted, an absent key means "no opening position"
         "openings": {
@@ -1718,17 +1677,15 @@ def write_reports(out_dir, state: dict, cfg: dict, world: World, checks: dict, c
 # --- §9 self-test (zero API access) ------------------------------------------------------------
 def self_test() -> int:
     data_root = Path(os.environ.get("FLOWMIRROR_DATA_ROOT") or (REPO_ROOT / "data"))
-    research = Path(os.environ.get("FLOWMIRROR_RESEARCH_ROOT") or "D:/Desktop/ABM paper/fundmarket-sim")
-    names = {"agents": "agents_seed2027.json", "content_pool": "content_pool_v1_masked.jsonl",
-             "nav_cache": "nav_cache.json", "guba": "guba_signal_v1.json",
-             "family": "family_crosswalk.json", "fund_meta": "fund_meta_v1.json"}
-    # v7 data layer sub-folders first, then the research repo's flat sim/ folder
+    names = {"agents": "agents_seed2027.json", "content_pool": "content_pool_demo.jsonl",
+             "nav_cache": "nav_demo_2025q4.json", "guba": "attention_demo.json",
+             "family": "family_crosswalk.json", "fund_meta": "fund_meta_demo.json"}
+    # v7 data layer sub-folders first, then the data root's direct path
     sub = {"agents": "population", "content_pool": "creatives/cn", "nav_cache": "funds",
            "guba": "attention", "family": "funds", "fund_meta": "funds"}
     paths = {}
     for key in sorted(names):
-        for cand in (data_root / sub[key] / names[key], data_root / names[key],
-                     research / "sim" / names[key], research / names[key]):
+        for cand in (data_root / sub[key] / names[key], data_root / names[key]):
             if cand.exists():
                 paths[key] = cand
                 break
@@ -1754,16 +1711,16 @@ def self_test() -> int:
             "run_tag": "selftest|v7", "n_agents": 400, "orgs": orgs,
             "agents_file": str(paths["agents"]), "content_pool": str(paths["content_pool"]),
             "nav_cache": str(paths["nav_cache"]), "guba_signal": str(paths["guba"]),
-            "window": {"start": "2025-10-01", "end": "2025-12-31", "max_trading_days": 60},
+            "window": {"start": "2025-10-01", "end": "2025-12-31", "max_trading_days": 3},
             "strategy_mix": "measured", "strategy_groups": {"push_heavy": orgs[:2], "edu_heavy": orgs[2:4]},
-            "posts_per_org_per_day": 2, "no_repeat_days": 10, "arm_level": "agent",
+            "posts_per_org_per_day": 1, "no_repeat_days": 1, "arm_level": "agent",
             "family_file": str(paths["family"]) if "family" in paths else None,
             "fund_meta_file": str(paths["fund_meta"]) if "fund_meta" in paths else None})
         world = load_world(cfg)
         invs = init_investors(world, cfg)
         chk("agents_eq_n_agents", len(invs) == int(cfg["n_agents"]) == 400)
         chk("orgs_eq_cfg", len(world.orgs) == len(cfg["orgs"]))
-        # DEFECT 2 (world half): agent-level arms come from feed.assign_agent_arms (stratified)
+        # Agent-level arms come from feed.assign_agent_arms (stratified).
         k_arms = tuple(cfg.get("modality_arms") or ("T", "TV"))
         arm_cnt = defaultdict(int)
         for v in invs:
@@ -1780,13 +1737,10 @@ def self_test() -> int:
         chk("agent_init_matches_assign_agent_arms",
             {v.id: v.arm for v in invs} == feed.assign_agent_arms(
                 cfg["run_tag"], [(rec.get("id"), rec.get("cell", "")) for rec in world.agents[:len(invs)]], k_arms))
-        tot = sum(len(v) for v in world.pool.values())
-        if tot == 200:
-            chk("notes_50_per_org_frozen_pool", all(len(world.pool[o]) == 50 for o in world.orgs))
-        else:
-            skip(f"notes_50_per_org_frozen_pool(non_frozen_n={tot})")
-        chk("funds_active_ge_140", sum(1 for f in world.funds.values() if f.active_from <= world.end) >= 140)
-        chk("nav_days_eq_60", len(world.nav_days) == 60)
+        chk("content_pool_nonempty_per_org", all(world.pool[o] for o in world.orgs))
+        chk("active_fund_universe_nonempty",
+            any(f.active_from <= world.end for f in world.funds.values()))
+        chk("nav_days_eq_3", len(world.nav_days) == 3)
         ok_sum = same = True
         for mix in ("measured", "push_heavy", "edu_heavy"):
             pr = intent_probs(world, dict(cfg, strategy_mix=mix))
@@ -1800,31 +1754,31 @@ def self_test() -> int:
         for t in range(len(world.nav_days)):
             seen = {o: set(recent.get(o, ())) for o in world.orgs}
             for pst in publish_day(world, cfg, t, recent, rngp, log=mem):
-                if pst["note"] in seen[pst["org"]] and len(world.pool[pst["org"]]) >= 20:
+                if pst["note"] in seen[pst["org"]] and len(world.pool[pst["org"]]) >= 2:
                     viol += 1
                 if pst["intent_group"] not in _IG_GROUPS or (pst["intent_group"] == "I2") != (pst["intent"] == "I2"):
                     ig_viol += 1
-        chk("publish_no_repeat_within_10d", viol == 0)
+        chk("publish_no_immediate_repeat", viol == 0)
         prows = [r for r in mem.rows if r.get("ev") == "post"]
         chk("publish_post_ig_is_intent_group",
             ig_viol == 0 and bool(prows)
             and all(r.get("intent") in _INTENTS and r.get("ig") in _IG_GROUPS
                     and (r.get("ig") == "I2") == (r.get("intent") == "I2") for r in prows))
     else:
-        print(f"SKIP world checks: real data files not found (data_root={data_root}, research={research})")
-        for nm in ("agents_eq_n_agents", "orgs_eq_cfg", "notes_50_per_org_frozen_pool", "funds_active_ge_140",
-                   "nav_days_eq_60", "intent_probs_sum_to_1", "push_heavy_identical", "publish_no_repeat_within_10d",
+        print(f"SKIP world checks: public demo files not found (data_root={data_root})")
+        for nm in ("agents_eq_n_agents", "orgs_eq_cfg", "content_pool_nonempty_per_org", "active_fund_universe_nonempty",
+                   "nav_days_eq_3", "intent_probs_sum_to_1", "push_heavy_identical", "publish_no_immediate_repeat",
                    "publish_post_ig_is_intent_group", "agent_init_overall_share_within_0p01",
                    "agent_init_no_single_armed_cell", "agent_init_matches_assign_agent_arms"):
             skip(nm)
-    # A2: compat rule arm_level -> modality_level (data-independent)
+    # Compatibility rule: arm_level -> modality_level.
     c_compat = {"arm_level": "exposure"}
     chk("compat_arm_level_maps_to_modality",
         _modality_compat(c_compat) == "exposure" and c_compat.get("modality_level") == "exposure")
     c_both = {"modality_level": "run", "arm_level": "agent"}
     chk("compat_modality_level_wins", _modality_compat(c_both) == "run")
     chk("compat_defaults_to_agent", _modality_compat({}) == "agent")
-    # A2: three-arm agent-level init over 300 synthetic ids (synthetic world, no data files needed)
+    # Three-arm agent-level initialization over 300 synthetic ids.
     fw = World()
     fw.start = date(2025, 10, 1)
     fw_dts = [date(2025, 1, 2) + timedelta(days=i) for i in range(320)]
@@ -1887,7 +1841,7 @@ def self_test() -> int:
                 a.fees = fees
             return a
 
-        # INV-FIX: realistic signal_audit -- `used` is a guba ISO week key (2025-10-01/02 sit in
+        # Engine-shaped signal_audit: `used` is a guba ISO week key (2025-10-01/02 sit in
         # W40; the week that ended strictly before them is 2025-W39, ended Sun 2025-09-28) and
         # day_keys is a LIST of day-level keys. st also carries a fee-bearing agent so (d) runs
         # non-vacuously and (b) has an agent row to seed holdings from.
@@ -1933,7 +1887,7 @@ def self_test() -> int:
         chk("h_exposure_below_min_impressions_marked_skipped",
             cc["h_arm_balance"].get("skipped") is True
             and isinstance(cc["h_arm_balance"].get("reason"), str) and cc["h_arm_balance"]["reason"] != "")
-        # INV-FIX defect 1: (a) must compare week key to derived week key and catch the leak of
+        # Compare the week key with the derived week key and catch leakage from
         # the week CONTAINING day t (2025-10-01 lies in 2025-W40; the legal key is 2025-W39).
         leak = dict(st, signal_audit=[dict(st["signal_audit"][0], used="2025-W40")])
         lc, lf = check_invariants(leak, cp, {"arm_level": "exposure"})
@@ -1948,7 +1902,7 @@ def self_test() -> int:
             ec["a_lagged_signals_only"].get("skipped") is True
             and isinstance(ec["a_lagged_signals_only"].get("reason"), str)
             and ec["a_lagged_signals_only"]["reason"] != "")
-        # A2: invariant (d) with fees; run-level (h) skip
+        # Invariant (d) with fees; run-level (h) skip.
         base_st = {"funds": {}, "end": "2025-12-31", "active_per_day": {0: 1}, "agent_arms": {},
                    "signal_audit": list(st["signal_audit"])}
         run_cfg = {"modality_level": "run"}
@@ -1961,7 +1915,7 @@ def self_test() -> int:
         chk("h_run_level_marked_skipped_with_reason",
             c_fee["h_arm_balance"].get("skipped") is True
             and "not applicable" in str(c_fee["h_arm_balance"].get("reason", "")))
-        # INV-FIX defect 2: (b) seeds holdings from the agent rows' opening `hold`; the clean
+        # Check (b) seeds holdings from the opening snapshot; the clean
         # log redeems 20 of 50 opening units (partial, still held) and the bad log adds a
         # redemption of a fund the agent never held, which must be caught with the offender.
         a_hold = _mk_agent(0.0)
@@ -1983,7 +1937,7 @@ def self_test() -> int:
             cb1["b_nonholder_never_redeems"]["pass"] is True
             and cb1["b_nonholder_never_redeems"]["violations"] == 0
             and cb1["b_nonholder_never_redeems"]["redeem_rows"] == 1)
-        # FIX3 Defect 3 pin: two successive PARTIAL redemptions of an opening position
+        # Two successive partial redemptions of an opening position
         # that never reaches zero units must not flag (the null-policy t=3/t=4 case).
         b2_rows = b_rows + [{"ev": "act", "t": 1, "d": "2025-10-02", "i": 7, "p": "00001",
                              "kind": "redeem", "fund": "000001", "amt": 30.0,
@@ -2001,7 +1955,7 @@ def self_test() -> int:
             and cb2["b_nonholder_never_redeems"]["first_violation"] == {"i": 7, "fund": "000002",
                                                                         "units_held": 0.0,
                                                                         "units_redeemed": 10.0})
-        # A2: exposure-level (h) per-agent share check
+        # Exposure-level (h) per-agent share check.
         def _imp_rows(n_t, n_tv):
             rows = []
             for j in range(n_t):
@@ -2021,7 +1975,7 @@ def self_test() -> int:
             c_e1["h_arm_balance"]["pass"] is True and c_e1["h_arm_balance"]["agents_checked"] == 1)
         chk("h_exposure_skewed_shares_flagged",
             c_e2["h_arm_balance"]["pass"] is False and c_e2["h_arm_balance"]["violations"] == 1)
-        # DEFECT 3: NAV mapping with a `_meta` block + two real codes must load without crashing
+        # A NAV mapping with a `_meta` block and two codes must load without crashing.
         dts_syn = [date(2025, 1, 2) + timedelta(days=i) for i in range(300)]
         navp = tdp / "nav_demo_meta.json"
         dump(navp, {"_meta": {"synthetic": True, "generator": "data_pipeline/cn/make_demo_nav.py",
@@ -2055,7 +2009,7 @@ def self_test() -> int:
             sorted(wnav.funds) == ["000001", "000002"] and sorted(wnav.base_codes) == ["000001", "000002"])
         chk("nav_loader_counts_skips_and_flags_synthetic",
             wnav.nav_synthetic is True and list(wnav.nav_skipped) == ["_meta"])
-        # DEFECT 1: invariants_report.json must carry every registered invariant with detail
+        # invariants_report.json must carry every registered invariant with detail.
         cfg_rep = {"run_tag": "selftest|report", "orgs": ["O0"], "modality_level": "agent",
                    "modality_arms": ["T", "TV"], "modality_run_arm": "TV",
                    "fees": {"subscribe_rate": 0.0, "redeem_rate": 0.0}}

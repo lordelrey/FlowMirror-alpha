@@ -1,5 +1,4 @@
-/* FlowMirror viewer — the shell.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2-3. This file owns exactly four things:
+/* FlowMirror viewer — the shell. This file owns exactly four things:
    the hash route, the loaded model, the shared header, and the day cursor with its
    keyboard and playback. Page modules own their own DOM and nothing else — they never
    read location, never write the hash, and never touch the header.

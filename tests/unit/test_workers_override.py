@@ -2,8 +2,8 @@
 
 Concurrency (llm.workers) changes wall-clock time only, never results: the parallel phase
 collects decisions and applies them serially in sorted agent order, so --replay-check output
-is byte-identical across worker counts. That is why the knob lives in RuntimeOpts (a CLI-only
-operational switch) instead of the sha-frozen grid configs of PREREG D23.
+is byte-identical across worker counts. That is why the knob lives in RuntimeOpts as a CLI-only
+operational switch instead of in simulation configuration.
 """
 import unittest
 

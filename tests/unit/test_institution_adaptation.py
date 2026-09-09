@@ -120,7 +120,8 @@ class TestAdaptationIntegration(unittest.TestCase):
             self.assertEqual({r["org"] for r in inst_rows if r["t"] == t}, post_orgs)
         for row in inst_rows:
             self.assertEqual(set(row["w"]), set(INST_KEYS))
-            self.assertAlmostEqual(sum(row["w"].values()), 1.0, delta=1e-6)
+            # Event rows round each of three weights to four decimals.
+            self.assertAlmostEqual(sum(row["w"].values()), 1.0, delta=2e-4)
             for value in row["w"].values():
                 self.assertGreaterEqual(value, 0.05 - 1e-9)
             self.assertEqual(set(row["conv"]), set(INST_KEYS))

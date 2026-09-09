@@ -1,17 +1,13 @@
-# Scenarios (v7)
+# Scenarios
 
-A scenario is a data plugin bundle validated by
-`config/schemas/scenario.schema.json`; a run config (`run.schema.json`) selects
-scenario + experimental arms. Four parts plug in per country:
+A scenario is a validated bundle that connects a population, a content platform, market inputs, and a regulator. The schema is `config/schemas/scenario.schema.json`.
 
-| part | CN -- `cn_xhs_2025q4` (now) | US -- `us_2025` (roadmap) |
-|---|---|---|
-| population | `persona_grid_v3.json` + `agents_seed2027.json`; reported classes C2-C4 | `data/us/population/*` (TODO) |
-| platform / creatives | Xiaohongshu (zh); one shared masked pool `content_pool_v1_masked.jsonl`, filtered per org; 4 orgs (GF, Penghua, Guolian, HTF) | google_ads_web (en); ads pool TODO |
-| regulator | `cn_cxr`: suitability checkout; `gate_redemptions=false`, `qdii_limits=true` | `us_regbi` (Reg BI best-interest) |
-| market data | `nav_cache.json`, `fund_meta_v1.json`, `cn_trading`, T+1, fees 1.2% / 0.5% | `data/us/funds/*` (TODO) |
+The bundled `scenarios/cn_xhs_2025q4/scenario.yaml` demonstrates a Chinese-language social-feed setup whose organisations, posts, attention signals, product codes, and NAVs are synthetic. It is an executable example, not a representation of a live platform or a real market forecast.
 
-Attention source: `guba` weekly signal (CN) vs `none` (US for now, reddit
-candidate). External discipline: `flow_panel_v2.json` holdout with lead
-placebo quarter `2025Q3` (CN); US holdout TODO. The US skeleton carries
-`# TODO` markers on every placeholder path.
+To create another scenario, copy the example, point every input to a file you are allowed to use, and validate it before running:
+
+```bash
+python -m flowmirror.cli validate path/to/scenario.yaml --schema scenario
+```
+
+Keep raw captures, proprietary datasets, credentials, and creative images outside the repository.

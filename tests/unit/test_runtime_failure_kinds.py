@@ -1,28 +1,14 @@
-"""Card RT1: decide()/reflect() must not blame the model for a transport failure (audit E12).
+"""Transport failures and model-output failures remain distinct.
 
-`decision_failure_halt` exists to catch a MODEL that cannot produce parseable output. The
-pre-fix runtime counted an HTTP error, a network exception and an empty response into the same
-bucket as malformed JSON, so in a real smoke run three rate-limit responses read as model
-instability while the parse rate was 77/77 = 100 percent, and a bad API key would present as
-"the model is unstable".
-
-Worse, on the `http_error` and `exception` branches call_glm records raw=None, and the old
-decide() fed `prov.get("raw") or ""` straight back into extract_decision -- which duly reported
-a parse verdict ("no_json_object" on the empty string) for what was purely a network problem.
-
-Pinned here, per contract 2.4:
+The tests cover:
   * a stub whose every call returns cls "http_error" -> failure_kind "transport", and the
     reported parser_status is the transport class itself, never a schema/parse verdict;
   * HTTP 200 with unparseable content                -> failure_kind "model";
   * all four transport classes classify as transport, and truncation/parse classes as model;
-  * a warm cache replay derives the same failure_kind as the cold run -- card L3 writes this
-    into dec.failure_kind, so a replay that disagreed would break invariant (l);
-  * decision 9: the halt threshold and condition are untouched, so this file asserts nothing
-    about them; it only pins the diagnosis.
+  * a warm cache replay derives the same failure_kind as the cold run.
 
 The physical retry ladder (a transient error must not kill a multi-hour run) is pinned next
-door in tests/unit/test_call_glm_retry.py, which owns the scripted-transport harness; RT2's
-temperature and max_provider_attempts cases live there too.
+door in tests/unit/test_call_glm_retry.py.
 """
 from __future__ import annotations
 
@@ -109,7 +95,7 @@ def test_http_error_is_transport_and_reports_no_schema_verdict(tmp_path):
     assert rec["parser_status"] not in ("no_json_object", "schema_invalid", "unparsed",
                                         "ambiguous_reasoning", "truncated_length")
     assert rec["violations"] == []           # nothing was parsed, so nothing was violated
-    assert len(calls) == 2                   # decision 9: the macro re-ask schedule is unchanged
+    assert len(calls) == 2                   # macro re-ask schedule
 
 
 def test_http_200_with_unparseable_content_is_model(tmp_path):
@@ -158,8 +144,7 @@ def test_non_transport_classes_classify_as_model(cls):
     """Anything outside the four transport classes means a response arrived: the model's failure.
 
     truncated_length in particular: the provider answered, the answer was cut off -- that is a
-    token-budget/model problem and must keep counting against the model, or the halt gate that
-    decision 9 froze would stop seeing the failures it exists to catch."""
+    token-budget/model problem and must keep counting against the model."""
     assert rt._failure_kind(cls, None) == "model"
     assert rt._failure_kind(cls, {"mood": 3}) is None       # a success is never a failure
 
@@ -168,8 +153,7 @@ def test_success_has_failure_kind_none(tmp_path):
     """failure_kind is None whenever a decision was produced -- including via the extractor.
 
     MockLLM returns parsed=None and lets decide() extract the decision from the raw text, so a
-    kind derived from prov["parsed"] alone would mislabel every single mock decision as a
-    failure and hand card L3's counters a number larger than decision_failures."""
+    kind derived from prov["parsed"] alone would mislabel mock decisions as failures."""
     cfg = _cfg(tmp_path / "c.jsonl")
     rec = _decide(cfg, rt.MockLLM(malformed_rate=0.0))
 
@@ -178,7 +162,7 @@ def test_success_has_failure_kind_none(tmp_path):
 
 
 def test_replay_of_a_transport_failure_reproduces_the_same_kind_and_status(tmp_path):
-    """Cold run and warm replay must agree: card L3 puts this in the event log (invariant l)."""
+    """Cold run and warm replay must agree on the recorded failure kind."""
     cfg = _cfg(tmp_path / "c.jsonl")
     llm, calls = _stub(_prov("exception"))
 
@@ -230,7 +214,7 @@ def test_reflect_model_failure_is_model(tmp_path):
 
 
 def test_transport_and_model_are_the_only_two_kinds(tmp_path):
-    """The identity card L3 relies on: transport + model == decision_failures, so a failed
+    """transport + model == decision_failures, so a failed
     decision is ALWAYS exactly one of the two and a successful one is neither."""
     assert set(rt.TRANSPORT_FAILURE_CLASSES) == {"exception", "http_error", "empty_response",
                                                  "reasoning_salvage_rejected", "rate_limited"}

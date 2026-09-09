@@ -1,4 +1,4 @@
-"""Card L7 / decision 6: the news channel's market line, and its honesty constraints.
+"""Tests for the news channel's optional benchmark line.
 
 `prompt.render_news` could always render `view["index_5d"]`, and the engine never
 supplied it, so the market line never appeared in any run. The series that supplies it
@@ -181,7 +181,7 @@ def test_an_unreadable_benchmark_path_stops_the_run(tmp_path):
 
 
 def test_a_benchmark_without_a_disclosing_label_is_refused(tmp_path):
-    """Decision 6: the label is what the agent-facing line names, so a configured
+    """The label is what the agent-facing line names, so a configured
     benchmark with no label would render the series as an unnamed market index -- the
     one disclosure failure that reaches the model itself. The run refuses instead."""
     from flowmirror.config.validate import ConfigError

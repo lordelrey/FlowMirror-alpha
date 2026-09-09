@@ -1,4 +1,4 @@
-"""Platform layer facade (PROJECT_ARCHITECTURE_v7.1 S2).
+"""Platform layer facade for the public layer API.
 
 Re-exports the channel/feed functions that today implement the platform
 layer; every name is the *same object* as in ``flowmirror.channels.feed``

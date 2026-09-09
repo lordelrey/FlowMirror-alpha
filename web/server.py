@@ -140,7 +140,7 @@ def image_path_for(images_root: Path, image_id: str) -> Path | None:
 
 def load_pool_digests() -> dict[str, str]:
     """image_id -> sha256, from the shipped content pool."""
-    pool = ROOT / "data" / "creatives" / "cn" / "content_pool_v1_masked.jsonl"
+    pool = ROOT / "data" / "creatives" / "cn" / "content_pool_demo.jsonl"
     out: dict[str, str] = {}
     if not pool.is_file():
         return out

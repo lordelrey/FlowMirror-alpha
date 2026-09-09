@@ -18,3 +18,12 @@ data/funds/nav_cache.json
 runs/out/
 # Third-party benchmark series (qieman). Regenerate; never redistribute.
 data/market/
+
+# Local-only work products belong outside the source distribution.
+[Pp][Aa][Pp][Ee][Rr]/
+docs/internal/
+docs/*[Hh][Aa][Nn][Dd][Oo][Vv][Ee][Rr]*.md
+docs/*[Aa][Uu][Dd][Ii][Tt]*.md
+docs/*[Dd][Rr][Aa][Ff][Tt]*.md
+docs/*[Pp][Ll][Aa][Nn]*.md
+runs/*_s[0-9][0-9][0-9][0-9].json

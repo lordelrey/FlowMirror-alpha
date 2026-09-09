@@ -1,15 +1,13 @@
-"""Cards FEED1 + FEED2: the climate majority margin and the fit prior's bands.
+"""Tests for the climate majority margin and the fit prior's bands.
 
 Two parameters that the engine used to hardcode:
 
-  * FEED1 / decision 1 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md section
-    5): feed.climate_for computed the majority margin against +/-1/3 and its
-    docstring called that frozen.  The decided value is 1/6 -- half as strict
-    -- and it is now the `margin` keyword so a sensitivity sweep changes a
+  * feed.climate_for uses a configurable majority margin, defaulting to 1/6,
+    so a sensitivity sweep changes a
     config value rather than this module.  Every run with comment traffic
     moves its event-log sha because of it.
-  * FEED2 / E13: fit()'s +/-0.25 risk-latency swing and +0.15 core-type nudge
-    were bare literals no reviewer could discover from a config.  They are now
+  * fit()'s +/-0.25 risk-latency swing and +0.15 core-type nudge
+    are configurable as
     fit_band_wide / fit_band_narrow, defaulted to exactly those literals and
     threaded from cfg by rank_feed, so nothing changes until someone sets them.
 
@@ -29,9 +27,9 @@ import pytest
 
 from flowmirror.channels.feed import climate_for, fit
 
-# The two margins the decision record puts either side of this change.
+# Two margins used to exercise the threshold boundary.
 OLD_MARGIN = 1.0 / 3.0
-DECIDED_MARGIN = 1.0 / 6.0
+DEFAULT_MARGIN = 1.0 / 6.0
 
 
 def _cmts(stances, pid="p1"):
@@ -48,63 +46,48 @@ def _mix(bullish, bearish, watching, pid="p1"):
 
 # --- FEED1: the margin ------------------------------------------------------
 
-def test_the_default_margin_is_the_decided_one_sixth():
-    """The default is what flips the engine: loop.py calls with no margin.
-
-    Card L3 will later pass cfg["feed"]["climate_margin"] explicitly; until it
-    does, the decided value reaches every run through this default alone."""
+def test_the_default_margin_is_one_sixth():
+    """The function default matches the configured public default."""
     got = inspect.signature(climate_for).parameters["margin"].default
-    assert got == DECIDED_MARGIN
+    assert got == DEFAULT_MARGIN
     assert got == pytest.approx(1.0 / 6.0, abs=0.0)
 
 
 def test_the_code_default_agrees_with_the_config_default():
-    """Guard the root-cause pattern: code default vs config default drift.
-
-    A margin of 1/6 in engine_defaults.yaml and 1/3 in the code is precisely
-    how decision 1's target went unmet for a whole revision, and the two
-    values live in files owned by different lanes."""
+    """The code default and YAML default must stay aligned."""
     from flowmirror.engine.world import DEFAULT_CONFIG
     assert (DEFAULT_CONFIG["feed"]["climate_margin"]
             == inspect.signature(climate_for).parameters["margin"].default)
 
 
-@pytest.mark.parametrize("margin", [OLD_MARGIN, DECIDED_MARGIN])
-def test_the_mix_exactly_on_the_decided_margin_stays_mixed(margin):
+@pytest.mark.parametrize("margin", [OLD_MARGIN, DEFAULT_MARGIN])
+def test_the_mix_exactly_on_the_default_margin_stays_mixed(margin):
     """3 bullish / 2 bearish / 1 watching is d == 1/6, and `d > margin` is STRICT.
 
-    The card that specified this case expected it to read bullish_majority at
-    margin=1/6.  It does NOT, and the reason is worth pinning rather than
-    working around: d is (3 - 2) / 6, which is bit-for-bit the same float as
-    1.0 / 6.0, so the strict comparison rejects it at the decided margin just
-    as it does at the old one.  The mix therefore cannot pin the change -- it
-    is invariant across both thresholds -- but it does pin the strictness, so
-    a later switch to >= (which would move every hash a second time, on a
-    boundary nobody decided) fails here instead of landing silently."""
+    d is (3 - 2) / 6, exactly the same float as 1.0 / 6.0, so the strict
+    comparison rejects it at the default margin as well as at 1/3."""
     cmts = _mix(3, 2, 1)
     label, counts = climate_for("p1", cmts, margin=margin)
     d = (counts["bullish"] - counts["bearish"]) / 6.0
     # Stated as an exact float identity: this is the load-bearing fact.
-    assert d == DECIDED_MARGIN
+    assert d == DEFAULT_MARGIN
     assert label == "mixed"
 
 
 @pytest.mark.parametrize("margin,expected", [
     (OLD_MARGIN, "mixed"),
-    (DECIDED_MARGIN, "bullish_majority"),
+    (DEFAULT_MARGIN, "bullish_majority"),
 ])
-def test_a_mix_strictly_between_the_two_margins_is_what_decision_1_moves(margin,
-                                                                        expected):
+def test_a_mix_strictly_between_the_two_margins_changes_label(margin, expected):
     """4 bullish / 2 bearish / 2 watching is d = 0.25, strictly between 1/6 and 1/3.
 
-    This is the case that actually pins the change: mixed under the margin the
-    code used to hardcode, a majority under the decided one."""
+    This is mixed at 1/3 and a majority at 1/6."""
     label, counts = climate_for("p1", _mix(4, 2, 2), margin=margin)
     assert (counts["bullish"] - counts["bearish"]) / 8.0 == 0.25
     assert label == expected
 
 
-@pytest.mark.parametrize("margin", [OLD_MARGIN, DECIDED_MARGIN])
+@pytest.mark.parametrize("margin", [OLD_MARGIN, DEFAULT_MARGIN])
 def test_the_margin_is_symmetric_across_both_branches(margin):
     """Mirroring the stances must mirror the label at either threshold."""
     bull = climate_for("p1", _mix(4, 2, 2), margin=margin)[0]
@@ -114,7 +97,7 @@ def test_the_margin_is_symmetric_across_both_branches(margin):
     assert mirror[bull] == bear
 
 
-@pytest.mark.parametrize("margin", [OLD_MARGIN, DECIDED_MARGIN])
+@pytest.mark.parametrize("margin", [OLD_MARGIN, DEFAULT_MARGIN])
 def test_min_n_floor_is_unchanged_by_the_margin(margin):
     """The floor stays frozen at 4: thin threads must not manufacture proof.
 
@@ -128,13 +111,12 @@ def test_min_n_floor_is_unchanged_by_the_margin(margin):
     assert climate_for("p1", _mix(4, 0, 0), margin=margin)[0] == "bullish_majority"
 
 
-@pytest.mark.parametrize("margin", [OLD_MARGIN, DECIDED_MARGIN])
+@pytest.mark.parametrize("margin", [OLD_MARGIN, DEFAULT_MARGIN])
 def test_all_ones_weights_equal_the_unweighted_result_exactly(margin):
-    """PREREG v1.2 B: under proportional sampling strat_weight ~= 1.
+    """Under proportional sampling strat_weight ~= 1.
 
     The weighted path must then be the numerical identity -- label AND counts,
-    since 3.0 == 3 in Python -- at any margin, which is what the GAP_S6_CLIMWT
-    consistency check relies on.  Exercised on the straddling mix so the
+    since 3.0 == 3 in Python -- at any margin. Exercised on the straddling mix so the
     comparison happens on a thread whose label the margin actually decides."""
     cmts = _mix(4, 2, 2)
     ones = {c["agent_id"]: 1.0 for c in cmts}

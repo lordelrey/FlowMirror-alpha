@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/event.schema.json",
   "title": "FlowMirror event log row",
-  "description": "One JSON object per line of event_log.jsonl. Shapes are frozen to what the pre-registered analysis script srs_analysis.py consumes (post/imp/click/co/act/st) plus the v6 additions (dec/cmt/clim/refl/tac) and the v7 image card's optional img_idx on imp rows. Key 'ev' is the discriminator.",
+  "description": "One JSON object per line of event_log.jsonl. The 'ev' field discriminates publication, impression, click, checkout, action, state, decision, comment, climate, reflection, and tactical rows.",
   "type": "object",
   "required": [
     "ev",
@@ -571,7 +571,7 @@
               "string",
               "null"
             ],
-            "description": "Optional (E12, decision 9): which SIDE of the decision call failed, so a bad key or a dead endpoint can no longer masquerade as an unstable model. 'transport' = call_glm never got a usable response (exception, http_error, empty_response, reasoning_salvage_rejected); 'model' = a response arrived but its JSON or schema did not parse; null (or absent) = the decision did not fail. Decision 9 keeps decision_failure_halt on the COMBINED rate at 0.02, so this field and its two counters are diagnostics only and change no behaviour; the identity transport + model == decision_failures must hold.",
+            "description": "Optional failure category. 'transport' means the provider returned no usable response; 'model' means a response arrived but did not parse against the expected structure; null or absent means the decision did not fail. The field is diagnostic and does not change halt behavior.",
             "enum": [
               "transport",
               "model",

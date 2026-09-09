@@ -1,5 +1,4 @@
 /* FlowMirror viewer — 模态对照.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2 (signature), §4 (tokens), §6 (降级纪律).
 
    This page is the project's headline experiment made legible: one post, rendered as
    each modality arm actually saw it, side by side. Three things it is built to get

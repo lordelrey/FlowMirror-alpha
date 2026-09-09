@@ -15,8 +15,8 @@ Behaviour contract, frozen from ``sim/engine_v5.py``:
   True means the agent signed the risk-mismatch confirmation.
 
 * ONLY C1 x R>1 yields ``hard_block``.  The v7 cohort contains no C1
-  clients, so ``hard_block`` is never observed in the experiment
-  (PREREG v1.1 §B5); the branch is kept because the rule is frozen, not
+  clients, so ``hard_block`` is not observed in the bundled demo; the branch
+  is kept because it is a supported rule, not
   because it can fire.
 
 * Redemptions are never gated: ``checkout`` answers purchase attempts

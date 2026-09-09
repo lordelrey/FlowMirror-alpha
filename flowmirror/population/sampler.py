@@ -1,23 +1,9 @@
-"""Select the live-LLM-agent cohort for the fund-market social simulation.
+"""Select a deterministic demo cohort for the fund-market social simulation.
 
-300 agents are drawn from the 10,000-person synthetic population, stratified over
-its 36 persona cells. The risk-fragile stratum (suitability class C2) is
-deliberately OVERSAMPLED to about 20 percent of the cohort, and a
-post-stratification weight is stored on every selected agent so that
-population-level aggregates can be re-weighted back to the population.
-
-Why oversample C2
------------------
-The flagship metric of the paper counts suitability-BLOCKED purchase attempts.
-A C2 investor is capped at R2 products, so they hit the risk-mismatch
-confirmation gate on essentially every R3 or R4 fund, whereas C3 and C4
-investors rarely do. C2 is only 8.1 percent of the population (807 of 10000),
-which at n=300 yields about 24 agents: too few clusters for investor-clustered
-inference. Oversampling to 20 percent (60 agents) roughly triples the
-blocked-event count at zero extra cost. The flagship contrast is
-within-subpopulation and therefore unweighted by construction; the weights exist
-for the population-level flow aggregates and for the displayed comment-climate
-aggregation.
+By default, 400 agents are sampled proportionally from the bundled 10,000-person
+synthetic population across its 36 persona cells. Each selected row carries a
+post-stratification weight for population-level aggregation. The CLI also allows
+an explicit fragile-stratum target for controlled sampling experiments.
 
 Determinism: every random draw flows through
 random.Random(int(hashlib.sha256(f"{seed}|{tag}".encode()).hexdigest()[:16], 16)).
@@ -41,22 +27,16 @@ from pathlib import Path
 # non-ASCII byte would raise UnicodeEncodeError and kill the run halfway.
 sys.stdout.reconfigure(encoding="utf-8")
 
-POP_PATH = Path(r"D:\Desktop\ABM paper\flowmirror\flowmirror\data\population_10k_v3.json")
-GRID_PATH = Path(r"D:\Desktop\ABM paper\fundmarket-sim\data\persona_grid_v3.json")
-OUT_DIR = Path(r"D:\Desktop\ABM paper\fundmarket-sim\sim")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+POP_PATH = REPO_ROOT / "data" / "population" / "population_10k_v3.json"
+GRID_PATH = REPO_ROOT / "data" / "population" / "persona_grid_v3.json"
+OUT_DIR = REPO_ROOT / "runs" / "out" / "population"
 
 VERSION = "1.0.0"
 DEFAULT_SEED = 2027
-# Owner decision 2026-09-04 (METHODS_LEDGER R20): PROPORTIONAL n=400, not oversampled n=300.
-# An adversarial review showed proportional 400 dominates oversampled 300 on this design's own
-# numbers (814 events / 306 clusters vs 790 / 239) because C3 investors are ALSO blocked on R4
-# funds - the channel the oversampling rationale had ignored. The old defaults are kept here as
-# named constants only so a reader can see what was retracted; they must not be the default,
-# because a bare `python select_agents.py` re-run silently overwrote the approved cohort once.
+# The bundled cohort uses proportional sampling with n=400.
 DEFAULT_N_TOTAL = 400
 DEFAULT_C2_SHARE = 0.0807          # == the population's own fragile share -> proportional
-RETRACTED_N_TOTAL = 300            # superseded, see METHODS_LEDGER R20
-RETRACTED_C2_SHARE = 0.20          # superseded, see METHODS_LEDGER R20
 
 # Per-cell seat floors: 12*2 and 24*4 seats are reserved before the Hare quotas
 # are computed, so per-cell (cluster) inference never rests on an empty cell.
@@ -227,10 +207,11 @@ def parse_args(argv=None):
         description="Select the live-agent cohort from the synthetic population (C2 oversampled)."
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="master seed (default 2027)")
-    parser.add_argument("--n", type=int, default=DEFAULT_N_TOTAL, help="cohort size (default 300)")
+    parser.add_argument("--n", type=int, default=DEFAULT_N_TOTAL, help="cohort size (default 400)")
     parser.add_argument("--c2-share", dest="c2_share", type=float, default=DEFAULT_C2_SHARE,
-                        help="target fragile/C2 share of the cohort (default 0.20)")
-    parser.add_argument("--out", default=None, help="output json path (default agents_seed<SEED>.json)")
+                        help="target fragile/C2 share of the cohort (default 0.0807)")
+    parser.add_argument("--out", default=None,
+                        help="output json path (default runs/out/population/agents_seed<SEED>.json)")
     return parser.parse_args(argv)
 
 

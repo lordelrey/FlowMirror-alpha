@@ -1,5 +1,4 @@
 /* FlowMirror viewer — the population field.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2, §5.
 
    The agents have no physical location, so position encodes IDENTITY instead of space:
    columns are age bands, rows are asset bands, and each tile splits into three

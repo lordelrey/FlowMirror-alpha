@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://flowmirror.example/schemas/run.schema.json",
-  "title": "FlowMirror run configuration (M0+)",
-  "description": "One simulation run. Optional keys: strategy_groups, channels (defaults documented in config/engine_defaults.yaml), force_arm, modality_level, modality_arms, modality_run_arm, fees (defaults in config/engine_defaults.yaml), images_root and image_pick (optional image keys, Card IMG: images_root is a machine-local directory holding the pre-resized creative images, one file per image_id, verified against the pool's image_sha256 before any pixel is attached -- null (default) means text-only and the TV arm degrades to text; image_pick selects which of a note's own images the TV arm shows, first|random), arm_level and p_image (LEGACY keys, kept for backward compatibility and no longer required: world.py maps arm_level to modality_level when modality_level is absent, and p_image is superseded by the modality arms), mock_options (REQUIRED only when mock_llm is true -- enforced by allOf below; a live run must not carry mock-only fields), agent_policy and null_params (Card C rule-based null policy; defaults in config/engine_defaults.yaml), dynamics, dca, initial_pnl and market (Card CFG: parameters that used to be bare literals in the engine, defaults in config/engine_defaults.yaml -- every default equals the literal it replaces except dynamics.fam_decay, feed.climate_margin and fees, which the 2026-09-07 owner decisions 2/1/8 deliberately change), qdii_blocked (Card CFG, decision 10: typed here so the QDII suspension path stops being dead code, but it has NO default and must stay absent from every shipped config until a real suspension calendar lands), and any key starting with '_' (e.g. _what, _generated_from). CLI-only runtime switches are deliberately NOT schema keys: --dump-prompt travels in the engine's separate runtime-options object (flowmirror.engine.loop.RuntimeOpts, card R2D) and never through this validated config, so a literal 'dump_prompt' key handwritten into a run config is rejected on purpose (additionalProperties: false).",
+  "title": "FlowMirror run configuration",
+  "description": "Configuration for one simulation run. Defaults live in config/engine_defaults.yaml. Modality may be assigned per agent, run, or exposure; optional local images are digest-verified before use. Mock-only fields are accepted only when mock_llm is true. CLI runtime switches such as --dump-prompt are intentionally not schema keys, and unknown keys are rejected except for metadata keys beginning with an underscore.",
   "type": "object",
   "properties": {
     "run_tag": {
@@ -17,7 +17,7 @@
       "type": "boolean"
     },
     "agent_policy": {
-      "description": "Decision source for every agent: 'llm' (live/mock caller) or 'null' (flowmirror.agents.null_policy.NullPolicyLLM; wins over mock_llm). Parameters in null_params are PREREGISTERED (PREREG v1.5 draft section F, forbidden item 12): fix them before seeing main-grid results.",
+      "description": "Decision source for every agent: 'llm' (live/mock caller) or 'null' (flowmirror.agents.null_policy.NullPolicyLLM; wins over mock_llm). Fix null_params before comparing run results.",
       "type": "string",
       "enum": [
         "llm",
@@ -26,7 +26,7 @@
       "default": "llm"
     },
     "null_params": {
-      "description": "Rule parameters for the null policy (Card C); all scalar keys are numbers, stance_probs carries the three stance probabilities. Defaults live in config/engine_defaults.yaml.",
+      "description": "Rule parameters for the null policy; all scalar keys are numbers and stance_probs carries the three stance probabilities. Defaults live in config/engine_defaults.yaml.",
       "type": "object",
       "properties": {
         "p_redeem_gain": {
@@ -254,7 +254,7 @@
       ]
     },
     "images_root": {
-      "description": "Optional (Card IMG, default null). Directory holding the pre-resized creative images, one file per image_id from the content pool (flat, 0-based). The engine joins <images_root>/<image_id> and verifies the file's sha256 against the pool's image_sha256 before attaching pixels on the TV arm; a missing file or hash mismatch attaches nothing and records an image_missing / image_sha_mismatch prompt note. null means text-only: the engine prints a WARNING at run start, TV degrades to text (byte-identical to T), and the m_tv_arm_carries_images invariant is skipped with that reason. The pool deliberately ships no image paths; images never enter the repo, so this must point OUTSIDE the repository. The only sanctioned absolute path in a tracked config is the machine-local example in runs/demo_three_arm_images.json.",
+      "description": "Optional local directory holding pre-resized creative images, one file per image_id from the content pool. The engine verifies each file's sha256 before attaching pixels on the TV arm; a missing file or hash mismatch attaches nothing and records a prompt note. null means text-only and skips the image-carrying invariant. Images must remain outside the repository.",
       "type": [
         "string",
         "null"
@@ -263,7 +263,7 @@
       "default": null
     },
     "image_pick": {
-      "description": "Optional (Card IMG, default \"first\"). Which of a note's OWN images is displayed on the TV arm: \"first\" = the note's first image (the intended original behaviour); \"random\" = one of the note's own images drawn per impression from the agent's deterministic RNG stream (stable under --replay-check). Both hold the text, the landing fund and the institution constant, so \"random\" is a clean within-stimulus randomisation for later image-property work. The chosen index is logged as img_idx on the imp row.",
+      "description": "Which of a note's own images is displayed on the TV arm: first uses the first image; random draws one from the agent's deterministic RNG stream and is stable under --replay-check. The chosen index is logged as img_idx on the impression row.",
       "type": "string",
       "enum": [
         "first",
@@ -272,13 +272,13 @@
       "default": "first"
     },
     "social_graph": {
-      "description": "Agent-to-agent follow graph (E): comments carry author handles and follower counts, agents may follow_users, hot comments rank by followers, and each agent sees what the people it follows did yesterday. Off by default; on, prompt_sha moves (PREREG D31).",
+      "description": "Agent-to-agent follow graph: comments carry author handles and follower counts, agents may follow_users, hot comments rank by followers, and each agent sees what the people it follows did yesterday. Off by default; enabling it changes prompt_sha.",
       "type": "object",
       "properties": {"enabled": {"type": "boolean"}},
       "additionalProperties": false
     },
     "heat_seed": {
-      "description": "Seeded social proof (C, PREREG D27/D30): posts are randomised plus/ctrl at publication on a derived stream; a plus post shows likes+k on its first display day only. Ranking and counters never see the seed, so exposure is identical across arms. focus_fund restricts randomisation to one fund's posts (others are 'na'). Off by default; off is byte-identical.",
+      "description": "Seeded social proof: posts are randomised plus/ctrl at publication on a derived stream; a plus post shows likes+k on its first display day only. Ranking and counters never see the seed, so exposure is identical across arms. focus_fund restricts randomisation to one fund's posts (others are 'na'). Off by default; off is byte-identical.",
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
@@ -289,7 +289,7 @@
       "additionalProperties": false
     },
     "institutions": {
-      "description": "Institution adaptation (F, PREREG D32): every period_days each org re-weights its I1/I2/I3 mix from the responses its posts drew (w_new = (1-eta)*w_old + eta*share, floored, renormalised); one inst event per org per period. Off by default; off is byte-identical.",
+      "description": "Institution adaptation: every period_days each org re-weights its I1/I2/I3 mix from the responses its posts drew (w_new = (1-eta)*w_old + eta*share, floored, renormalised); one inst event per org per period. Off by default; off is byte-identical.",
       "type": "object",
       "properties": {
         "adaptive": {"type": "boolean"},
@@ -338,41 +338,41 @@
       "additionalProperties": false
     },
     "dynamics": {
-      "description": "Optional (E4 / DECISIONS #5; defaults in config/engine_defaults.yaml). Belief-and-attention dynamics that loop.py used to carry as bare literals, which left a reviewer unable to read a run's parameters off its config. Every default equals today's literal EXCEPT fam_decay, which decision 2 raises from 0.1 to 0.2.",
+      "description": "Belief, familiarity, affinity, and attention dynamics. Defaults live in config/engine_defaults.yaml.",
       "type": "object",
       "properties": {
         "fam_decay": {
-          "description": "Per-day decay of the familiarity (exposure) stock; decision 2 sets it to 0.2. loop.py falls back to 0.1 today and nothing sets the key, so this default is a deliberate change of the familiarity time series.",
+          "description": "Per-day decay of the familiarity exposure stock.",
           "type": "number",
           "minimum": 0,
           "maximum": 1
         },
         "fam_threshold": {
-          "description": "Familiarity/affinity stock at which an org reaches exposure level 1 (level 2 is reserved for an explicit follow). Default 1.0 equals today's literal.",
+          "description": "Familiarity or affinity stock at which an organisation reaches exposure level 1; level 2 is reserved for an explicit follow.",
           "type": "number",
           "minimum": 0
         },
         "lambda_trust": {
-          "description": "Org-affinity adstock retention (spec 6b, lambda_a). Default 0.9 equals today's literal.",
+          "description": "Organisation-affinity adstock retention.",
           "type": "number",
           "minimum": 0,
           "maximum": 1
         },
         "lambda_attention": {
-          "description": "Retention of the per-fund attention stock: att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba (DECISIONS #5). Today attention reuses fam_decay, so giving it its own 0.8 moves the attention series.",
+          "description": "Retention of the per-fund attention stock: att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba.",
           "type": "number",
           "minimum": 0,
           "maximum": 1
         },
         "beta_guba": {
-          "description": "Coefficient on the guba abnormal-volume signal (z_abnormal) inside the attention adstock. Decision 3: the pipeline is wired end to end but the coefficient is held at ZERO, so this round's attention series is unchanged and the channel can be switched on before the main grid by editing one config value. Unbounded like the other feed/adstock coefficients: a negative value is meaningful.",
+          "description": "Coefficient on the external abnormal-volume signal z_abnormal inside the attention adstock. Zero disables its contribution; negative values are allowed.",
           "type": "number"
         }
       },
       "additionalProperties": false
     },
     "dca": {
-      "description": "Optional (E7 / decision 7; defaults in config/engine_defaults.yaml). The monthly dollar-cost-averaging ticket, which loop.py carries as bare literals today. Both defaults equal those literals.",
+      "description": "Monthly dollar-cost-averaging ticket parameters. Defaults live in config/engine_defaults.yaml.",
       "type": "object",
       "properties": {
         "pct": {
@@ -390,7 +390,7 @@
       "additionalProperties": false
     },
     "initial_pnl": {
-      "description": "Optional (E11 / decision 13; defaults in config/engine_defaults.yaml). How an agent's opening holding cost is drawn. 'lookback' is today's behaviour -- a cost date sampled uniformly lookback_days_min..lookback_days_max trading days back -- and decision 13 keeps the three demo configs on it, so their hashes do not move. 'target' instead draws toward a target P&L distribution and is enabled ONLY in research-grade configs, because on the real NAV series lookback leaves just ~4.9% of openings at a loss, which collapses expressed sentiment to one side.",
+      "description": "Optional opening-holding cost model. 'lookback' samples a cost date uniformly within the configured trading-day window. 'target' samples toward a configured opening P&L distribution and requires share_at_loss to be stated explicitly.",
       "type": "object",
       "properties": {
         "mode": {
@@ -427,7 +427,7 @@
       "additionalProperties": false
     },
     "market": {
-      "description": "Optional (decision 6; defaults null in config/engine_defaults.yaml). The market benchmark behind the agent view's index_5d. null (the default, and what the three demo configs use) leaves index_5d out of the view entirely, which is today's behaviour, so the demo hashes do not move. The landed series is the unit NAV of the 510760 SSE Composite ETF used as a PROXY for the SSE Composite index, which the sanctioned data source does not carry: only its RETURNS are meaningful, never its level, and it must never be labelled 'the SSE index'. data/market/ is gitignored, so the path is machine-local like nav_cache.",
+      "description": "Optional benchmark series behind the agent view's index_5d field. When null, index_5d is omitted. A configured proxy must carry an explicit label, and only its returns are used.",
       "type": "object",
       "properties": {
         "benchmark_path": {
@@ -440,7 +440,7 @@
           "default": null
         },
         "benchmark_label": {
-          "description": "Human-readable label for the series, shown in prompts and the paper. Must disclose the proxy, e.g. the unit NAV of the SSE Composite ETF (510760) as a proxy for the SSE Composite.",
+          "description": "Human-readable label shown in prompts and reports. It must disclose when the series is a proxy.",
           "type": [
             "string",
             "null"
@@ -452,7 +452,7 @@
       "additionalProperties": false
     },
     "qdii_blocked": {
-      "description": "Optional (E6 / decision 10). Per-date QDII purchase suspensions: {\"YYYY-MM-DD\": {\"codes\": [fund_code, ...]}}, consumed by loop._qdii_blocked_set so a subscription into a listed fund on that date checks out as purchase_blocked. DELIBERATELY has NO default and is set in NO shipped config: decision 10 wires the schema only, so that the suspension path stops being dead code, and the key stays unset until a real suspension calendar lands as a separate data task. Do not add it to config/engine_defaults.yaml or to any runs/*.json.",
+      "description": "Optional per-date QDII purchase suspensions: {\"YYYY-MM-DD\": {\"codes\": [fund_code, ...]}}. A subscription into a listed fund on that date checks out as purchase_blocked. There is no default; callers must provide a calendar explicitly.",
       "type": "object",
       "patternProperties": {
         "^\\d{4}-\\d{2}-\\d{2}$": {
@@ -548,25 +548,25 @@
           "type": "number"
         },
         "climate_margin": {
-          "description": "Optional (decision 1, default 1/6 in config/engine_defaults.yaml). The margin |bullish - bearish| / total that a post's previous-day comment climate must clear before it is labelled bullish_majority / bearish_majority instead of mixed. Kept as a key so the sensitivity sweep needs no code change.",
+          "description": "Margin |bullish - bearish| / total that a post's previous-day comment climate must clear before it is labelled bullish_majority or bearish_majority instead of mixed.",
           "type": "number",
           "minimum": 0,
           "maximum": 1
         },
         "fit_band_narrow": {
-          "description": "Optional (E13). feed.fit()'s narrow adjustment: the core-type term (chaser on an I2 post, allocator on a nonI2 post). Default 0.15, which is the literal the function carried before it was configurable.",
+          "description": "feed.fit() narrow adjustment for the core-type term.",
           "type": "number",
           "minimum": 0.0,
           "maximum": 0.5
         },
         "fit_band_wide": {
-          "description": "Optional (E13). feed.fit()'s wide adjustment: the risk-latency term on an I2 post (tolerant up, fragile down). Default 0.25, the pre-existing literal.",
+          "description": "feed.fit() wide adjustment for the risk-latency term on an I2 post.",
           "type": "number",
           "minimum": 0.0,
           "maximum": 0.5
         },
         "w_att": {
-          "description": "Optional (owner decision 17, default 0.0). Weight on the agent's per-fund attention stock in the feed score, bounded by tanh like w_trust. At 0.0 -- the default -- attention has no effect and runs are byte-identical to before the key existed, which is what makes dynamics.beta_guba a real switch: raising both enables the guba attention channel end to end without a code change.",
+          "description": "Weight on the agent's per-fund attention stock in the feed score, bounded by tanh like w_trust. At 0.0 attention has no effect; raising it together with dynamics.beta_guba enables the external-attention channel.",
           "type": "number",
           "minimum": 0.0,
           "maximum": 5.0

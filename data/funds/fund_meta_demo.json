@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "synthetic": true,
+    "description": "Synthetic product metadata for the offline demo. Codes, names, organisations, and metrics do not represent real products."
+  },
+  "funds": {
+    "900001": {"name": "示例稳健债券基金", "org": "示例基金甲", "type": "债券型", "r_level": "R2", "family": "demo_a", "qdii": false},
+    "900002": {"name": "示例均衡混合基金", "org": "示例基金乙", "type": "混合型", "r_level": "R3", "family": "demo_b", "qdii": false},
+    "900003": {"name": "示例宽基指数基金", "org": "示例基金丙", "type": "指数型", "r_level": "R4", "family": "demo_c", "qdii": false},
+    "900004": {"name": "示例行业主题基金", "org": "示例基金丁", "type": "行业主题型", "r_level": "R4", "family": "demo_d", "qdii": false}
+  }
+}

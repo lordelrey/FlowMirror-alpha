@@ -1,5 +1,5 @@
 {
-  "_what": "DEMO (offline, synthetic data): two-arm dry run mirroring runs/mock_10x3.json with nav_cache switched to the tracked synthetic file data/funds/nav_demo_2025q4.json (if missing, run: python data_pipeline/cn/make_demo_nav.py --pool data/creatives/cn/content_pool_v1_masked.jsonl --out data/funds/nav_demo_2025q4.json). Works on a fresh clone with zero API calls and zero real market data. The NAVs are SYNTHETIC -- for demonstration only, never for any empirical claim; for research use runs/mock_10x3.json with the real nav_cache.json.",
+  "_what": "Offline two-arm demonstration using a deterministic mock model and synthetic NAV data. It makes no API calls and is not an empirical market result.",
   "run_tag": "demo_two_arm",
   "seed": 2027,
   "mock_llm": true,
@@ -11,16 +11,17 @@
   "n_agents": 10,
   "agents_file": "data/population/agents_seed2027.json",
   "orgs": [
-    "广发基金",
-    "鹏华基金",
-    "国联基金",
-    "汇添富基金"
+    "示例基金甲",
+    "示例基金乙",
+    "示例基金丙",
+    "示例基金丁"
   ],
-  "content_pool": "data/creatives/cn/content_pool_v1_masked.jsonl",
-  "posts_per_org_per_day": 2,
+  "content_pool": "data/creatives/cn/content_pool_demo.jsonl",
+  "posts_per_org_per_day": 1,
   "no_repeat_days": 10,
   "nav_cache": "data/funds/nav_demo_2025q4.json",
-  "guba_signal": "data/attention/guba_signal_v1.json",
+  "fund_meta_file": "data/funds/fund_meta_demo.json",
+  "guba_signal": "data/attention/attention_demo.json",
   "suitability": true,
   "strategy_mix": "measured",
   "ranking": "three_source",
@@ -67,6 +68,5 @@
     "force_c2_r4_click": true,
     "malformed_rate": 0.05
   },
-  "out_dir": "runs/out/demo_two_arm",
-  "fund_meta_file": "data/flows/flow_panel_v2.json"
+  "out_dir": "runs/out/demo_two_arm"
 }

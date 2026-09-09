@@ -7,8 +7,8 @@ here is a pure function of its arguments: no file I/O, no printing outside
 self_test(), no global mutable state, and no sqlite3 (xhs_data.db is
 off-limits to sim code).
 
-Modality-arm contract (PREREG v1.5 A; tolerances per the corrected v1.3
-B10): the PRE-REGISTERED agent-level assignment is assign_agent_arms(), a
+Modality-arm contract: the reference agent-level assignment is
+assign_agent_arms(), a
 stratified block randomisation over the population cells.  Within each
 cell the agent ids are ordered by sha256(f"{run_tag}|arm|{agent_id}") and
 the arms are dealt round-robin down that order; the per-cell starting arm
@@ -20,8 +20,8 @@ balanced as its size allows (each arm receives floor(n_cell/k) or
 ceil(n_cell/k) agents, so no cell of size >= 2 is single-armed) and the
 overall share stays within one agent of 1/k for the project's k=2/k=3
 arm sets.  arm_for_agent() is the UNBALANCED per-agent coin on the same
-sha256(run_tag|arm|agent_id) stream: it is NOT the pre-registered
-assignment (an independent coin cannot meet the B10 tolerances at
+sha256(run_tag|arm|agent_id) stream: it is NOT the cohort-balanced
+assignment (an independent coin cannot meet strict balance tolerances at
 n=400) and survives only for callers that have no cohort (tests, the
 exposure path) and for bit-for-bit replay of pre-v1.5 two-arm configs --
 arms=("T","TV") keeps the exact v1.3 coin (random() < 0.5 -> "TV"),
@@ -45,17 +45,17 @@ the report carries the observed worst cases (worst_overall_dev,
 worst_cell_dev, single_armed_cells) so the engine's richer invariants
 report can surface them.
 
-Runtime climate weighting (PREREG v1.2 B, kept in v1.3): climate_for()
+Runtime climate weighting: climate_for()
 accepts weights (agent_id -> strat_weight) and counts each comment at
 that weight; under proportional sampling strat_weight ~= 1 so this path
-is the identity, but it must exist so the GAP_S6_CLIMWT consistency
-check can be run.  hot_score() stays weight-agnostic: the engine passes
+is the identity, but the weighted path remains available for sampled
+populations. hot_score() stays weight-agnostic: the engine passes
 already-weighted engagement counts.
 
 Ranking contract: rank_feed(mode="three_source") is the frozen reference
 recommender; mode="random" fills the K slots uniformly at random over the
-candidate posts and is the primary control for anti-claim A1 (PREREG
-v1.2 C).  Any other mode raises ValueError.  The trending stage selects,
+candidate posts and is the primary random-ranking control. Any other mode
+raises ValueError. The trending stage selects,
 among candidates not already placed by follow/fit, the highest heat_prev
 posts, ties broken by score DESC then post_id ASC.
 
@@ -146,12 +146,9 @@ def hot_score(likes, saves, comments, age_days, gamma=1.8):
 def _cmt_field(c, primary, alias, default=None):
     """Resolve a comment field across the two record shapes in circulation.
 
-    The engine's day record (loop.py) stores comments under short keys
-    (i, p, fam, ...), while this channel's own fixtures and older tests use
-    the long names (agent_id, post_id, fam_level). FIX3 Defect 1: the channel
-    read only the long names, so every real comment was invisible and every
-    climate came back no_signal. Read `primary` first, then `alias`; return
-    `default` when neither key carries a value."""
+    The engine's day record stores comments under short keys (i, p, fam, ...),
+    while fixtures may use long names (agent_id, post_id, fam_level). Read
+    `primary` first, then `alias`; return `default` when neither carries a value."""
     v = c.get(primary)
     if v is None:
         v = c.get(alias)
@@ -162,14 +159,8 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None,
                 margin=1.0 / 6.0):
     """Aggregate day-(t-1) comment stances for one post into a climate label.
 
-    Decision 1 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md section 5):
-    the majority margin is 1/6.  This function hardcoded +/-1/3 and its own
-    docstring called that a frozen design parameter -- it is twice as strict
-    as DECISIONS #6 asks for, so every thread between the two thresholds was
-    reported "mixed" when the design record calls it a majority.  The margin
-    is now a keyword so the sensitivity sweep needs no code change; the
-    default carries the decided value to the engine until card L3 threads
-    cfg["feed"]["climate_margin"] through loop.py.
+    The default majority margin is 1/6 and can be overridden by callers for
+    sensitivity analysis.
 
     The comparison is STRICT (d > margin), which matters at the margin
     itself: 3 bullish / 2 bearish / 1 watching gives d == 1/6 to the bit
@@ -177,20 +168,19 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None,
     under margin=1/6 as well.  Only a mix STRICTLY between the old and new
     thresholds -- e.g. 4/2/2, d = 0.25 -- changes label.
 
-    The min_n=4 floor IS still frozen: below the floor a post shows
+    The min_n=4 floor suppresses noisy labels: below it a post shows
     "no_signal" rather than a noisy majority, which keeps thin comment
     threads from manufacturing fake social proof for the LLM prompt.
     Returns (label, counts) where counts covers {bullish, bearish,
     watching} only.
 
     weights (agent_id -> strat_weight) enables the runtime climate
-    weighting path (PREREG v1.2 B): each comment contributes its
+    weighting path: each comment contributes its
     commenter's weight to the stance count instead of 1, the min_n floor
     is compared against the WEIGHTED total, and the returned counts are
     the weighted counts (floats).  weights=None reproduces the current
     integer behaviour exactly (it is also the numerical identity when
-    every strat_weight equals 1.0, which is what the GAP_S6_CLIMWT
-    consistency check relies on).
+    every strat_weight equals 1.0).
     """
     counts = {"bullish": 0, "bearish": 0, "watching": 0}
     for c in comments_prev or []:
@@ -208,7 +198,7 @@ def climate_for(post_id, comments_prev, min_n=4, weights=None,
     if total < min_n:
         return ("no_signal", counts)
     d = (counts["bullish"] - counts["bearish"]) / total
-    # Decision 1: the margin is symmetric and comes from the caller, so a
+    # The margin is symmetric and comes from the caller, so a
     # sensitivity sweep changes one config value rather than this file.
     if d > margin:
         label = "bullish_majority"
@@ -257,11 +247,8 @@ Familiarity with the posting org (fam_level) DESC, then agent_id ASC as
     return pool[: max(0, k)]
 
 
-if __name__ == "__main__":       # FIX3 Defect 1 regression check -- runs under python -m
-    # The shipped self-test only ever fed this channel its own idealised shape
-    # (post_id/agent_id/fam_level), which is exactly how three key-name
-    # mismatches against the ENGINE record survived. Exercise the engine's
-    # real record shape too: {i, p, stance, text, w, fam, fam_phrase}.
+if __name__ == "__main__":
+    # Exercise the engine's compact comment record shape.
     _cmts = [
         {"i": "inv_001", "p": "P1", "stance": "bullish", "text": "b1", "w": 1.0,
          "fam": 2, "fam_phrase": "often"},
@@ -311,7 +298,7 @@ def _is_legacy_two_arm(arms_t):
 
 
 def assign_arms(rng, k, tally, arms=("T", "TV")):
-    """Per-exposure modality-arm randomization (PREREG v1.3 B10, v1.5 A).
+    """Per-exposure modality-arm randomization.
 
     Used only when config modality_level == "exposure" (the sensitivity
     option); the default modality level is the agent-level
@@ -322,7 +309,7 @@ def assign_arms(rng, k, tally, arms=("T", "TV")):
     (h)'s OVERALL clause for exposure-level two-arm runs (each agent's
     lifetime TV share stays within +/-0.02 of 0.5 while individual
     exposures remain randomized).  For any other arm set each draw is
-    int(rng.random()*k) indexed into arms (PREREG v1.5 A): per-agent
+    int(rng.random()*k) indexed into arms: per-agent
     lifetime shares then drift within binomial noise, which the
     exposure-level sensitivity design accepts.  tally is mutated in place
     on purpose; it belongs to the caller (the engine's per-agent state).
@@ -354,7 +341,7 @@ def _arm_for_agent_legacy(run_tag, agent_id):
     """v1.3 two-arm draw, kept VERBATIM as the regression reference.
 
     arm_for_agent() with the default arms=("T","TV") must reproduce this
-    bit-for-bit so runs configured before PREREG v1.5 replay identically;
+    bit-for-bit so earlier two-arm runs replay identically;
     the self-tests assert equality over fixed id lists against this copy.
     """
     digest = hashlib.sha256(f"{run_tag}|arm|{agent_id}".encode()).hexdigest()
@@ -364,9 +351,9 @@ def _arm_for_agent_legacy(run_tag, agent_id):
 def arm_for_agent(run_tag, agent_id, arms=("T", "TV")):
     """Agent-level modality-arm draw -- the UNBALANCED per-agent coin.
 
-    This is NOT the pre-registered assignment: keyed only on
+    This is NOT the cohort-balanced assignment: keyed only on
     sha256(f"{run_tag}|arm|{agent_id}") it is an independent coin per
-    agent, which cannot meet the (corrected) PREREG B10 tolerances -- the
+    agent, which cannot meet the configured balance tolerances -- the
     SD of the two-arm overall share is 0.025 at n=400 (vs the 0.01
     tolerance) and cells of size 2 can never be balanced by coin flips.
     Callers that hold the cohort MUST use assign_agent_arms(); this
@@ -384,7 +371,7 @@ def arm_for_agent(run_tag, agent_id, arms=("T", "TV")):
     exact legacy coin (random() < 0.5 -> "TV") so existing runs are
     unchanged.  Any other arm set -- e.g. ("T","TC","TV") for the v1.5
     three-arm modality -- draws int(rng.random()*k) on the same stream and
-    indexes into arms in the order given (PREREG v1.5 A).
+    indexes into arms in the order given.
     """
     arms_t = _check_arms(arms)
     if _is_legacy_two_arm(arms_t):
@@ -399,14 +386,14 @@ def _agent_digest(run_tag, agent_id):
 
     The same digest arm_for_agent() seeds its draw from;
     assign_agent_arms() reuses it as the WITHIN-CELL sort key so the
-    pre-registered assignment and the cohort-less coin stay on one
-    auditable per-agent stream.
+    cohort-balanced assignment and the cohort-less coin stay on one
+    reproducible per-agent stream.
     """
     return hashlib.sha256(f"{run_tag}|arm|{agent_id}".encode()).hexdigest()
 
 
 def assign_agent_arms(run_tag, agents, arms=("T", "TV")):
-    """Stratified block randomisation of the agent-level arm (PREREG B10).
+    """Stratified block randomisation of the agent-level arm.
 
     agents is a sequence of (agent_id, cell) pairs (cell is stringified
     for grouping; duplicate agent ids are ignored after their first
@@ -498,7 +485,7 @@ def _cell_tolerance(n_cell, k):
     A round-robin deal gives every arm floor(n/k) or ceil(n/k) agents,
     so the largest per-arm share deviation a PERFECT deal must still
     allow is max(m, k-m)/(k*n) with m = n mod k (0 when k divides n).
-    For k=2 this is exactly 1/(2*n) -- the corrected PREREG B10 per-cell
+    For k=2 this is exactly 1/(2*n), the per-cell
     tolerance.  For k>=3 it can exceed 1/(2*n): a 2-agent 3-arm cell is
     necessarily (1,1,0) and its empty arm deviates by 1/3 > 1/4, so the
     tolerance is the max of the two -- never failing a perfectly dealt
@@ -512,12 +499,12 @@ def _cell_tolerance(n_cell, k):
 def check_arm_balance(agent_arms, agent_cells, arms=None):
     """Verify arm invariant (h) for stratified block randomisation; (ok, report).
 
-    Checks what block randomisation can actually achieve (PREREG B10 as
-    corrected): OVERALL, every arm's share is within _OVERALL_ARM_TOL
+    Checks what block randomisation can actually achieve: OVERALL, every
+    arm's share is within _OVERALL_ARM_TOL
     (0.01) of 1/k; WITHIN EACH CELL, every arm's share is within
     _cell_tolerance(n_cell, k) of 1/k, i.e. as balanced as the cell size
     permits (exactly |share - 1/2| <= 1/(2*n_cell) + 1e-9 for the
-    pre-registered two-arm set).
+    reference two-arm set).
 
     The arm set is INFERRED from the values in agent_arms unless arms= is
     passed explicitly (the engine passes the configured modality_arms so
@@ -623,10 +610,8 @@ def fit(agent_state, post, fit_band_narrow=0.15, fit_band_wide=0.25):
     lives in the engine and applies to SUBSCRIBE only.  Keeping this term
     bounded keeps the w_fit weighting stable regardless of agent type.
 
-    E13 (docs/AUDIT_AND_REMEDIATION_PLAN_2026-09-07.md 1A): the two
-    adjustment magnitudes were bare literals, so no reviewer could read a
-    run config and learn what the suitability prior actually did.  They are
-    now parameters, fed by `feed.fit_band_wide` (the risk-latency swing,
+    The two adjustment magnitudes are parameters, fed by
+    `feed.fit_band_wide` (the risk-latency swing,
     0.25) and `feed.fit_band_narrow` (the core-type nudge, 0.15) via
     rank_feed.  The defaults ARE today's literals, so a config that sets
     neither key is byte-identical -- and neither key is in
@@ -664,9 +649,9 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
               mode="three_source"):
     """PolicySim-style three-source recommender: follow -> fit -> trending.
 
-    mode="three_source" (default, the frozen reference feed) behaves as
-    described below.  mode="random" is the A1 anti-claim control (PREREG
-    v1.2 C): scores, sources and slot quotas are ignored entirely and
+    mode="three_source" (default, the reference feed) behaves as described
+    below. mode="random" is the random-ranking control: scores, sources and
+    slot quotas are ignored entirely and
     min(K, len(candidates)) distinct candidates are drawn uniformly with
     rng.sample, each labelled "random"; the behavioural agent is left
     unchanged, only the feed differs.  Any other mode raises ValueError.
@@ -717,15 +702,11 @@ def rank_feed(agent_state, candidates, heat_prev, clim_prev, cfg, rng,
     w_fit = _f(cfg.get("w_fit", 1.0), 1.0)
     w_heat = _f(cfg.get("w_heat", 1.0), 1.0)
     w_soc = _f(cfg.get("w_soc", 0.5), 0.5)
-    # Owner decision 17. inv.attention had no reader anywhere, so dynamics.beta_guba and
-    # dynamics.lambda_attention changed a series nothing consumed -- decision 3's promise
-    # that the guba channel is "wired, only the coefficient is zero" was not true of the
-    # ranker. Default 0.0 keeps every current run byte-identical, and one config value
-    # now genuinely enables the channel. tanh bounds it the way the trust term is bounded,
-    # so a fund with a long exposure history cannot dominate the score.
+    # The attention channel is inert at the default weight 0.0. tanh bounds it
+    # like the trust term so long exposure histories cannot dominate the score.
     w_att = _f(cfg.get("w_att", 0.0), 0.0)
     eps = _f(cfg.get("eps", 0.05), 0.05)
-    # E13: read alongside the weights so the fit prior is scored with one
+    # Read alongside the weights so the fit prior is scored with one
     # fixed pair of bands per call, never re-resolved per candidate.  Same
     # defaults as fit()'s own, so an omitting config changes nothing.
     band_narrow = _f(cfg.get("fit_band_narrow", 0.15), 0.15)
@@ -840,17 +821,17 @@ def self_test():
                              + _cmts(["bearish"] * 4, pid="p2"))
     record("climate_for: ignores other posts' comments", lab_iso == "bullish_majority")
 
-    # Decision 1: the margin is 1/6, and it is a parameter.  The mix that pins
+    # The margin is 1/6 and configurable. The mix below sits
     # the change has to sit STRICTLY between the two thresholds, because
     # d > margin is strict: 4 bullish / 2 bearish / 2 watching gives d = 0.25,
-    # "mixed" under the old 1/3 and a majority under the decided 1/6.
+    # between 1/3 and 1/6, so it changes label across those settings.
     _straddle = _cmts(["bullish"] * 4 + ["bearish"] * 2 + ["watching"] * 2)
     lab_m13, _ = climate_for("p1", _straddle, margin=1.0 / 3.0)
     lab_m16, _ = climate_for("p1", _straddle)
     record("climate_for: d=0.25 is mixed at margin 1/3, majority at 1/6",
            lab_m13 == "mixed" and lab_m16 == "bullish_majority",
            f"1/3={lab_m13} 1/6={lab_m16}")
-    # A thread sitting exactly ON the decided margin does NOT cross it:
+    # A thread sitting exactly on the margin does not cross it:
     # 3 bullish / 2 bearish / 1 watching is d == 1/6 as the identical float,
     # so the strict comparison keeps it "mixed" at both thresholds.  Pinned
     # here so a later switch to >= -- which would move every hash again --
@@ -865,7 +846,7 @@ def self_test():
     # The same margin governs the bearish branch (symmetry of -margin).
     lab_bear, _ = climate_for("p1", _cmts(["bearish"] * 4 + ["bullish"] * 2
                                           + ["watching"] * 2))
-    record("climate_for: the decided margin is symmetric",
+    record("climate_for: the configured margin is symmetric",
            lab_bear == "bearish_majority", f"lab={lab_bear}")
 
     # Weighted path: all-1.0 weights must equal the unweighted result
@@ -892,9 +873,8 @@ def self_test():
     cwf = _cmts(["bullish", "bullish", "bearish"])
     lab_f0, _ = climate_for("p1", cwf)
     lab_f1, _ = climate_for("p1", cwf, weights={"inv_00002": 3.0})
-    # Decision 1 moved this expectation: the weighted thread is 2.0 bullish
-    # vs 3.0 bearish, d = -0.2, which clears -1/6 but not the old -1/3.  What
-    # this case exists to prove is unchanged -- the floor is compared against
+    # The weighted thread is 2.0 bullish vs 3.0 bearish, d = -0.2. The
+    # floor is compared against
     # the WEIGHTED total, so 3 raw comments go from no_signal to labelled --
     # and asserting the exact label keeps it a margin regression too.
     record("climate_for: min_n floor compares the weighted total",
@@ -946,7 +926,7 @@ def self_test():
     record("assign_arms: running imbalance stays <= 1",
            max_imb <= 1, f"max_imb={max_imb}")
 
-    # --- assign_arms (three-arm path, PREREG v1.5 A) ----------------------
+    # --- assign_arms (three-arm path) -------------------------------------
     three = ("T", "TC", "TV")
     rng_3a = _make_rng("feed_selftest", "arms3_a")
     tally_3a = {}
@@ -988,7 +968,7 @@ def self_test():
                  != arm_for_agent("rt_beta", "inv_%05d" % i))
     record("arm_for_agent: differs across run_tag", n_diff > 0, f"n_diff={n_diff}/50")
 
-    # PREREG v1.5 A: the default arms path must equal the frozen v1.3 coin
+    # The default arms path must equal the legacy two-arm coin
     # bit-for-bit (old-config replay identity), for the implicit default and
     # for both orderings of the explicit two-arm set.
     legacy_eq = True

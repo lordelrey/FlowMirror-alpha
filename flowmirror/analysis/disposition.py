@@ -118,7 +118,7 @@ def _core(acts, openings, arms, nav_cache, agent_policy=None, nav_source=None,
                 sold[aid] = s
         if day_sell:
             sell_days += 1
-        # paper gains/losses on held-but-not-sold funds, only on sell days
+        # unrealized gains/losses on held-but-not-sold funds, only on sell days
         for aid, s in sold.items():
             arm = (arms or {}).get(aid, "all")
             for code, cell in holdings.get(aid, {}).items():
@@ -129,8 +129,8 @@ def _core(acts, openings, arms, nav_cache, agent_policy=None, nav_source=None,
                 if nav is None:
                     nav_missing += 1
                     continue
-                paper = cell[0] * (nav - cell[1])
-                key = "PG" if paper > 0 else ("PL" if paper < 0 else None)
+                unrealized = cell[0] * (nav - cell[1])
+                key = "PG" if unrealized > 0 else ("PL" if unrealized < 0 else None)
                 if key:
                     _bump(tot, per, arm, key)
     note = None
@@ -231,7 +231,7 @@ def _self_test():
     assert r["PGR"] == 0.0 and r["PLR"] == 0.0 and r["DE"] == 0.0
     r = _rates({"RG": 1, "RL": 1, "PG": 0, "PL": 0})
     assert r["PGR"] == 1.0 and r["PLR"] == 1.0 and r["DE"] == 0.0
-    # one realized gain sold + one paper loss held -> PGR 1, PLR 0, DE 1
+    # one realized gain sold plus one unrealized loss held -> PGR 1, PLR 0, DE 1
     openings = {"a1": {"hold": {"FG": 100.0, "FL": 100.0},
                        "cost": {"FG": 1.0, "FL": 2.0}}}
     nav = {"FL": {"2025-10-01": 1.5}}

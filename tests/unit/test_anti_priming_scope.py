@@ -22,7 +22,7 @@ class AntiPrimingScopeTest(unittest.TestCase):
 
     def test_agent_memory_may_contain_guarded_words(self):
         # Yesterday's own comment read back today is legitimate input, not priming.
-        view = dict(VIEW, memory=["D1｜看6条｜未交易｜评鹏华基金:bullish\"值得研究\"｜心情3｜先观望"])
+        view = dict(VIEW, memory=["D1｜看6条｜未交易｜评示例基金乙:bullish\"值得研究\"｜心情3｜先观望"])
         _, prompt_sha, _, _ = self._build(view)
         self.assertRegex(prompt_sha, r"^[0-9a-f]{64}$")
 

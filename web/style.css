@@ -1,5 +1,5 @@
 /* FlowMirror replay viewer — design system.
-   See docs/WEB_CONTRACT_2026-09-07.md §4. Page modules may USE these tokens and must
+   Page modules may USE these tokens and must
    not invent colours.
 
    Three decisions this file encodes, in case a future edit is tempted to "brighten

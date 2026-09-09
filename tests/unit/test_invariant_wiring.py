@@ -1,24 +1,15 @@
-"""Card R2F-loop: the engine must consume world.check_invariants' real results.
+"""The engine must consume world.check_invariants results faithfully.
 
-check_invariants returns (checks, core). run_simulation used to test
-isinstance(result, dict) -- always False for that 2-tuple -- and fall back to
-{"core": {"pass": bool(<tuple>)}}, and bool() of a non-empty tuple is always
-True. Every per-invariant result was therefore discarded before write_reports:
-invariants_report.json showed the registered invariants as "skipped: not
-evaluated" plus one bogus "core: pass", and the console printed
-invariants=PASS even if every invariant failed. These tests pin the fixed
-wiring:
+check_invariants returns (checks, core). These tests verify the wiring:
 
 (a) a mock run's invariants_report.json carries real pass/fail entries -- zero
     unexplained skips -- with numeric detail for the wealth identity
     (d_wealth_conservation) and arm balance (h_arm_balance);
 (b) a checks dict with one failing invariant and core=False drives engine exit
     code 4 and the failing key, with its detail, is named on stdout;
-(c) a malformed check_invariants return (the pre-R2F bare-dict contract) must
+(c) a malformed check_invariants return must
     raise, never be coerced into a pass.
 
-Test (b) fails against the pre-fix engine: the tuple is coerced into a pass,
-run_simulation returns 0, and the failing key never reaches stdout.
 """
 import json
 import os
@@ -58,24 +49,8 @@ def test_registry_mirror_has_not_drifted():
         f"stale here {sorted(set(REGISTRY) - set(world.INVARIANTS))}")
 
 
-def _cfg_path(name="mock_10x3.json"):
-    for base in (os.environ.get("FLOWMIRROR_DATA_ROOT"),
-                 os.environ.get("FLOWMIRROR_RESEARCH_ROOT"),
-                 os.path.join(ROOT, "data"), ROOT):
-        if not base:
-            continue
-        p = os.path.join(base, "runs", name)
-        if os.path.exists(p):
-            return p
-    return None
-
-
 def _run_mock(tmp_path, agents=None, days=None):
-    """Build a runnable mock config from the SELF-CONTAINED demo config.
-
-    Card CI1: this used to derive from runs/mock_10x3.json, whose nav_cache input
-    is the git-ignored 4.4 MB research cache, so the suite was green only on a
-    machine that happened to hold that file and red on every clean clone."""
+    """Build a runnable mock config from the self-contained demo config."""
     from tests.conftest import DEMO_AGENTS, DEMO_DAYS, build_demo_cfg, find_demo_run
 
     if find_demo_run() is None:
@@ -148,24 +123,20 @@ def test_mock_run_reports_real_invariant_detail(tmp_path):
     for key in ("d_wealth_conservation", "h_arm_balance"):
         entry = _find_entry(report, key)
         assert _has_number(entry), f"{key} carries no numeric detail: {entry}"
-    # FIX3 (Defect 4): no arbitrary evaluation count -- legitimate, honestly-reasoned
-    # skips (no redemption act rows, no hard_block checkouts, no displayed comment
+    # Do not require an arbitrary evaluation count: legitimate skips (no
+    # redemption act rows, no hard_block checkouts, no displayed comment
     # entries, no redemption checkout rows) could not meet >= 8. What matters: every
     # registered key was found above (no silent absence), every skip above carried a
     # non-empty reason, and the invariants that must be evaluable on ANY run -- the
     # wealth identity and the arm balance -- are evaluated rather than skipped. After
-    # the FIX3 Defect 1 feed repair the comment-climate skips (g/j) disappear on
-    # their own, because agents finally see displayed comments.
+    # Comment-climate checks become evaluable when comments are displayed.
     assert {"d_wealth_conservation", "h_arm_balance"} <= set(evaluated), \
         ("wealth identity and arm balance must be evaluated on every run, not skipped "
          f"(evaluated={evaluated}, skipped={skipped})")
 
 
 def test_failing_invariant_exits_4_and_is_named(tmp_path, capsys, monkeypatch):
-    """(b) core=False with one failing invariant -> exit code 4 + named on stdout.
-
-    Must FAIL against the pre-R2F engine (which coerced the (checks, core)
-    tuple into a pass and returned 0)."""
+    """core=False with one failing invariant yields exit code 4 and a named check."""
     cfg = _run_mock(tmp_path)
     failing = {"d_wealth_conservation": {"pass": False, "residual_cny": 12.5,
                                          "worst_agent": "A3"}}
@@ -190,7 +161,7 @@ def test_malformed_check_invariants_result_raises(tmp_path, monkeypatch):
     cfg = _run_mock(tmp_path)
 
     def bad_check_invariants(state, events_path, cfg_):
-        return {"d_wealth_conservation": {"pass": True}}   # pre-R2F dict contract
+        return {"d_wealth_conservation": {"pass": True}}
 
     monkeypatch.setattr(loop, "check_invariants", bad_check_invariants)
     with pytest.raises(TypeError):

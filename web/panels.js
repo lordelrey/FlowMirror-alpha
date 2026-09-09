@@ -1,7 +1,6 @@
 /* FlowMirror viewer — the replay panels: feed, transport, tallies, inspector,
-   heatmap and the suitability checkout table.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2 (mountReplayPanels), §4 (tokens only),
-   §6 (degradation must be stated on screen, never silently blank).
+   heatmap and the suitability checkout table. Degradation must be stated on
+   screen, never silently blank.
 
    The shell owns the day cursor, the selection, playback and the keyboard. This module
    only reports intent through `opts` and re-renders when told. Everything it draws it

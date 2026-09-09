@@ -1,8 +1,6 @@
 window:
   max_trading_days: 63
-# Card C: rule-based null policy (anti-A1 baseline). The null_params below are
-# PREREGISTERED (PREREG v1.5 draft section F, forbidden item 12): they must be
-# fixed BEFORE any main-grid result is seen and never tuned after the fact.
+# Rule-based policy parameters. Keep them fixed across runs being compared.
 agent_policy: llm
 null_params:
   p_redeem_gain: 0.06
@@ -32,20 +30,11 @@ modality_level: agent
 modality_arms:
   - "T"
   - "TV"
-# Decision 19: deliberately NOT set here. It only applies when modality_level is
-# "run", where the engine defaults it to the first configured arm; an unconditional
-# default made every arm set that omits TV fail validation, including agent-level runs
-# where this key does nothing at all.
-# Card IMG (config surface): TV-arm image resolution. images_root points at
-# the LOCAL store of pre-resized creatives (one file per image_id, flat,
-# 0-based); null (default) means text-only -- the engine prints a WARNING at
-# run start, the TV arm degrades to text -- NOT byte-identical to T, which prints
-# its own 配图不展示。 line, so such a run is not a T==TV null baseline -- and the
-# m_tv_arm_carries_images invariant is skipped with that reason. Files are
-# sha256-verified against the pool's image_sha256 before any pixel is
-# attached. Images are never copied into the repo and this must never point
-# inside it; the only tracked absolute path is the machine-local example in
-# runs/demo_three_arm_images.json.
+# modality_run_arm is intentionally absent here; it applies only when
+# modality_level is "run", where the engine selects the first configured arm.
+# images_root points to a local directory of pre-resized creatives. Null means
+# no pixels are attached and the engine reports the degraded TV path. Image
+# files are verified against the content pool and must stay outside the repo.
 images_root: null
 # Which of a note's OWN images the TV arm shows: "first" (the note's first
 # image; the intended original behaviour) or "random" (one of the note's own
@@ -55,29 +44,25 @@ images_root: null
 # clean within-stimulus randomisation for later image-property work. The
 # chosen index is logged as img_idx on the imp row.
 image_pick: "first"
-# Decision 8: the fee schedule the pre-registration names -- 0.12% subscription,
-# 0.5% redemption. These were 0.0/0.0, which silently made every acceptance run
-# fee-free even though apply_decision already charges cfg["fees"]. That makes
-# this the ONE key on this card that moves an event-log sha by itself, and only
-# for a run whose own config does not set fees explicitly.
+# Default subscription and redemption fees used when a run does not override them.
 fees:
   subscribe_rate: 0.0012
   redeem_rate: 0.005
 # CSRC 2017 liquidity rule: redemptions of units held < 7 days pay >= 1.5%.
 # Off by default; the counterfactual extra fee is still written to co.st_fee_cf.
-# Social graph (E): off by default; on, comments carry author handles + follower counts,
+# Social graph: off by default; on, comments carry author handles + follower counts,
 # agents may follow_users, hot comments rank by followers, and a "what the people you
-# follow did yesterday" block appears (prompt_sha moves -- pre-registered D31).
+# follow did yesterday" block appears. Enabling it changes prompt_sha.
 social_graph:
   enabled: false
-# Institution adaptation (F): orgs re-weight I1/I2/I3 every period_days from the responses
-# their own posts drew. Off by default -- off is byte-identical (PREREG D32).
+# Institution adaptation: orgs re-weight I1/I2/I3 every period_days from the responses
+# their own posts drew. Off by default; the disabled path is byte-identical.
 institutions:
   adaptive: false
   period_days: 5
   eta: 0.5
   floor: 0.05
-# Seeded social proof (C): plus posts show likes+k on their first display day; off = byte-identical.
+# Seeded social proof: plus posts show likes+k on their first display day; off is byte-identical.
 heat_seed:
   enabled: false
   k: 10
@@ -112,22 +97,17 @@ feed:
   w_fit: 1.0
   w_heat: 1.0
   w_soc: 0.5
-  # Decision 17: weight on the per-fund attention stock. 0.0 keeps every run
-  # byte-identical to before attention had any reader at all; raising it together
-  # with dynamics.beta_guba enables the guba attention channel end to end.
+  # Weight on the per-fund attention stock. Raising it together with
+  # dynamics.beta_guba enables the external-attention channel end to end.
   w_att: 0.0
-  # E13: feed.fit()'s two adjustment bands, equal to the literals the function carried
-  # before they were configurable -- narrow is the core-type term, wide the risk-latency
-  # term on an I2 post.
+  # feed.fit() adjustment bands: narrow is the core-type term, wide is the
+  # risk-latency term on an I2 post.
   fit_band_narrow: 0.15
   fit_band_wide: 0.25
   eps: 0.05
   gamma: 1.8
-  # Decision 1: the margin |bullish-bearish|/total must clear before a post's
-  # comment climate is called a majority. feed.climate_for hardcodes 1/3, which
-  # is twice as strict as DECISIONS #6 asks for; 1/6 is the decided value, kept
-  # as a key so the sensitivity sweep needs no code change. Inert until the
-  # feed card reads it, then it moves the sha of every run with comment traffic.
+  # The margin |bullish-bearish|/total must clear before a post's comment
+  # climate is called a majority.
   climate_margin: 0.16666666666666666
 p_active: 1.0
 memory_days: 5
@@ -140,13 +120,8 @@ llm:
   decision_failure_halt: 0.02
   # The halt compares a RATE; below this many decisions the rate is noise (1/40 = 2.5%).
   decision_failure_min_calls: 100
-  # E9: both of these were unconfigurable module constants in agents/runtime.py,
-  # so the sampling temperature -- an experimental parameter -- never reached
-  # run_meta and no reviewer could tell what a run used. The defaults equal
-  # runtime.TEMP and runtime.MAX_ATTEMPTS exactly, so surfacing them moves no
-  # hash. max_provider_attempts is the PHYSICAL HTTP retry budget inside
-  # call_glm; it is a different quantity from llm.max_attempts above, which is
-  # the macro re-ask switch. Same word, different mechanism -- do not merge them.
+  # max_provider_attempts is the HTTP retry budget inside call_glm. It differs
+  # from llm.max_attempts above, which controls whole-response re-asks.
   temperature: 0.3
   max_provider_attempts: 5
   # Cap (seconds) on any single 429/RATE_LIMIT backoff sleep inside call_glm.
@@ -156,64 +131,35 @@ llm:
 mock_options:
   force_c2_r4_click: false
   malformed_rate: 0.0
-# E4 / DECISIONS #5: the belief-and-attention dynamics. Every one of these was a
-# bare literal in loop.py, so a reviewer could not read the run's parameters off
-# its config. Each default equals today's literal EXCEPT fam_decay (decision 2),
-# and all of them stay inert until the loop card reads them.
+# Belief, familiarity, affinity, and attention dynamics.
 dynamics:
-  # Decision 2: exposure decay per day for the familiarity stock. loop.py:763
-  # reads a TOP-LEVEL "fam_decay" that no schema admits and no config sets, so
-  # its 0.1 fallback is what every run has used; 0.2 is therefore a real change
-  # of the familiarity time series once the loop card reads it from here.
+  # Exposure decay per day for the familiarity stock.
   fam_decay: 0.2
   # loop.py:~770: the familiarity/affinity stock at which an org reaches
   # exposure level 1 (level 2 is reserved for an explicit follow).
   fam_threshold: 1.0
-  # loop.py:1050: the org-affinity adstock retention (spec 6b, lambda_a).
+  # Organisation-affinity adstock retention.
   lambda_trust: 0.9
-  # DECISIONS #5 wants attention to carry its OWN retention:
+  # Attention carries its own retention:
   # att_t = lambda_attention * att_{t-1} + exposure + beta_guba * z_guba.
-  # Today loop.py reuses fam_decay for the attention decay, so once the loop
-  # card separates them the attention series moves and the sha with it.
   lambda_attention: 0.8
-  # Decision 3: the guba abnormal-volume coefficient. The pipeline is to be
-  # wired end to end (read z_abnormal, multiply, feed the adstock) with the
-  # coefficient held at ZERO, so this round's attention series stays
-  # byte-identical and the owner can switch the channel on before the main
-  # grid by editing one config value. The decision says 0.0 and explicitly
-  # forbids 0.1 -- test_defaults_match_decisions.py guards that.
+  # Coefficient on the external abnormal-volume signal. Zero disables its
+  # contribution while preserving the rest of the attention pipeline.
   beta_guba: 0.0
-# E7, the literals half: the monthly DCA ticket, carried as bare literals in
-# loop.py:1024-1027 (inv.cash * 0.02, and the 100 CNY floor). Decision 7's other
-# half -- letting a zero-holding agent ever START a DCA -- is a loop.py change,
-# not a config key, so nothing here addresses it.
+# Monthly DCA ticket as a share of cash with an absolute floor.
 dca:
   pct: 0.02
   min_ticket: 100.0
-# E11 / decision 13: how an agent's opening holding cost is drawn.
-# "lookback" is today's behaviour -- sample a cost date randint(60, 250) trading
-# days back (world.py:454) -- and the three demo configs stay on it, so their
-# hashes do not move. "target" (share_at_loss / tolerance) draws toward a target
-# P&L distribution instead and is enabled ONLY in research-grade configs,
-# because the real NAV series leaves just ~4.9% of openings at a loss, which
-# collapses expressed sentiment to one side.
+# How an agent's opening holding cost is drawn. "lookback" samples a prior
+# trading date; "target" draws toward a configured opening P&L distribution.
 initial_pnl:
   mode: lookback
   lookback_days_min: 60
   lookback_days_max: 250
-  # Decision 18: share_at_loss has NO default on purpose. Its old 0.05 was exactly
-  # the one-sided environment target mode exists to escape (the real NAV series leaves
-  # ~4.9% of openings at a loss), so a research config that asked for target mode and
-  # forgot the share silently reproduced the pathology it was reaching for. Target mode
-  # now refuses to run without it.
+  # Target mode requires an explicit share_at_loss; no implicit target is used.
   tolerance: 0.02
-# Decision 6: the market benchmark behind the view's index_5d. Default null
-# means the key is absent from the agent view, which is today's behaviour, so
-# the demo hashes do not move. The landed series is the unit NAV of the
-# 510760 SSE Composite ETF used as a PROXY for the SSE Composite (the index
-# itself is not available from the sanctioned MCP); only its RETURNS are
-# meaningful, never its level, and it must never be called "the SSE index".
-# data/market/ is gitignored, so the path is machine-local like nav_cache.
+# Optional benchmark behind the view's index_5d. Null omits the market line.
+# User-supplied proxy data must be labelled as a proxy, and only returns are shown.
 market:
   benchmark_path: null
   benchmark_label: null

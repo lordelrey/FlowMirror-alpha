@@ -17,7 +17,7 @@ from flowmirror.agents.prompt import (REFLECTION_PROMPT_ZH, build_decision_messa
 from flowmirror.agents.runtime import MockLLM, _looks_like_reflection
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-POOL_PATH = REPO_ROOT / "data" / "creatives" / "cn" / "content_pool_v1_masked.jsonl"
+POOL_PATH = REPO_ROOT / "data" / "creatives" / "cn" / "content_pool_demo.jsonl"
 
 # Minimal fixtures, same shapes as tests/unit/test_image_resolution.py.
 _VIEW = {

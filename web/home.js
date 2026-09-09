@@ -1,5 +1,4 @@
 /* FlowMirror viewer — the front page.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2 (signature), §4 (tokens), §6 (honesty).
 
    This is the page someone lands on knowing nothing, so it carries two warnings that
    the rest of the viewer assumes have already been read:

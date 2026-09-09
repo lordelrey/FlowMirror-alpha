@@ -1,5 +1,4 @@
 /* FlowMirror viewer — configure and run.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2, §7.
 
    Two modes, and the static one is the point. With no local service — GitHub Pages, or
    a plain `python -m http.server` — every control is disabled and the page shows the

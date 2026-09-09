@@ -1,25 +1,12 @@
-"""Card L7 / decision 6: the market benchmark behind the agent view's index_5d.
+"""Optional market benchmark support for the agent view's ``index_5d`` field.
 
-`prompt.render_news` has always been able to render a line reading
-"大盘指数近五个交易日累计上涨/下跌 X" from `view["index_5d"]`, and nothing ever supplied
-the key -- so the news channel's market line never appeared in any run.
+A configured series may be a proxy rather than an official index series. Its human-readable
+label must disclose that fact. Only percentage returns are rendered; absolute values from a
+fund-NAV proxy must never be presented as index points.
 
-**The series is a PROXY and must always be described as one.**  The owner asked for the
-SSE Composite (上证指数) through the qieman MCP; that endpoint serves real index closes
-only for CSI 300 (000300), ChiNext (399006), the Dow, the Nasdaq and London gold, and
-not for the SSE Composite.  What ships instead is the unit NAV of fund 510760, an
-SSE-Composite tracking ETF.  Two consequences the rest of the engine depends on:
-
-* the numbers are fund unit NAVs, not index points, so an absolute level is meaningless
-  and only a RETURN over the series may ever be used or shown;
-* every prompt, report and paper sentence naming it says
-  "上证综指ETF（510760）单位净值，作为上证综指的代理" and never "上证指数".
-
-The file lives under `data/market/`, which is gitignored: it is third-party data, held
-to the same rule as the NAV cache and never redistributed.  So `market.benchmark_path`
-defaults to null and every path here must behave correctly when the file is absent --
-which is also why the three shipped demos leave `index_5d` out of the view entirely
-rather than carrying a placeholder.
+Benchmark files are user-supplied third-party inputs kept under the ignored ``data/market/``
+directory. ``market.benchmark_path`` defaults to null, and the bundled offline demos omit the
+market line instead of fabricating a placeholder.
 """
 from __future__ import annotations
 
@@ -56,8 +43,8 @@ def load_benchmark(path):
     if not os.path.isfile(path):
         raise FileNotFoundError(
             f"market.benchmark_path is configured but unreadable: {path} -- "
-            "data/market/ is gitignored, so regenerate it with "
-            "data_pipeline/cn/fetch_benchmark.py or unset the key")
+            "data/market/ is gitignored; provide a legally obtained local series "
+            "or unset the key")
     with open(path, encoding="utf-8") as fh:
         obj = json.load(fh)
     raw = obj.get("series") if isinstance(obj, dict) and "series" in obj else obj

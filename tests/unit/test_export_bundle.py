@@ -1,13 +1,4 @@
-"""Card EXP1: the presentation bundle, and the three things it must never leak.
-
-`web/app.js` has referenced `flowmirror export-bundle` since the viewer was written and
-the command did not exist -- a documented surface with nothing behind it.
-
-The prohibitions below are not hypothetical. This project keeps its images out of the
-repository, its keys out of git, and its absolute local paths out of anything
-publishable; a bundle is the one artefact intended to be shared, so it is exactly where
-such a leak would land.
-"""
+"""Tests for browser export bundles and their data boundary."""
 from __future__ import annotations
 
 import json

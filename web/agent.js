@@ -1,5 +1,4 @@
 /* FlowMirror viewer — the investor inspector.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2 (signature), §4 (tokens), §6 (honesty).
 
    The previous viewer could only show "today", so an investor looked like a dot that
    flickered. This page shows one investor's WHOLE run: the opening state the world gave

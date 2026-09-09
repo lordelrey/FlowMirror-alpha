@@ -1,11 +1,6 @@
-"""Unit tests for flowmirror.agents.runtime.call_glm -- card E3, task 8 (+ the task-7 credential guard).
+"""Unit tests for provider retries, parsing, and credential handling.
 
-The pre-fix call_glm crashed with AttributeError ('NoneType' object has no attribute 'encode') on
-the first non-200 / exception attempt, because the post-attempt bookkeeping hashed `chan_text`
-unconditionally while `chan_text` is only assigned inside the status==200 branches. That made the
-frozen five-attempt retry ladder dead code: a single transient network error killed a multi-hour
-live run. These tests pin the fix, with zero network access: the HTTP transport and time.sleep are
-stubbed via monkeypatch on the runtime module.
+The HTTP transport and time.sleep are stubbed, so the suite uses no network.
 
 Pinned behaviour:
   * raise -> non-200 -> valid answer  ==> success with attempts == 3, no exception
@@ -19,11 +14,8 @@ Pinned behaviour:
   * no credentials at all             ==> RuntimeError naming all three supported ways to supply
     a key, raised BEFORE any attempt or backoff is spent (nothing is ever cached), echoing no key.
 
-Card RT2 (E9) extends the same scripted transport to the two values that used to be module
-constants: the request payload must carry the CONFIGURED sampling temperature (an unrecorded
-temperature is an unrecorded experimental parameter), and `max_provider_attempts` must be the
-ladder's real length -- with the defaults still equal to the frozen 0.3 / 5, which is what the
-tests above already pin by never passing either one.
+The request payload must carry the configured sampling temperature, and
+`max_provider_attempts` must control the provider ladder length.
 """
 from __future__ import annotations
 
@@ -149,15 +141,11 @@ def test_call_glm_without_credentials_fails_fast_with_actionable_message(monkeyp
     assert calls == [] and sleeps == []    # fail fast: no attempt and no backoff spent, nothing cached
 
 
-# --------------------------------------------------------------------------------------
-# Card RT2 (E9): the two provider parameters that used to be unconfigurable constants.
-# --------------------------------------------------------------------------------------
+# Provider sampling and retry parameters.
 def test_payload_carries_the_configured_temperature(monkeypatch):
     """`temperature=` reaches the request body; omitting it keeps the frozen 0.3 default.
 
-    TEMP was a module constant that never reached run_meta, so no reviewer could tell what
-    sampling temperature a published run used. It is only genuinely recorded if the value in
-    the config is the value in the payload -- which is what this asserts."""
+    The configured value must reach both the request payload and run metadata."""
     sleeps = []
     calls = _install(monkeypatch, ["ok"], sleeps)
 

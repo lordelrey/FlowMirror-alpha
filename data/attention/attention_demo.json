@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "synthetic": true,
+    "description": "Synthetic weekly discussion signals for the offline demo. Values do not describe any real platform, fund, or security."
+  },
+  "signal": {
+    "900001": {
+      "2025-W39": {"n_posts": 8, "reply_n": 12, "read_n": 420, "z_abnormal": -0.3, "ratio_vs_baseline": 0.9, "baseline_weeks_used": 8},
+      "2025-W40": {"n_posts": 10, "reply_n": 18, "read_n": 610, "z_abnormal": 0.2, "ratio_vs_baseline": 1.1, "baseline_weeks_used": 8}
+    },
+    "900002": {
+      "2025-W39": {"n_posts": 6, "reply_n": 9, "read_n": 360, "z_abnormal": -0.1, "ratio_vs_baseline": 0.95, "baseline_weeks_used": 8},
+      "2025-W40": {"n_posts": 13, "reply_n": 25, "read_n": 790, "z_abnormal": 0.8, "ratio_vs_baseline": 1.4, "baseline_weeks_used": 8}
+    },
+    "900003": {
+      "2025-W39": {"n_posts": 15, "reply_n": 31, "read_n": 980, "z_abnormal": 1.0, "ratio_vs_baseline": 1.6, "baseline_weeks_used": 8},
+      "2025-W40": {"n_posts": 9, "reply_n": 14, "read_n": 500, "z_abnormal": 0.0, "ratio_vs_baseline": 1.0, "baseline_weeks_used": 8}
+    },
+    "900004": {
+      "2025-W39": {"n_posts": 18, "reply_n": 40, "read_n": 1200, "z_abnormal": 1.4, "ratio_vs_baseline": 1.9, "baseline_weeks_used": 8},
+      "2025-W40": {"n_posts": 7, "reply_n": 10, "read_n": 410, "z_abnormal": -0.4, "ratio_vs_baseline": 0.8, "baseline_weeks_used": 8}
+    }
+  }
+}

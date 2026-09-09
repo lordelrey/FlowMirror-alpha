@@ -1,5 +1,4 @@
 /* FlowMirror viewer — the audit page and the data page.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §2 (signatures), §4 (tokens), §6 (degradation).
 
    Two exports live in one file because they answer two halves of the same question a
    sceptical reader asks: "what is this run allowed to prove" (audit) and "what is this
@@ -601,34 +600,28 @@ function runsTable(runs, base) {
 
 /* ---- the four plug-in inputs ------------------------------------------ */
 
-/* Transcribed at authoring time from scenarios/cn_xhs_2025q4/scenario.yaml,
-   scenarios/us_2025/scenario.yaml and docs/SCENARIOS.md — all three are in the repo.
-   Page modules do not fetch (data.js owns every read), so this table cannot be read
-   live from the doc; anything not verifiable in those files is "—". */
+/* Public demo inputs mirrored from scenarios/cn_xhs_2025q4/scenario.yaml.
+   Page modules do not fetch files directly; data.js owns runtime reads. */
 const SCENARIO_ROWS = [
   {
     part: '人口',
-    cn: 'data/population/persona_grid_v3.json（人口格）+ data/population/agents_seed2027.json（队列）；'
+    value: 'data/population/persona_grid_v3.json（人口格）+ data/population/agents_seed2027.json（队列）；'
       + '报告风险类 C2 / C3 / C4，字段 reported_C',
-    us: 'data/us/population/persona_grid_v1.json + agents_seed_v1.json，两条都还是占位路径（TODO）',
   },
   {
     part: '平台与创意',
-    cn: '小红书（中文）；四家机构共用一份掩码内容池 '
-      + 'data/creatives/cn/content_pool_v1_masked.jsonl，引擎按机构过滤；'
-      + '每家 mode=rule、intent_mix=measured、cadence=2',
-    us: 'google_ads_web（英文）；两家占位机构，广告池 TODO',
+    value: '中文社交信息流；四家虚构机构共用合成内容池 '
+      + 'data/creatives/cn/content_pool_demo.jsonl，引擎按机构过滤；'
+      + '每家 mode=rule、intent_mix=measured、cadence=1',
   },
   {
     part: '监管',
-    cn: '插件 cn_cxr：适当性结账；gate_redemptions=false、qdii_limits=true',
-    us: '插件 us_regbi（Reg BI 最佳利益）；options 仍为空（TODO）',
+    value: '插件 cn_cxr：适当性结账；gate_redemptions=false、qdii_limits=true',
   },
   {
     part: '市场数据',
-    cn: 'data/funds/nav_cache.json + fund_meta_v1.json；日历 cn_trading、T+1；'
+    value: 'data/funds/nav_demo_2025q4.json + fund_meta_demo.json；全部合成；日历 cn_trading、T+1；'
       + '场景费率 申购 1.20% / 赎回 0.50%',
-    us: 'data/us/funds/* 全部 TODO；日历 us_trading、T+1；费率表 TODO',
   },
 ];
 
@@ -668,7 +661,7 @@ function liveNumbers(model) {
     ['本次运行费率', fees.subscribe_rate == null ? null
       : esc(`申购 ${(fees.subscribe_rate * 100).toFixed(2)}% · 赎回 ${((fees.redeem_rate ?? 0) * 100).toFixed(2)}%`)],
     ['注意力信号', cfg.guba_signal ? `<code>${esc(String(cfg.guba_signal))}</code>` : null],
-    ['外部纪律（holdout）', cfg.fund_meta_file ? `<code>${esc(String(cfg.fund_meta_file))}</code>` : null],
+    ['基金元数据', cfg.fund_meta_file ? `<code>${esc(String(cfg.fund_meta_file))}</code>` : null],
     ['窗口', cfg.window ? esc(`${cfg.window.start || '?'} → ${cfg.window.end || '?'}`) : null],
   ])
     + note('这一栏全部取自已载入运行的 run_meta / bundle.json，不是场景文件的声明值。'
@@ -682,19 +675,14 @@ function liveNumbers(model) {
 
 function scenarioSection() {
   const rows = SCENARIO_ROWS.map((r) => `<tr><td><b>${esc(r.part)}</b></td>`
-    + `<td>${esc(r.cn)}</td><td><span class="muted">${esc(r.us)}</span></td></tr>`).join('');
+    + `<td>${esc(r.value)}</td></tr>`).join('');
   return panel('四件插件式输入', '一个场景 = 四份数据插件',
     '<table><thead><tr><th>组成部分</th>'
-    + '<th>CN · <code>cn_xhs_2025q4</code>（现在）</th>'
-    + '<th>US · <code>us_2025</code>（路线图）</th></tr></thead>'
+    + '<th>公开演示场景 · <code>cn_xhs_2025q4</code></th></tr></thead>'
     + `<tbody>${rows}</tbody></table>`
-    + note('另外两条外生输入：注意力来源 CN 用股吧周度信号 '
-      + 'data/attention/guba_signal_v1.json，US 现在是 none（reddit 只是候选）；'
-      + '外部纪律用 data/flows/flow_panel_v2.json 做留出，前置安慰剂季度 2025Q3，US 的留出还没有。')
-    + note('本表是照抄：来源是仓库里的 scenarios/cn_xhs_2025q4/scenario.yaml、'
-      + 'scenarios/us_2025/scenario.yaml 与 docs/SCENARIOS.md，'
-      + '在写这个模块时读的，不是本页实时读出来的（本页不发任何请求，读文件是数据层的事）。'
-      + 'US 那一列每条路径在场景文件里都带 TODO 标记。'),
+    + note('注意力输入 data/attention/attention_demo.json 是合成周度信号；'
+      + 'data/flows/flow_holdout_demo.json 只是空结构示例，不包含任何观测结果。')
+    + note('本表说明仓库自带的公开场景。载入某次运行后的真实配置与规模，以“本次运行读进来的实际数字”为准。'),
     { bodyClass: 'body scrollx' });
 }
 

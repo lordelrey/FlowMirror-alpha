@@ -1,8 +1,8 @@
-"""Unit tests: agent-level arm randomisation against PREREG B10 (corrected).
+"""Unit tests for agent-level stratified arm randomisation.
 
-Covers the feed.py half of the stratified-randomisation fix:
+Covers the public stratified-randomisation behavior:
 
-* assign_agent_arms() -- the pre-registered agent-level assignment:
+* assign_agent_arms() -- the cohort-balanced agent-level assignment:
   within each population cell, ids ordered by sha256(run_tag|arm|
   agent_id), arms dealt round-robin, per-cell starting rotation from
   sha256(run_tag|cell), corrected so the running global counts stay
@@ -10,14 +10,13 @@ Covers the feed.py half of the stratified-randomisation fix:
 * check_arm_balance() -- the achievable tolerances: overall
   |share - 1/k| <= 0.01 and, per cell, as balanced as the cell size
   permits (exactly 1/(2*n_cell) + 1e-9 for the two-arm set);
-* arm_for_agent() -- the UNBALANCED cohort-less coin, regression-pinned
-  to the frozen v1.3 draw (it must keep working for its existing
-  callers; it is not, and does not claim to be, the pre-registered
+* arm_for_agent() -- the unbalanced cohort-less coin, regression-pinned
+  to the legacy two-arm draw (it must keep working for its existing
+  callers; it is not, and does not claim to be, the cohort-balanced
   assignment).
 
-All cohort-scale assertions run over the REAL frozen 400-agent cohort
-(data/population/agents_seed2027.json, 36 cells) and 21 run tags
-including the five pre-registered seeds live_q4_2027..live_q4_2031,
+All cohort-scale assertions run over the bundled synthetic 400-agent cohort
+(data/population/agents_seed2027.json, 36 cells) and 21 run tags,
 for both the two-arm set {T, TV} and the three-arm set {T, TC, TV}.
 
 Runs from anywhere: the repo root is located by walking up from this
@@ -55,8 +54,8 @@ from flowmirror.channels.feed import (  # noqa: E402  (after sys.path bootstrap)
 
 TWO = ("T", "TV")
 THREE = ("T", "TC", "TV")
-PREREG_TAGS = ["live_q4_%d" % y for y in range(2027, 2032)]
-TAGS = PREREG_TAGS + ["armbal_ut_%02d" % i for i in range(16)]  # 21 tags >= 20
+REFERENCE_TAGS = ["reference_%d" % y for y in range(2027, 2032)]
+TAGS = REFERENCE_TAGS + ["armbal_ut_%02d" % i for i in range(16)]  # 21 tags >= 20
 
 
 @lru_cache(maxsize=1)
@@ -126,7 +125,7 @@ def test_no_cell_of_size_two_or_more_is_single_armed(arms):
 def test_each_cell_as_balanced_as_its_size_permits(arms):
     pairs = _cohort()
     k = len(arms)
-    for tag in PREREG_TAGS:  # the five pre-registered seeds suffice here
+    for tag in REFERENCE_TAGS:
         amap = assign_agent_arms(tag, pairs, arms)
         for cell, members in sorted(_by_cell().items()):
             n_c = len(members)
@@ -160,7 +159,7 @@ def test_assignment_changes_with_run_tag(arms):
 
 def test_overall_share_within_one_agent_of_exact():
     pairs = _cohort()
-    for tag in PREREG_TAGS:
+    for tag in REFERENCE_TAGS:
         amap = assign_agent_arms(tag, pairs, TWO)
         n_tv = sum(1 for v in amap.values() if v == "TV")
         assert abs(n_tv - (400 - n_tv)) <= 1, f"tag={tag} TV={n_tv}"
@@ -211,18 +210,18 @@ def test_report_surfaces_numeric_worst_cases():
 
 def test_arm_for_agent_kept_as_the_unbalanced_cohortless_coin():
     ids = [a for a, _c in _cohort()][:60]
-    for tag in PREREG_TAGS[:2]:
+    for tag in REFERENCE_TAGS[:2]:
         draws = [arm_for_agent(tag, a) for a in ids]
         assert draws == [arm_for_agent(tag, a) for a in ids]  # deterministic
         assert set(draws) <= {"T", "TV"}
     n_diff = sum(1 for a in ids
-                 if arm_for_agent(PREREG_TAGS[0], a) != arm_for_agent(PREREG_TAGS[1], a))
+                 if arm_for_agent(REFERENCE_TAGS[0], a) != arm_for_agent(REFERENCE_TAGS[1], a))
     assert n_diff > 0  # tag-sensitive
 
 
 def test_arm_for_agent_matches_frozen_v13_coin():
     ids = [a for a, _c in _cohort()][:80]
-    for tag in PREREG_TAGS:
+    for tag in REFERENCE_TAGS:
         for a in ids:
             assert arm_for_agent(tag, a) == _arm_for_agent_legacy(tag, a), \
                 f"tag={tag} agent={a}"

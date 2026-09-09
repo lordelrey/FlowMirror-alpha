@@ -65,7 +65,7 @@ class MockHoldingsParseTests(unittest.TestCase):
     def test_noise_lines_are_not_swallowed(self):
         # Post card header and cash line must not leak "00021" or "55,668".
         text = _render([_holding("003142")])
-        noisy = (text + "\n【00021】机构：汇添富基金 ｜ 热度：0.0 赞"
+        noisy = (text + "\n【00021】机构：示例基金丁 ｜ 热度：0.0 赞"
                  + "\n账户可投闲钱：55,668 元。")
         self.assertEqual(_held_codes(noisy), ["003142"])
 

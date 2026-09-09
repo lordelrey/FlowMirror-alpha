@@ -10,16 +10,16 @@
   "n_agents": 10,
   "agents_file": "sim/agents_seed2027.json",
   "orgs": [
-    "广发基金",
-    "鹏华基金",
-    "国联基金",
-    "汇添富基金"
+    "示例基金甲",
+    "示例基金乙",
+    "示例基金丙",
+    "示例基金丁"
   ],
-  "content_pool": "sim/content_pool_v1_masked.jsonl",
+  "content_pool": "data/creatives/cn/content_pool_demo.jsonl",
   "posts_per_org_per_day": 2,
   "no_repeat_days": 10,
   "nav_cache": "sim/nav_cache.json",
-  "guba_signal": "sim/guba_signal_v1.json",
+  "guba_signal": "data/attention/attention_demo.json",
   "suitability": true,
   "strategy_mix": "measured",
   "ranking": "three_source",

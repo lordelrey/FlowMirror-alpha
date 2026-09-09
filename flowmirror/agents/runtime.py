@@ -10,10 +10,10 @@ thin decide()/reflect() entry points for flowmirror.engine.loop, and an
 order-preserving run_parallel().  Prompt assembly and parsing live in
 flowmirror.agents.prompt, never here.
 
-Every decide()/reflect() record carries failure_kind (contract 2.4): "transport" when the
+Every decide()/reflect() record carries failure_kind: "transport" when the
 provider never returned a model response, "model" when a response arrived but would not
 parse, None when nothing failed.  Splitting the two is diagnosis only -- the
-decision_failure_halt gate keeps the same threshold and the same condition (decision 9).
+decision_failure_halt gate uses the combined failure rate.
 """
 from __future__ import annotations
 
@@ -47,9 +47,8 @@ LEGACY_KEY_FILE_ENV = "FLOWMIRROR_LEGACY_KEY_FILE"
 GLM_EP_DEFAULT = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 MODEL = "glm-4.6v"
 TEXT_MODEL = "glm-4.6"
-# E9 / card RT2: these are now DEFAULTS behind config keys, not the effective values --
-# a published experiment has to record its own sampling temperature, and a module
-# constant never reaches run_meta.  The old names were TEMP and MAX_ATTEMPTS;
+# These are defaults behind config keys, not the effective recorded values.
+# The old names were TEMP and MAX_ATTEMPTS;
 # MAX_ATTEMPTS read exactly like cfg["llm"]["max_attempts"], which is a DIFFERENT
 # mechanism (the decision-level re-ask switch), and _llm_cfg below was already using the
 # physical-retry constant as that macro switch's fallback.  Three distinct names so no
@@ -67,12 +66,12 @@ GATE_RECOVER_AFTER = 20                 # consecutive 200s that win one shrunk p
 TOKEN_LADDER = (6144, 12288, 16384)
 SCHEMA_VERSION = "v7"
 
-# Contract 2.4 / audit E12: the call_glm `cls` values that mean NO model response was
+# call_glm classes that mean no model response was
 # ever produced -- the provider was unreachable, refused the request, or answered with
 # nothing.  Counting these as model failures is what made three rate-limit responses look
 # like model instability while the parse rate was 77/77, and what would present a bad API
-# key as "the model is unstable".  reasoning_salvage_rejected sits here by owner decision
-# (contract 2.4): the content channel came back empty, which is provider-side degradation
+# key as "the model is unstable". reasoning_salvage_rejected sits here because
+# the content channel came back empty, which is provider-side degradation
 # rather than a model that cannot produce parseable output.
 TRANSPORT_FAILURE_CLASSES = ("exception", "http_error", "empty_response",
                              "reasoning_salvage_rejected", "rate_limited")
@@ -372,23 +371,21 @@ class LLMCache:
 def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first_open=False,
              temperature=None, max_provider_attempts=None, gate=None,
              rate_limit_cap_s=None, rate_limit_max_wait_s=None):
-    """One initial attempt + at most 4 retries (<= 5 physical provider attempts) — R5.5 R2A frozen schedule.
+    """Run one provider attempt plus a configurable retry ladder.
 
     `parser(text, channel)` must return (obj, matched_text); a call is a SUCCESS only when it returns a complete
-    schema-valid object (R5.5 must-fix 4/5: nonempty raw text is NOT success and must consume a retry).
+    schema-valid object; nonempty raw text alone is not success and consumes a retry.
     Every attempt is classified independently — no sticky empty flag can leak the 15s path into a later HTTP
-    error (must-fix 7).  A failed attempt that produced NO channel text (transport exception, non-200) records
+    error. A failed attempt that produced no channel text (transport exception, non-200) records
     raw=None / raw_sha256=None and the ladder CONTINUES — one transient provider error must never kill a run
-    (E3 fix: the old post-attempt bookkeeping hashed the missing chan_text unconditionally and died with
-    AttributeError, leaving the whole retry ladder as dead code).  Returns a provenance dict and never raises,
+    Returns a provenance dict and never raises,
     EXCEPT CapStop (when a `governor` is supplied every single attempt — initial, retry and repair — is
-    authorized BEFORE it is made, B3/B4, and the breaching attempt is refused instead of spent) and
+    authorized before it is made and the breaching attempt is refused instead of spent) and
     RuntimeError when no live credentials are configured (fail fast: a credential-less attempt must not be
     spent, retried, or cached as a hole row).
 
-    E9 / card RT2: `temperature` and `max_provider_attempts` default to TEMP_DEFAULT and
-    MAX_PROVIDER_ATTEMPTS_DEFAULT -- today's constants -- so an unpassed call behaves exactly as before;
-    engine/loop.py's live wrapper supplies both from cfg["llm"] so the run's own sampling parameters, not
+    `temperature` and `max_provider_attempts` default to TEMP_DEFAULT and
+    MAX_PROVIDER_ATTEMPTS_DEFAULT. engine/loop.py supplies both from cfg["llm"] so the run's parameters, not
     a module constant, drive the request and reach run_meta.  `max_provider_attempts` is the PHYSICAL
     ladder length here and is NOT cfg["llm"]["max_attempts"] (the macro re-ask switch in decide())."""
     if not GLM_KEY:
@@ -480,7 +477,7 @@ def call_glm(messages, max_tokens, model=None, parser=None, governor=None, first
                 gate.on_rate_limited()                        # shrink process-wide width: stop feeding the storm
             # No Retry-After from this provider (probe 0c): 30*k stalled the whole pool and
             # throughput fell below the 4-worker baseline. 10*k plus the adaptive gate's width
-            # cut is enough back-off; rate_cap still bounds it (PREREG D24).
+            # cut is enough back-off; rate_cap still bounds it.
             retry_after = 10.0 * k
             try:
                 retry_after = float(resp.headers.get("Retry-After"))
@@ -590,7 +587,7 @@ def _llm_cfg(cfg):
     """-> (vision model, text model, max_tokens_start, MACRO re-ask limit).
 
     The 4-tuple shape is load-bearing: tests/unit/test_live_path.py unpacks exactly four names
-    from this helper, so card RT2's two sampling parameters live in _llm_sampling() beside it
+    from this helper, so the two sampling parameters live in _llm_sampling() beside it
     instead of lengthening this tuple.  The last element is cfg["llm"]["max_attempts"], the
     decision-level re-ask switch -- NOT call_glm's physical HTTP ladder."""
     llm = dict((cfg or {}).get("llm") or {})
@@ -600,7 +597,7 @@ def _llm_cfg(cfg):
 
 
 def _llm_sampling(cfg):
-    """-> (temperature, max_provider_attempts) from cfg["llm"] (E9 / card RT2).
+    """Return (temperature, max_provider_attempts) from cfg["llm"].
 
     `or`-style defaulting is wrong for temperature: 0.0 is a legitimate (greedy) setting and
     `x or TEMP_DEFAULT` would silently turn it into 0.3, so both keys test for None instead.
@@ -613,13 +610,12 @@ def _llm_sampling(cfg):
 
 
 def _failure_kind(parser_status, parsed):
-    """Contract 2.4: "transport" | "model" | None -- the honest diagnosis of ONE call (audit E12).
+    """Return "transport", "model", or None for one provider call.
 
     `parser_status` is call_glm's own per-attempt class from prov["parser_status"], never the status
     decide() finally reports: a transport failure produced no model output, so the decision extractor
     is not consulted about it at all.  Derived from the provenance on BOTH the live and the replay
-    path, so a warm replay reproduces the cold run's kind and invariant (l) byte-identical logs
-    survive card L3 writing this into dec.failure_kind."""
+    path, so a warm replay reproduces the cold run's kind and invariant logs."""
     if parsed is not None:
         return None
     return "transport" if parser_status in TRANSPORT_FAILURE_CLASSES else "model"
@@ -628,10 +624,7 @@ def _failure_kind(parser_status, parsed):
 def _decision_outcome(prov, shown):
     """-> (parsed, violations, parser_status) for ONE call_glm result on the decision path.
 
-    E12: on a transport class the old code re-fed prov["raw"] -- None on every one of those four
-    branches -- into extract_decision, which dutifully reported "no_json_object" on the empty
-    string.  That manufactured a parse verdict out of a network problem.  A transport class is
-    now the status itself and the extractor never sees it."""
+    Transport failures bypass JSON extraction because no model output exists to parse."""
     parsed = prov.get("parsed")
     if parsed is not None:
         return parsed, [], None

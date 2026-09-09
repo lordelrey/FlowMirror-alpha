@@ -1,5 +1,5 @@
 /* FlowMirror viewer — the data layer.
-   Contract: docs/WEB_CONTRACT_2026-09-07.md §1. Page modules import from here and must
+   Page modules import from here and must
    not fetch anything themselves, so that "which files does the viewer read" has exactly
    one answer.
 

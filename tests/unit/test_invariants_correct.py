@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""tests/unit/test_invariants_correct.py -- INV-FIX regression tests for world.check_invariants.
-
-Two invariants falsely failed every shipped config once their results were actually consumed;
-both were defects in the checks themselves, not in the engine. These tests pin the corrections:
+"""Regression tests for world.check_invariants.
 
 (a) a_lagged_signals_only -- `used` is a guba ISO WEEK key and must equal the week that ENDED
     strictly before day t (derived from each signal_audit entry's live_end date via the wk_prev
@@ -16,7 +13,7 @@ both were defects in the checks themselves, not in the engine. These tests pin t
     only when a redemption takes the position to zero units; the first offender is reported as
     {agent id, fund, units held at that moment, units redeemed}.
 
-FIX4 also pins the polarity of the second return element: it is the run's DECISION -- True when
+The second return element is the run decision: True when
 the run passed, False when a core check explicitly failed. Every fixed invariant gets an honest
 fixture that must pass and a planted GENUINE violation that must be caught. Synthetic
 states/events only; no data files, no network, ASCII output.
@@ -103,7 +100,7 @@ def test_a_flags_the_week_containing_day_t(tmp_path):
     checks, decision = check_invariants(_state([_agent()], audit),
                                         _write_events(tmp_path, [_dec_row()]), RUN_CFG)
     ent = checks["a_lagged_signals_only"]
-    assert ent["pass"] is False and decision is False   # FIX4: a failure means decision False
+    assert ent["pass"] is False and decision is False
     assert ent["matched"] == 0
     assert ent["first_mismatch"]["used"] == "2025-W40"
     assert ent["first_mismatch"]["expected"] == "2025-W39"
@@ -154,7 +151,7 @@ def test_b_redeem_after_position_reaches_zero_is_caught(tmp_path):
     rows = [_dec_row(), _redeem_row(units=50.0), _redeem_row(units=1.0)]
     checks, decision = check_invariants(_state([ag]), _write_events(tmp_path, rows), RUN_CFG)
     ent = checks["b_nonholder_never_redeems"]
-    assert ent["pass"] is False and decision is False   # FIX4: a failure means decision False
+    assert ent["pass"] is False and decision is False
     assert ent["violations"] == 1
     assert ent["first_violation"] == {"i": "A1", "fund": "000001",
                                       "units_held": 0.0, "units_redeemed": 1.0}
@@ -165,7 +162,7 @@ def test_b_redeem_of_a_never_held_fund_is_caught_with_offender(tmp_path):
     rows = [_dec_row(), _redeem_row(fund="000002", units=10.0)]
     checks, decision = check_invariants(_state([ag]), _write_events(tmp_path, rows), RUN_CFG)
     ent = checks["b_nonholder_never_redeems"]
-    assert ent["pass"] is False and decision is False   # FIX4: a failure means decision False
+    assert ent["pass"] is False and decision is False
     assert ent["first_violation"] == {"i": "A1", "fund": "000002",
                                       "units_held": 0.0, "units_redeemed": 10.0}
 
@@ -179,7 +176,7 @@ def test_b_subscribe_then_partial_redeem_stays_clean(tmp_path):
     assert checks["b_nonholder_never_redeems"]["pass"] is True
 
 
-# --- FIX4: the ledger seeds from OPENING holdings, and skips when they are absent ----------------
+# --- the ledger seeds from opening holdings and skips when absent -------------------------------
 def test_b_seeds_from_hold0_not_from_closing_positions(tmp_path):
     # regression for the null run's inv_00710: opening 162764.12, two halving redemptions, the
     # balance stays positive throughout; seeding from the CLOSING 40691.03 flagged a clean agent.
@@ -214,7 +211,7 @@ def test_b_holder_of_unrecorded_size_is_not_flagged_on_a_partial_redeem(tmp_path
     assert checks["b_nonholder_never_redeems"]["pass"] is True
 
 
-# --- FIX4: the second element is the run's decision ----------------------------------------------
+# --- the second element is the run decision ------------------------------------------------------
 def test_decision_true_when_clean_false_when_one_check_fails(tmp_path):
     ag = _agent(hold={"000001": 50.0})
     post = {"ev": "post", "t": 0, "d": "2025-10-01", "org": "O0", "p": "00000", "intent": "I2",
@@ -248,4 +245,4 @@ def test_honest_run_passes_both_fixed_invariants_and_overall(tmp_path):
     assert checks["a_lagged_signals_only"]["pass"] is True
     assert checks["b_nonholder_never_redeems"]["pass"] is True
     assert all(v.get("pass") is not False for v in checks.values())
-    assert decision is True                # FIX4: decision True when nothing failed
+    assert decision is True

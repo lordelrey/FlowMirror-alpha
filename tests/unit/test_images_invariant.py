@@ -1,34 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Card W2: the engine reports the image state instead of hiding it.
+"""Tests for TV-arm image accounting and non-gating diagnostics.
 
-Three things were missing and are pinned here.
-
-1. `run_meta["images"]` was never written at all, so the web viewer's "this run carried no
-   images" chip (web/app.js reads `m.images.root` / `m.images.attached`) showed on every run,
-   including runs that did carry images. write_reports now copies `state["images"]` verbatim
-   (contract 2.3) and falls back to the honest zero form when the key is absent.
-
-2. `world.image_pool_summary(pool, images_root)` answers "how many of the pool's image
-   references resolve to a real file", over the three shapes `image_ids` actually takes in the
-   masked content pool (a JSON list, a JSON string, a single-quoted Python repr -- contract
-   2.5). Counts only: it never reads an image byte and never returns a path.
-
-3. `INVARIANTS["m_tv_arm_carries_images"]` states which of three situations a run is in.
-
-On (3) this file follows the contract, and it contradicts one line of the older docs. The
-2026-09-07 contract section 2.6 -- with plan section 4.1 card W2 and section 7 item 7 -- makes
-this invariant a WARN form: `pass` is always True and the run's exit code never depends on it,
-because gating belongs on irreversible, cross-system, security or release boundaries and one
-simulation run is none of those. "Did pixels reach the TV arm" is answered by the NUMBER
-run_meta.images.attached. docs/RUNBOOK.md section 4, config/schemas/run.schema.json and
-config/engine_defaults.yaml still carry the pre-decision wording ("the invariant is skipped" /
-"FAILS a run"); those three files belong to other lanes and are left to the DOC1 card.
-
-So the assertion below is deliberately "reports the zero, keeps passing": a run with an image
-library, an active TV arm and zero attachments must be visible in `attached`, `applicable` and
-`reason`, and must NOT fail. Synthetic hand-built states only -- no simulation, no image
-bytes, no network.
+The report distinguishes no image root, no active TV arm, and an active TV arm
+with attachment outcomes. Synthetic hand-built states keep these tests offline.
 """
 from __future__ import annotations
 
@@ -237,7 +212,7 @@ def _run_meta(cfg, state, tmp_path, checks=None):
 
 def test_write_reports_writes_the_zero_form_when_state_has_no_images(
         demo_cfg_factory, tmp_path):
-    """An older run, or a state built before card L2 lands: the block must still exist, with
+    """A state without image counters still receives an explicit zero block, with
     honest zeros, because the viewer's chip reads run_meta.images and an absent block is
     indistinguishable from a run that attached nothing."""
     cfg = _cfg(demo_cfg_factory, tmp_path, images_root=None, image_pick="first")

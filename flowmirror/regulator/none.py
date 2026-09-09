@@ -1,4 +1,4 @@
-"""No-op regulator for the suitability=false arm (PREREG v1.3 §B9 / engine spec).
+"""No-op regulator for the suitability=false arm.
 
 When the platform runs with suitability checking disabled, purchases are
 never gated: ``NoGate.checkout`` answers ``"match"`` for every attempt.

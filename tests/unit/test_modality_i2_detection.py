@@ -1,20 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Card MOD1 / audit E2: the modality analyser must find I2 content in a REAL log.
+"""The modality analyser must find I2 content in engine-shaped logs.
 
 `_is_i2` looked for `source == "I2"` or a post id with an "I2" prefix. The
 engine emits neither: `imp.source` is a ranking source in
 {follow, fit, trending, spill, random} (channels.feed.rank_feed) and post ids
 are numeric, shaped {t:03d}{org_index}{slot} (world.publish_day, e.g. "00031").
 The I2 tag lives on the `post` row's `ig` field -- the two-way intent GROUP
-{"I2", "nonI2"} that invariant (f) ties to `intent == "I2"`. So on every real
-event log the I2 impression set was empty and `click_rate` /
-`subscribe_conversion` -- two pre-registered secondary endpoints -- came back
-absent.
+{"I2", "nonI2"} that invariant (f) ties to `intent == "I2"`.
 
-The failure was masked because `_synthetic_run` hand-planted ids in the
-"I2-..." shape, so the module's own self-test exercised a path the engine never
-takes. These tests pin both halves of the fix: the aggregation reads post.ig,
-and the fixture emits engine-shaped rows.
+These tests verify that aggregation reads `post.ig` and that the fixture emits
+engine-shaped rows rather than relying on a post-id naming convention.
 
 Run with:  python -m pytest tests/unit/test_modality_i2_detection.py -q
 """
@@ -31,7 +26,7 @@ if ROOT not in sys.path:
 from flowmirror.analysis.common import load_events           # noqa: E402
 from flowmirror.analysis.modality import _synthetic_run, analyze   # noqa: E402
 
-# the engine's real imp.source domain -- "I2" is not and never was a member
+# The engine's imp.source domain; "I2" is not a ranking source.
 REAL_SOURCES = ("follow", "fit", "trending", "spill", "random")
 
 
@@ -96,7 +91,7 @@ class TestPostRowIsAuthoritative:
         assert pooled["click_rate"] == pytest.approx(0.5), pooled
         # 1 subscribe over 2 counted I2 clicks
         assert pooled["subscribe_conversion"] == pytest.approx(0.5), pooled
-        # both endpoints are measurable per arm, which is what the paper needs
+        # both endpoints are measurable per arm
         c = res["runs"][0]["contrasts"]["TV-T"]
         assert c["click_rate"] is not None, c
         assert c["click_rate"]["mean_hi"] == pytest.approx(0.5)
