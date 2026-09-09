@@ -37,7 +37,7 @@ FlowMirror 是一个用 LLM agent 模拟中国基金营销平台的社会模拟�
 | 内容 | 绝对路径 |
 |---|---|
 | 主仓库 | `D:\Desktop\ABM paper\flowmirror_v7` |
-| GitHub | 私有仓库 `lordelrey/flowmirror`，分支 `main`，当前 HEAD `adb151c` |
+| GitHub | 私有仓库 `lordelrey/flowmirror`，分支 `main`。本文正文首次写成时 HEAD 为 `adb151c`；本文自身的提交是 `7ec7421`，**以 §13 的核验结果为准** |
 | 设计方案（必读） | `docs/PLAN_v2_20260908.md` |
 | 预注册（必读） | `docs/PREREG_v1.5_DRAFT.md`（决策 D20–D33 + 十六份配置 sha 表） |
 | 操作手册 | `docs/RUNBOOK.md`（§6 凭证、§6.1 探针实测、§15 机制开关总表） |
@@ -145,7 +145,9 @@ python -m flowmirror.engine.loop runs/main_ref_s2027.json --workers 6 --out runs
 python -m flowmirror.engine.loop runs/main_ref_s2027.json --out runs/out/main_ref_s2027 --replay-check
 
 # 2) 跑全部分析模块
-for m in modality society_metrics sell_side disposition influence institutions social_proof compliance; do
+# 注意：modality 不给 --out 就只打印不落盘，其余七个模块默认写 <run_dir>/analysis/<模块>.json
+python -m flowmirror.analysis.modality runs/out/main_ref_s2027 --out runs/out/main_ref_s2027/analysis/modality.json
+for m in society_metrics sell_side disposition influence institutions social_proof compliance; do
   python -m flowmirror.analysis.$m runs/out/main_ref_s2027
 done
 
@@ -396,3 +398,150 @@ python -c "import sqlite3;con=sqlite3.connect('file:D:/Desktop/ABM paper/fundmar
 - 遇到"要不要加一层校验/哈希/门禁"的念头，先读 §3 第 8 条。业主对这件事有明确态度。
 - 引擎里每一个机制开关都有"关闭时逐字节相同"的保证，这是整套设计的地基。任何改动如果破坏了它，就是 bug，不是新特性。
 - 论文初稿里每个数字都标了来源文件，填新数字时请保持这个习惯，审稿人问起来能直接指过去。
+
+---
+
+## 13. 交接验收（2026-09-09 12:18–12:35 实测，只读核验）
+
+本节以**当前工作树、当前进程、当前缓存、当前结果文件**为准，不复述旧摘要。核验期间未重跑任何付费实验、未启停主网格、未改数据库、未动 `runs/out/`。
+
+### 13.1 Git
+
+| 项 | 实测 |
+|---|---|
+| 分支 | `main` |
+| HEAD | `7ec7421f759ee4e738f0511ca5732b5598a41547` |
+| 工作树 | 干净（`git status --porcelain` 无输出） |
+| `7ec7421` | 存在，类型 commit，含 `docs/HANDOVER_TO_CODEX_20260909.md`（398 行）与 `docs/PLAN_v2_20260908.md`（451 行），共 849 行新增 |
+| 本地 vs `origin/main` | `git rev-list --left-right --count HEAD...origin/main` → `0 0`，完全一致 |
+| 最近 5 提交 | `7ec7421` 交接文档 / `adb151c` 论文初稿 / `8c01ac2` A9 并发开关 / `c056a9f` 描述 v2 与十六份配置 / `c8a8111` 数据库交接 |
+
+**文档内 HEAD 与实际不一致的原因**：正文 §2.1 写作时 HEAD 是 `adb151c`，随后该文档自身被提交为 `7ec7421`，即文档记录的是其父提交。已在 §2.1 就地注明，未为此另开提交。
+
+### 13.2 主网格实时状态 —— 发现一个必须处理的问题
+
+**同一个输出目录上有两个引擎进程在跑**（只读观测，未做任何处置）：
+
+| PID | 启动时间 | 命令行 |
+|---|---|---|
+| 15924（shim 29380） | 2026-09-09 09:46:24 | `-m flowmirror.engine.loop runs/main_ref_s2027.json --workers 10 --out runs/out/main_ref_s2027` |
+| 28152（shim 30856） | 2026-09-09 09:54:35 | `-m flowmirror.engine.loop runs/main_ref_s2027.json --workers 6 --out runs/out/main_ref_s2027` |
+
+成因：前任操作方在 09:54 与 11:00 两次用 `taskkill` 停旧进程，**两次都没真正杀掉**，于是 10 并发那次一直活着。
+
+已量出的损害（全部只读统计）：
+
+| 项 | 实测 |
+|---|---|
+| `llm_cache.jsonl` 行数 | 1,580（核验时刻），解析状态 100% `ok` |
+| **重复缓存键** | 174 个，即 **174 次白花的付费调用（约 11%）** |
+| `event_log.jsonl` | 15,572 行，**损坏 1 行**（第 15571 行被截断），完整行级重复 2 行，均在末尾同一 agent `inv_09784` 上 |
+| `st` 行按 (t, i, org, what) 去重 | 重复 0，说明没有系统性双写 |
+| 每日决策数 | t=0/1/2 各 400，无翻倍 |
+| 累计限流等待 | 40 次 |
+| 最近 30 分钟吞吐 | 298 次/小时 |
+| 最后一条缓存 | 核验时距今 6 秒 |
+| 当前模拟交易日 | t=3（共 12） |
+| `run_meta.json` / `invariants_report.json` | 均不存在（运行未完成，属正常） |
+
+**判定：正常推进，但结果不可信。** 两个进程都在为同一次运行付费，且事件日志已出现交错写入的痕迹（1 行损坏 + 2 行重复）。这次运行结束时的 `--replay-check` 很可能不通过。
+
+**处置（需业主授权，本次核验未执行）**：把两个 PID 都停掉，然后只启动一个。缓存可复用，1,580 次已完成调用不会丢；引擎重启时会把现有事件日志备份并从头重写，所以损坏与重复会自愈。停进程用 PowerShell 更可靠（`taskkill` 在本机已两次失效）：按 `Get-CimInstance Win32_Process` 过滤 `CommandLine` 含 `main_ref_s2027`，再 `Stop-Process -Id <PID> -Force`；确认进程数归零后，只执行一次 §4.3 的重启命令。跑完后务必执行 `--replay-check`。
+
+### 13.3 十六次运行状态矩阵（按实际文件，不按计划推断）
+
+| 配置 | 人 | 日 | 模型 | 并发 | cache 行 | run_meta | event_log 行 | 分析产物 | 状态 |
+|---|---|---|---|---|---|---|---|---|---|
+| `runs/main_ref_s2027.json` | 400 | 12 | glm-4.6v | 6 | 1,580 | 无 | 15,572 | 0/8 | 推进中（见 13.2 的双进程问题） |
+| `runs/main_ref_s3031.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始 |
+| `runs/main_ref_s4049.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始 |
+| `runs/main_ref_s5057.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始 |
+| `runs/main_ref_s6071.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始 |
+| `runs/main_nosuit_s{2027,3031,4049,5057,6071}.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始（5 份） |
+| `runs/heat_seed_s{2027,3031,4049}.json` | 400 | 12 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始（3 份） |
+| `runs/emerge_s{2027,3031,4049}.json` | 150 | 40 | glm-4.6v | 6 | 0 | 无 | 0 | 0/8 | 未开始（3 份） |
+
+- 输出目录一律为 `runs/out/<run_tag>/`，与 `run_tag` 同名。
+- 十六份配置的 `content_pool` 全部指向 `data/creatives/cn/content_pool_v1_captioned_v2.jsonl`（已核实文件存在）。
+- **`--replay-check` 迄今只在 `runs/out/live_pilot_100x12` 上做过，结果 `identical=True`，但该结果只存在于当时的终端输出，仓库内没有持久化产物。** Codex 可用缓存免费重跑一次自证。
+- 十六次运行的分析产物目前全部为 0/8；唯一有分析产物的是试跑 `runs/out/live_pilot_100x12/analysis/`（7 个 JSON，缺 `modality.json`，原因见 13.5 第 1 行注）。
+
+### 13.4 代码与测试验收（均不产生付费调用）
+
+| 命令 | 结果 | 时间 |
+|---|---|---|
+| `python -m pytest -q` | **482 passed**，用时 84.95s | 12:22:24 起 |
+| `python -m flowmirror.engine.world --self-test` | exit=0，PASS 50，FAIL 0 | 12:23:51 |
+| `python -m flowmirror.engine.loop --self-test` | exit=0，PASS 42，FAIL 0 | 12:23:53 |
+| `python -m flowmirror.channels.feed` | exit=0，无 FAIL | 12:23:55 |
+| 十六份配置逐个 `flowmirror.cli validate` | OK=16，FAIL=0 | 12:23:56 |
+
+数据资产（12:30 实测）：
+
+| 项 | 实测 |
+|---|---|
+| 图片库 `fundmarket-sim/sim/content_pool_v1/images` | 801 个图片文件 |
+| `data/creatives/cn/content_pool_v1_captioned_v2.jsonl` | 存在，2,442,697 字节，800 条描述 |
+| `data/creatives/cn/compliance_labels_v1.jsonl` | 存在，182,595 字节 |
+| `data/funds/nav_cache.json` | 存在，4,394,511 字节 |
+| MANIFEST 校验和 | v2 记录 `a98519674b47…` = 实际；v1 记录 `a17007dd169b…` = 实际，两者均一致 |
+| 研究库（只读打开） | `pool_note` 400、`pool_image_caption` 1,600、`note_compliance_label` 1,400；既有表 `asset_ocr` 3,431、`asset` 29,208、`xhs_note` 9,708 |
+| `pool_image_caption` 版本分布 | `content_pool_v1_captioned` 800 + `content_pool_v1_captioned_v2` 800（v1/v2 共存，按 `pool_version` 区分，符合设计） |
+
+注：`pool_note` 400 行 = 200 条笔记 × 2 个池版本，主键是 (note_id, pool_version)，不是重复写入。
+
+### 13.5 七个未决问题的实测判定
+
+| # | 问题 | 判定 | 证据 |
+|---|---|---|---|
+| 1 | `flowmirror/analysis/modality.py` 的真实日志 I2 识别 | **已修复** | 模块文档字符串第 11–14 行：以 `post` 行的 `ig` 字段（值域 `{I2, nonI2}`，由 `world.publish_day` 写入）判定 I2，仅当日志完全没有 `ig` 时才回退旧启发式 `_is_i2`。真实日志携带 `ig`。另注：该模块**不给 `--out` 就只打印不落盘**，这是试跑目录缺 `modality.json` 的原因，已在 §4.4 修正命令 |
+| 2 | `guba_signal` 的真实 bull/bear 字段覆盖 | **未修复** | `data/attention/guba_signal_v1.json`：442 条基金-周记录中带 `bull_ratio` 的为 **0 条（0.0%）**。引擎每次启动打印 `guba stance seed unavailable ... stance labelling has not been run`，评论区舆论标签退回由 agent 评论自举。影响：Environment 环少一条外生立场输入 |
+| 3 | TV 图片是否在真实提示中传到模型 | **已修复，三重证据** | (a) `run_meta.images = {attached: 2376, missing: 0, sha_mismatch: 0}`；(b) 事件日志里带 `img_idx` 的 `imp` 行恰为 2,376 条，等于 TV 臂 imp 行数；(c) 缓存中 1,699 条有 usage 的调用里，495 条（29%）`prompt_tokens` 中位 5,500，其余 1,204 条中位 2,440，差约 3,060 token，与"每图约 500 token、最多 6 图"一致。TV 臂占 agent 的 33%，反思调用无图故略低 |
+| 4 | TC v2 描述是否仍有截断或颜色词 | **部分修复** | 当前被十六份配置引用的 v2 文件：800 条描述，长度中位 29，触到 40 字上限 **6 条（0.8%）**、含引号抄写图内文字 **0 条**（v1 分别为 550 与 425）；但含颜色词 **57 条（7.1%）**，与冻结提示"不使用颜色词汇"不符。已在预注册 D22 披露并预注册稳健性检查（剔除这 57 张图所属笔记后重算 TV−TC）。**该稳健性检查的代码尚未实现** |
+| 5 | 真模型 12 日窗口零赎回及处置效应的解释边界 | **已定性并写入预注册，但尚无主网格证据** | `runs/out/live_pilot_100x12/analysis/sell_side.json` 的 `n_redeem: 0`；`disposition.json` 全 None 带 note。预注册 D25 已撤下披露臂、D26 改为零结果报告；论文初稿 §4.3 有四条证据链。**目前只有一次 100 人试跑支撑，主网格未验证** |
+| 6 | 100×12 试跑数字是否只是探索性结果 | **是，文档已正确标注** | `paper/DRAFT_S3_S5_20260909.md` 第 54 行声明数字来自单次试跑；第 77 行标注"（n=1 次运行，仅作描述，不做推断）"；第 85 行声明主终点以 5 种子的种子级 t 区间为准并标 `【待填】` |
+| 7 | 五个参考种子是否已足够计算种子级模态主终点 | **设计上足够，但目前一个都没跑完** | `flowmirror/analysis/common.py:55` 的 `seed_t_interval` 给出 df = n−1，5 种子即 df=4；`modality.py` 在 n_runs < 2 时输出 `n_runs=<n>: descriptive only` 并 withhold 区间。当前 `main_ref_s*` 中仅 `s2027` 推进到 t=3，其余四份 cache 为 0。**主终点仍需 5 次完整运行** |
+
+### 13.6 结论分级（写作时按此措辞）
+
+**A 类 · 已验证的工程事实**（可直接写进方法与附录）
+
+| 数字 | 来源文件 | 样本单位 | 真实模型 | 可否直写 |
+|---|---|---|---|---|
+| 1,400 次调用、终态失败 0、传输/模型侧失败各 0 | `runs/out/live_pilot_100x12/run_meta.json` → `counters` | 一次运行的全部调用 | 是 | 可 |
+| 图片附着 2,376、缺失 0、摘要不匹配 0 | 同上 → `images` | 同上 | 是 | 可 |
+| 一致性检查 13 项、失败 0、跳过 3 | `runs/out/live_pilot_100x12/invariants_report.json` → `summary` | 同上 | 是 | 可 |
+| 缓存重放逐字节相同 | 会话终端输出，**仓库无持久化产物** | 同上 | 是 | 免费重跑留档后可 |
+| 六并发 367 次/小时；十并发 91；flash 单次 51s；中转十二并发 110 | 本文 §7.4（本会话实测） | 多次窗口采样 | 是 | 可（工程可行性） |
+| 描述 v2：触上限 6/800、抄写 0/800、颜色词 57/800 | `data/creatives/cn/content_pool_v1_captioned_v2.jsonl` | 800 条描述 | 是（glm-5.3-flash 生成） | 可 |
+| 合规打标 108 次裁定 0 失败、64/200 命中 | `data/creatives/cn/compliance_labels_v1.jsonl` → `_meta.counts` | 200 条笔记 | 是（glm-4.6） | 可，措辞为描述性（D28） |
+
+**B 类 · 单次真模型试跑的探索性结果**（样本单位 = 1 次运行，不可作为论文主张）
+
+| 数字 | 来源文件 | 应有措辞 |
+|---|---|---|
+| 三组点击率 0.396 / 0.429 / 0.437；转化率 0.391 / 0.419 / 0.434 | 试跑 `event_log.jsonl` 按臂聚合 | "单次试跑呈现与假设一致的单调序，无推断力；主终点见 5 种子结果" |
+| 曝光 Gini 0.592、点击 Gini 0.972、5/96 帖获得全部点击与申购 | `analysis/society.json` → `concentration` | "单次运行观察到的漏斗坍缩模式，待 5 种子确认" |
+| 立场熵 0.765 bit、看空 0 条 | `analysis/society.json` → `stance_entropy` | 同上 |
+| 评论 Gini 0.893、单帖最高 218 条 | `analysis/society.json` → `comment_burst` | 同上 |
+| 零赎回（1,200 次决策 redeem 0 次） | `analysis/sell_side.json` + 缓存动作统计 | "在这一次 100 人 × 12 日运行中未出现赎回"，主网格验证后再升格 |
+| 机构 I2 占比 0.375 → 0.438 | `analysis/institutions.json` → `platform.periods` | 同上 |
+
+**C 类 · 替身模型或规则基线结果**（只作阳性对照与机制验证，绝不可当作 agent 行为发现）
+
+| 数字 | 来源文件 | 用途 |
+|---|---|---|
+| 规则基线 26 笔赎回、PGR 0.293 / PLR 0.237 / DE +0.056 | `runs/out/acc_b2_off/analysis/disposition.json` | 证明卖出通路与处置效应测度可用 |
+| 替身种子热度乘数 0.201、判定 damped | `runs/out/acc_c1_on/analysis/social_proof.json` | 只证明模块能算，数字无科学含义 |
+| 替身机构权重 L1 0.30 → 0.56 | `runs/out/acc_f2_on/analysis/institutions.json` | 同上 |
+
+**D 类 · 尚未获得**：主网格 5 种子的模态主终点与全部宏观量区间、适当性开关对照、种子热度级联乘数、大 V 层影响分析、机构规范收敛、40 日涌现运行的处置效应。论文初稿中已用 `【待填】` 标注。
+
+### 13.7 Codex 接手后的第一条安全动作
+
+**先只做一件事**：按 §4.2 的命令读一次主网格状态，并用 PowerShell 的 `Get-CimInstance Win32_Process` 过滤 `CommandLine` 含 `main_ref_s2027`，确认当前有几个进程。
+
+- 若为 **1 个**：什么都不用做，继续观察；跑完后按 §4.4 执行（注意 `modality` 必须带 `--out`）。
+- 若为 **2 个或更多**：即 §13.2 描述的问题，**先向业主报告并取得授权**，再停进程并只重启一个。缓存可复用，不会丢已完成的调用。
+
+任何情况下都不要删除 `runs/out/` 下的文件，不要改数据库，不要改十六份配置（sha256 已冻结在预注册 D23）。
