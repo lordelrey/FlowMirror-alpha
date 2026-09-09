@@ -9,7 +9,8 @@ before every launch the driver counts live engine processes via WMI
 and exits (code 2) if any is found; one engine at a time is job #1.
 
 Resume: after any interruption just re-run this script. Completed tags
-are skipped via runs/out/<tag>/run_meta.json and unfinished tags replay
+(status "ok" in runs/out/<tag>/run_meta.json) are skipped and any other
+existing non-ok report is rerun; unfinished tags replay
 for free from the engine's LLM cache. Nothing under runs/out/ is ever
 deleted or overwritten (logs append-only); no auto-retry, since retrying
 during a rate-limit window only burns quota.
@@ -17,6 +18,7 @@ during a rate-limit window only burns quota.
 
 import argparse
 import datetime
+import json
 import os
 import subprocess
 import sys
@@ -89,18 +91,50 @@ def count_artifacts(path):
     return sum(len(files) for _dir, _sub, files in os.walk(path))
 
 
-def count_running_engines():
-    """Return the number of live engine processes (0 if the probe fails)."""
-    if os.name != "nt":
+def _run_meta_status(out_dir):
+    """Return run_meta status: None if absent, "unreadable" if malformed, else status."""
+    path = os.path.join(out_dir, "run_meta.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return "unreadable"
+    if not isinstance(data, dict):
+        return "unreadable"
+    status = data.get("status")
+    if status is None:
+        return "missing-status"
+    return str(status)
+
+
+def run_meta_is_complete(out_dir):
+    """True only when run_meta.json reports status == "ok"."""
+    return _run_meta_status(out_dir) == "ok"
+
+
+def count_running_engines(runner=subprocess.run, platform_name=None):
+    """Return the number of live engine processes; on Windows, fail closed."""
+    if platform_name is None:
+        platform_name = os.name
+    if platform_name != "nt":
         log("非 Windows 平台，跳过并跑检查（无 WMI），请自行确认没有引擎在跑。")
         return 0
     try:
-        probe = subprocess.run(["powershell", "-NoProfile", "-Command", PS_COUNT],
-                               capture_output=True, text=True, errors="replace")
-        return int((probe.stdout or "").strip())
-    except (OSError, ValueError) as exc:
-        log("警告：并跑检查失败（%r），按 0 个引擎处理，请人工甄别。" % exc)
-        return 0
+        probe = runner(["powershell", "-NoProfile", "-Command", PS_COUNT],
+                       capture_output=True, text=True, errors="replace")
+        if probe.returncode != 0:
+            raise RuntimeError("powerShell 探测失败，rc=%d" % probe.returncode)
+        raw = (probe.stdout or "").strip()
+        if not raw:
+            raise RuntimeError("powerShell 探测输出为空。")
+        try:
+            return int(raw)
+        except ValueError:
+            raise RuntimeError("powerShell 探测输出非整数：%r" % raw)
+    except OSError as exc:
+        raise RuntimeError("并跑检查无法执行：%r" % exc)
 
 
 def engine_command(cfg, out, workers, extra=()):
@@ -128,9 +162,13 @@ def dry_run_report(tag, args):
     """Dry run: print the skip decision and the command; start nothing."""
     cfg = os.path.join(RUNS_DIR, tag + ".json")
     out = os.path.join(OUT_DIR, tag)
-    if os.path.isfile(os.path.join(out, "run_meta.json")):
-        log("[dry-run] %s：已完成（run_meta.json 存在），将跳过。" % tag)
-    elif not os.path.isfile(cfg):
+    status = _run_meta_status(out)
+    if status == "ok":
+        log("[dry-run] %s：已完成（run_meta.json status=ok），将跳过。" % tag)
+        return
+    if status is not None:
+        log("[dry-run] %s：run_meta.json 存在但 status=%s，将重跑。" % (tag, status))
+    if not os.path.isfile(cfg):
         log("[dry-run] %s：配置缺失 %s（真实运行时会在此停下）。" % (tag, cfg))
     else:
         state = "未开始" if not os.path.isdir(out) else "未完成"
@@ -145,14 +183,21 @@ def process_tag(tag, args):
     tag_log = os.path.join(OUT_DIR, tag + "_driver.log")
     started = time.time()
     # Step 1: skip completed tags (idempotent resume).
-    if os.path.isfile(os.path.join(out, "run_meta.json")):
-        log("跳过 %s：runs/out/%s/run_meta.json 已存在，视为已完成。" % (tag, tag))
+    status = _run_meta_status(out)
+    if status == "ok":
+        log("跳过 %s：runs/out/%s/run_meta.json status=ok，视为已完成。" % (tag, tag))
         return "skipped"
+    elif status is not None:
+        log("tag=%s：run_meta.json 存在但 status=%s（非 ok），将重跑。" % (tag, status))
     if not os.path.isfile(cfg):
         log("致命：配置文件不存在 %s，停止整个网格（不重试）。" % cfg)
         sys.exit(1)
     # Step 2: concurrency guard -- the reason this driver exists.
-    engines = count_running_engines()
+    try:
+        engines = count_running_engines()
+    except RuntimeError as exc:
+        log("tag=%s：并跑检查失败（%s），拒绝启动引擎。" % (tag, exc))
+        sys.exit(2)
     if engines > 0:
         log("并跑保护触发：检测到 %d 个引擎进程已在运行，tag=%s 被拦下。" % (engines, tag))
         log("先确认没有引擎在跑再重来。")

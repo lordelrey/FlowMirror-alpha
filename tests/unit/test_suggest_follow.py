@@ -3,9 +3,16 @@
 Covers the renderer itself and that build_decision_messages splices the block
 in only when the engine actually produced rows for it.
 """
+import re
 import unittest
 
-from flowmirror.agents.prompt import render_suggest_follow, build_decision_messages
+from flowmirror.agents.prompt import (
+    INSTR_FOLLOW_ZH,
+    build_decision_messages,
+    parse_decision,
+    render_suggest_follow,
+)
+from flowmirror.engine.loop import _visible_social_handles
 
 MIN_VIEW = {
     "persona_card_zh_rich": "你是小周。",
@@ -29,6 +36,62 @@ def _user_text(result):
     """
     messages = result[0] if isinstance(result, tuple) else result
     return messages[1]["content"][0]["text"]
+
+
+class VisibleSocialHandlesAndFollowTest(unittest.TestCase):
+    HANDLE_PAT = re.compile(r"@u[0-9a-f]{6}")
+
+    def test_visible_social_handles_union_sorted_and_filtered(self):
+        cards = [
+            {"comments_prev": [
+                {"handle": "@u3f9a2b"},
+                {"handle": ""},
+                "not-a-dict",
+                {"no_handle": True},
+            ]},
+            {"comments_prev": [{"handle": "@u111111"}]},
+            "not-a-card",
+        ]
+        following = ["@u222222", "@u3f9a2b", None, 42, ""]
+        suggestions = [
+            {"handle": "@u0a1b2c"},
+            {"handle": ""},
+            "bad",
+            {"handle": None},
+        ]
+        self.assertEqual(
+            _visible_social_handles(cards, following, suggestions),
+            ["@u0a1b2c", "@u111111", "@u222222", "@u3f9a2b"],
+        )
+
+    def _decision(self, handle):
+        return {
+            "reads": [], "engage": {}, "comments": [],
+            "trade": {"action": "none", "fund": None, "amount_pct": 0,
+                      "sign_mismatch_confirm": False},
+            "org_affinity_delta": {}, "mood": 3, "reason": "观望",
+            "follow_users": [handle],
+        }
+
+    def test_follow_recommended_handle_accepted_when_visible(self):
+        parsed, violations = parse_decision(
+            self._decision("@u0a1b2c"), [], [], [], [], visible_handles=("@u0a1b2c",)
+        )
+        self.assertEqual(parsed["follow_users"], ["@u0a1b2c"])
+        self.assertNotIn("unknown_handle", violations)
+
+    def test_follow_same_handle_unknown_when_not_visible(self):
+        parsed, violations = parse_decision(
+            self._decision("@u0a1b2c"), [], [], [], [], visible_handles=()
+        )
+        self.assertFalse(parsed.get("follow_users"))
+        self.assertIn("unknown_handle", violations)
+
+    def test_instr_follow_zh_handles_are_well_formed(self):
+        tokens = re.findall(r"@[0-9A-Za-z_]+", INSTR_FOLLOW_ZH)
+        self.assertTrue(tokens)
+        for token in tokens:
+            self.assertRegex(token, r"^@u[0-9a-f]{6}$")
 
 
 class RenderSuggestFollowTest(unittest.TestCase):

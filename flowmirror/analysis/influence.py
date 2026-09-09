@@ -114,13 +114,18 @@ def _timed_edges(events, table):
                 yield e["i"], v, t0
 
 def _copied(buys, u, v, t0):
-    # star bought in [t0, t0+3); copied (1/0) when the fan bought it in (t0, t0+3]
+    # strict chronological candidate copying: fan buy must occur after the star's
+    # buy of the same fund, not merely within the same window; descriptive only
     t1 = t0 + 3
-    star_f = {f for t, f in buys.get(v, ()) if t is not None and t0 <= t < t1}
-    if not star_f:
+    star = [(t, f) for t, f in buys.get(v, ()) if t is not None and t0 <= t < t1]
+    if not star:
         return None
-    fan_f = {f for t, f in buys.get(u, ()) if t is not None and t0 < t <= t1}
-    return 1 if star_f & fan_f else 0
+    fan = [(t, f) for t, f in buys.get(u, ()) if t is not None and t0 < t <= t1]
+    for star_t, f in star:
+        for fan_t, g in fan:
+            if f == g and star_t < fan_t:
+                return 1
+    return 0
 
 def _obs_rates(buys, edges):
     # (n_eligible, copy_rate) over edges whose star bought inside the window
@@ -149,7 +154,8 @@ def _pools(edges, agent_ids, followed, stances=None, same=None):
     return out
 
 def _copying(buys, edges, agent_ids):
-    # fans buying what the star just bought; null = same fans, random non-followed star
+    # strict chronological candidate copying: fan buys the same fund at a later
+    # time than the star; null = same fans, random non-followed star; descriptive, not causal
     block = {"n_edges": len(edges), "n_edges_with_v_buy": 0, "copy_rate": None,
              "copy_rate_null": None, "excess_copy": None}
     if not edges:
@@ -200,7 +206,7 @@ def _ivh(buys, edges, agent_ids, stances):
     s, d = block["same"], block["diff"]
     if all(x["n_edges_with_v_buy"] >= 10 and x["copy_rate_null"] is not None for x in (s, d)):
         block["homophily_gap"] = s["copy_rate_null"] - d["copy_rate_null"]
-    block["note"] = "描述性分解：层内 观察-零模型≈影响，两层零模型之差≈同质性；" + ("；".join(small) or "两层分母均≥10")
+    block["note"] = "描述性分解：层内 严格时序候选跟单差异（观察-零模型），两层零模型之差≈同质性；" + ("；".join(small) or "两层分母均≥10")
     return block
 
 def _run_metrics(events, meta, run_dir=None):

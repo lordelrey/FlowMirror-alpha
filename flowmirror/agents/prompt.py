@@ -132,8 +132,8 @@ INSTR_V3 = """请以你的人设，按下面四个互相独立的步骤给出今
 # The example handle must match handle_of()'s real shape (six hex chars since card E6);
 # a five-char example teaches the model a format that never appears in its cards.
 INSTR_FOLLOW_ZH = (
-    "\n补充：评论区的作者带有句柄（如 @u3f9a2）。如果你想以后优先看到某个人的看法与动向，"
-    "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a2\"]）；不关注任何人则不写这个键。"
+    "\n补充：评论区的作者带有句柄（如 @u3f9a2b）。如果你想以后优先看到某个人的看法与动向，"
+    "可以在 JSON 里加一个可选键 \"follow_users\"，值为句柄列表（例如 [\"@u3f9a2b\"]）；不关注任何人则不写这个键。"
 )
 
 RETRY_SUFFIX = "上次输出不是合法 JSON。请只输出一个符合下面 schema 的 JSON 对象："

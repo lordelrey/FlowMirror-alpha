@@ -840,6 +840,26 @@ def _adapt_record(rec, shown, inv):
     return out
 
 
+def _visible_social_handles(cards, following=(), suggestions=()):
+    """Return sorted unique nonempty string handles actually visible to one agent."""
+    handles = set()
+    for card in cards or ():
+        if not isinstance(card, dict):
+            continue
+        for comment in card.get("comments_prev") or ():
+            handle = comment.get("handle") if isinstance(comment, dict) else None
+            if isinstance(handle, str) and handle:
+                handles.add(handle)
+    for handle in following or ():
+        if isinstance(handle, str) and handle:
+            handles.add(handle)
+    for row in suggestions or ():
+        handle = row.get("handle") if isinstance(row, dict) else None
+        if isinstance(handle, str) and handle:
+            handles.add(handle)
+    return sorted(handles)
+
+
 def _dec_counts(adapted, n_cards, social_on, social_graph_on=False):
     """Post-feasibility decision tallies for the dec row; all null on parse failure.
 
@@ -1642,11 +1662,13 @@ def run_simulation(cfg, rt=None):
             def _job(job):                          # (6) LLM phase, barrier via run_parallel
                 # decide() takes the parser's feasibility scope, not the pid->post map used by apply_decision
                 sh = job["shown"]
-                # Offer only handles the agent can genuinely see (card commenters plus their
-                # own followees), so the parser can never echo back unknown users.
-                card_handles = {c["handle"] for card in job["cards"]
-                                for c in (card.get("comments_prev") or []) if c.get("handle")}
-                vis_handles = sorted(card_handles | set(following_handles_by_agent.get(job["inv"].id, ())))
+                # Offer every handle genuinely rendered to this agent: card commenters,
+                # existing followees, and the platform recommendation block.
+                vis_handles = _visible_social_handles(
+                    job["cards"],
+                    following_handles_by_agent.get(job["inv"].id, ()),
+                    job["view"].get("suggest_follow") or (),
+                )
                 scope = {"pids": list(sh),
                          "codes": sorted({p.get("code") for p in sh.values() if p.get("code")}),
                          "held": sorted(job["inv"].hold),
