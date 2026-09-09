@@ -339,6 +339,25 @@ class LLMCache:
                 self.hits += 1
         return row
 
+    _OPEN_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 4.0)
+
+    def _open_append(self):
+        """Open the cache file in append mode, retrying transient PermissionError.
+
+        Only the open() call is retried; write failures propagate immediately
+        so a partial write can never be duplicated or corrupted by a retry.
+        """
+        delays = self._OPEN_RETRY_DELAYS
+        attempt = 0
+        while True:
+            try:
+                return open(self.path, "a", encoding="utf-8")
+            except PermissionError:
+                if attempt >= len(delays):
+                    raise
+                time.sleep(delays[attempt])
+                attempt += 1
+
     def put(self, key, row):
         with self.lock:
             self.rows[key] = row
@@ -346,7 +365,7 @@ class LLMCache:
                 d = os.path.dirname(self.path)
                 if d:
                     os.makedirs(d, exist_ok=True)
-                with open(self.path, "a", encoding="utf-8") as fh:
+                with self._open_append() as fh:
                     fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
