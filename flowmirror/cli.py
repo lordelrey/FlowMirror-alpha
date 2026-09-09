@@ -172,6 +172,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         argv.append("--replay-check")
     if getattr(args, "retry_transport_holes", False):
         argv.append("--retry-transport-holes")
+    if getattr(args, "workers", None):
+        argv += ["--workers", str(args.workers)]
     if args.dump_prompt:
         # Runtime-only switch: forwarded verbatim; the engine carries it in its
         # RuntimeOpts object (card R2D) -- it must never be merged into the
@@ -427,6 +429,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--retry-transport-holes",
         action="store_true",
         help="forwarded to the engine verbatim: retry cached transport failures (see engine --help)",
+    )
+    p_run.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="forwarded to the engine verbatim: operational override for llm.workers (wall-clock only)",
     )
     p_run.add_argument(
         "--dump-prompt",

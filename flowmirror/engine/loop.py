@@ -151,15 +151,22 @@ class RuntimeOpts:
     laundered, so only it moved.  Future CLI-only switches (--profile,
     --dry-run, ...) get a slot here, never a schema key."""
 
-    __slots__ = ("dump_prompt", "retry_transport_holes")
+    # workers: operational concurrency override. It changes wall-clock only -- the parallel
+    # phase collects decisions and applies them serially in sorted agent order, so
+    # --replay-check is byte-identical across worker counts. It lives here rather than in cfg
+    # because the sixteen grid configs are sha-frozen in PREREG D23 and a speed knob must not
+    # invalidate that table. None = use cfg["llm"]["workers"].
+    __slots__ = ("dump_prompt", "retry_transport_holes", "workers")
 
-    def __init__(self, dump_prompt=None, retry_transport_holes=False):
+    def __init__(self, dump_prompt=None, retry_transport_holes=False, workers=None):
         self.dump_prompt = dump_prompt
         self.retry_transport_holes = bool(retry_transport_holes)
+        self.workers = int(workers) if workers else None
 
     def __repr__(self):
         return (f"RuntimeOpts(dump_prompt={self.dump_prompt!r}, "
-                f"retry_transport_holes={self.retry_transport_holes!r})")
+                f"retry_transport_holes={self.retry_transport_holes!r}, "
+                f"workers={self.workers!r})")
 
 
 def _week_key(d):
@@ -1085,6 +1092,22 @@ def apply_decision(inv, rec, shown, day, fees=None):
     return cmt_out, aff_first, tr
 
 
+def _apply_workers_override(cfg, rt):
+    """-> cfg with llm.workers replaced when rt.workers is set, else cfg unchanged.
+
+    Returns a shallow copy with a fresh llm dict, so a caller reusing its own dict never sees
+    its concurrency silently rewritten. Falsy (None / 0) means "no override".
+    """
+    n = getattr(rt, "workers", None) if rt is not None else None
+    if not n:
+        return cfg
+    llm = dict(cfg.get("llm") or {})
+    llm["workers"] = int(n)
+    out = dict(cfg)
+    out["llm"] = llm
+    return out
+
+
 def run_simulation(cfg, rt=None):
     """One simulation pass; returns 0 ok, 2 cap_stopped, 3 decision_failure_halt,
     4 invariant failure (card R2F-loop: the run's invariant decision -- world
@@ -1098,6 +1121,7 @@ def run_simulation(cfg, rt=None):
     callers keep working."""
     t0 = time.time()
     rt = rt if rt is not None else RuntimeOpts()
+    cfg = _apply_workers_override(cfg, rt)   # operational only; results are unchanged
     out_dir = cfg["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
     for name in ("event_log.jsonl", "run_meta.json", "invariants_report.json"):
@@ -2119,6 +2143,9 @@ def main(argv=None):
                          "index) or 'first' to <out_dir>/prompts/<agent>_d<day>.txt plus a "
                          ".json sidecar; runtime-only switch carried in RuntimeOpts (never "
                          "a run-config key); side artifact only, the event log is unaffected")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="operational override for llm.workers: wall-clock only, results are "
+                         "identical (see --replay-check); leaves the sha-frozen config untouched")
     ap.add_argument("--retry-transport-holes", action="store_true",
                     help="treat cached transport failures (429 / timeouts / empty) as cache misses and "
                          "re-ask the provider; model-side failures stay terminal; runtime-only switch")
@@ -2151,7 +2178,8 @@ def main(argv=None):
     # (the old behavior) made run_simulation's schema re-validation reject the
     # whole run ("'dump_prompt' does not match any of the regexes: '^_'")
     # before the first trading day, leaving the feature unreachable.
-    rt = RuntimeOpts(retry_transport_holes=bool(getattr(args, "retry_transport_holes", False)))
+    rt = RuntimeOpts(retry_transport_holes=bool(getattr(args, "retry_transport_holes", False)),
+                     workers=getattr(args, "workers", None))
     if args.dump_prompt:
         try:
             _dump_target(args.dump_prompt)
