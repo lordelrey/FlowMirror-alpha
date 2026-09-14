@@ -12,6 +12,9 @@ FlowMirror 是一个在本地运行、由配置驱动的“基金市场 × 社�
 - 信息流、记忆、适当性核验、基金账户和机构策略模块。
 - JSON Schema、公开示例配置、自动测试和本地回放界面。
 - 一套完全合成的小型演示数据；运行产物与凭据不进入版本控制。
+- 可逐步查看的社交信息流、各智能体隔离的私有视图、公开评论与自主关注接口。
+- 模拟委托、成交及交收账户，机构发帖策略，以及市场宏观观察界面。
+- 可选的本地只读数据适配器与离线时序评估工作台。
 
 ## 安装
 
@@ -43,6 +46,28 @@ python web/server.py --port 8765
 ```
 
 然后访问 `http://127.0.0.1:8765/web/`。服务只监听本机地址，可以查看仓库自带的示例、回放已经完成的本地运行，并启动受支持的本地配置。
+
+### 社交与宏观市场观察界面
+
+```bash
+python web/community_server.py --port 8793
+```
+
+访问 `http://127.0.0.1:8793/community.html` 查看帖子与个体轨迹，访问
+`http://127.0.0.1:8793/market.html` 查看宏观汇总。这个独立服务只读，打开网页
+不会启动实验或调用模型。没有已保存运行时，社交页提供虚构的脚本演示；宏观页
+需要选择已有的浏览运行。
+
+以下命令可生成包含机构发帖、浏览动作和模拟账户的小型离线示例：
+
+```bash
+python -m flowmirror.platform.browse_cli --marketing-demo --out runs/browse_out/marketing_demo
+python -m flowmirror.platform.browse_cli --replay --out runs/browse_out/marketing_demo
+```
+
+在观察界面选择 `marketing_demo` 即可。示例使用合成输入和预设规则，不是大模型
+自主行为的实验结果。浏览、账户、宏观观察及本地数据用法见
+[沙盒使用指南](docs/SANDBOX.md)。市场价格仍为外生输入，不是实时行情或已经验证的价格形成模型。
 
 ## 接入大模型
 

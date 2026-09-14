@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="data:,">
+<title>FLOWMIRROR · 现实对齐工作台</title>
+<style>
+:root{--coral:#ed4d62;--bg:#faf9f7;--text:#3d3a38;--muted:#706a65;--line:#ece8e4}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.65 "PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;overflow-wrap:anywhere}
+header,main{max-width:1160px;margin:auto;padding:24px}header{background:#fffefc;border-bottom:1px solid var(--line)}h1{font-size:25px;margin:8px 0}h2{font-size:19px;margin:0 0 12px}h3{font-size:15px;margin:0 0 8px}p{margin:8px 0}.brand{font-weight:700;letter-spacing:.5px}.brand b{color:var(--coral)}nav{display:flex;gap:18px;flex-wrap:wrap}a{color:#b42c40;text-underline-offset:4px}.muted{color:var(--muted)}
+.panel,.model,.evidence{background:white;border:1px solid var(--line);border-radius:14px;padding:20px;min-width:0}.panel{margin:18px 0}.evidence-grid,.models{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.evidence{padding:14px}.evidence p{color:var(--muted)}.tag{font-size:12px;color:#a5283b;background:#fdeef0;border-radius:20px;padding:3px 9px;display:inline-block}.filters{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.filters label{display:grid;gap:6px;flex:1;min-width:0}select,button{font:inherit;color:inherit;background:white;border:1px solid #d7d0ca;border-radius:9px;padding:9px 12px;max-width:100%;min-width:0}select{width:100%}button{cursor:pointer;flex-shrink:0}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:3px solid var(--coral);outline-offset:3px}#status{min-height:26px}#status[data-state="error"]{color:#b3261e}dl{margin:0}.fact{display:grid;grid-template-columns:minmax(100px,1fr) minmax(0,2fr);gap:12px;border-bottom:1px solid var(--line);padding:8px 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap}.metric{font-size:23px;font-weight:700;margin:5px 0}.model h3{font-family:ui-monospace,monospace;font-size:14px}.model dl .fact{grid-template-columns:1fr;gap:0}.notice{border-left:3px solid var(--coral);padding-left:14px}.list{padding-left:20px}.list li{margin:7px 0}[hidden]{display:none!important}
+@media(max-width:650px){header,main{padding:16px}.evidence-grid,.models{grid-template-columns:1fr}.panel{padding:16px}.filters{align-items:stretch}.filters label{flex-basis:100%}.fact{grid-template-columns:1fr;gap:2px}h1{font-size:22px}}
+</style>
+<script src="/calibration.js" defer></script>
+</head>
+<body>
+<header><div class="brand"><b>FLOW</b>MIRROR / RESEARCH</div><h1>现实对齐工作台</h1><p class="muted">本地静态报告 · 研究者视角 · 离线时间留出评估</p><nav aria-label="研究页面"><a href="/community.html">返回社会观察室</a><a href="/corpus.html">查看真实素材库</a></nav></header>
+<main>
+<section class="evidence-grid" aria-label="证据类型"><div class="evidence"><span class="tag">真实记录</span><p>来源中的历史净值、帖子与互动记录。记录范围由报告列明。</p></div><div class="evidence"><span class="tag">回溯留出参照</span><p>在历史时间分割上比较预测误差与实际覆盖，不代表实时价格或未来收益。</p></div><div class="evidence"><span class="tag">仿真</span><p>社区中的模拟行为需单独解释，本报告不将仿真输出当作真实观测。</p></div></section>
+<section class="panel" aria-label="报告选择"><div class="filters"><label for="report-select">离线报告<select id="report-select" disabled><option value="">正在读取报告列表…</option></select></label><button id="reload" type="button">重新加载</button></div><p id="status" role="status" aria-live="polite" aria-atomic="true">正在读取报告列表…</p></section>
+<article id="report-content" hidden aria-label="校准报告">
+<section class="panel"><span class="tag">回溯留出参照</span><h2 id="report-title"></h2><dl id="metadata"></dl><p class="notice">机构发布特征仅包含过去 7 天帖子数和有图帖数，不使用 VLM；模型差异不能直接解释为因果效应或视觉增益。</p></section>
+<section class="panel"><h2>净值变化 · 三模型比较</h2><p class="muted">目标为下一次观测的原始单位净值对数变化，未做分红调整，也不是交易价格。MAE 与区间宽度使用对数变化单位；实际覆盖仅以有区间的留出样本为分母。</p><div id="models" class="models"></div><h3>日期、样本单位与时间分割</h3><dl id="evaluation-summary"></dl><h3>评估说明</h3><ul id="evaluation-notes" class="list"></ul></section>
+<section class="panel"><h2>发布特征与状态特征 · 配对误差差值</h2><p class="muted">publication_ridge − state_ridge；负值表示发布特征模型在该口径下误差较小。按行 MAE 差值与按目标日等权差值分开报告；自助区间对应后者，不据此选择模型或作因果解释。</p><dl id="paired"></dl></section>
+<section class="panel"><h2>支持数据与设置</h2><p class="muted">净值与发布面板来自本地导出的 nav.jsonl、posts.jsonl；互动快照来自 engagement_snapshot.jsonl。报告仅支持中国净值数据，美国披露材料不提供美国价格。来源关联与有图状态按当前导出回溯重建。</p><h3>数据来源及支持范围</h3><dl id="support"></dl><h3>评估设置</h3><dl id="settings"></dl></section>
+<section class="panel"><h2>互动区间摘要</h2><p class="muted">相邻抓取日期之间的累计计数差，仅供离线评估，不投递给 agent。日期只有来源记录的日历日精度；计数下降不是负互动事件，没有曝光分母就不能计算真实打开率。模拟 30 天打开数与真实累计点赞不能直接计算 MAE。</p><dl id="engagement"></dl><h3>按抓取日期查看快照质量</h3><label for="snapshot-select">抓取日期</label><select id="snapshot-select" disabled></select><dl id="snapshot-summary"></dl></section>
+<section class="panel"><h2>适用范围与局限</h2><ul id="limitations" class="list"></ul></section>
+</article>
+</main></body></html>

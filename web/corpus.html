@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,"><title>FlowMirror · 真实数据素材库</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#faf9f7;color:#3d3a38;font:14px/1.6 'Microsoft YaHei',sans-serif}
+header,main{max-width:1440px;margin:auto;padding:24px}header{border-bottom:1px solid #ece8e4}
+h1{font-size:23px;margin:0}h1 b,a{color:#ed4d62}a{text-decoration:none}p{margin:8px 0}.muted{color:#817c77}
+.filters{display:flex;gap:12px;flex-wrap:wrap;margin:20px 0}label{display:flex;gap:6px;align-items:center}
+select,input,button{font:inherit;border:1px solid #dedad5;border-radius:8px;background:white;padding:7px;max-width:100%}
+button{cursor:pointer}button:disabled{opacity:.45;cursor:default}#inventory{display:flex;gap:12px;flex-wrap:wrap}
+.metric{background:white;padding:12px 20px;border-radius:12px}.metric strong{font-size:22px;display:block}
+#posts{columns:4 250px;column-gap:18px}article{display:inline-block;width:100%;break-inside:avoid;background:white;border:1px solid #ece8e4;border-radius:14px;margin:0 0 18px;overflow:hidden}
+article img{display:block;width:100%;height:auto;max-height:400px;object-fit:contain;background:#f5f3f0}
+.body{padding:14px;overflow-wrap:anywhere}h2{font-size:16px;margin:8px 0}details{margin-top:12px}.text{white-space:pre-wrap;max-height:420px;overflow:auto}
+.pager{display:flex;gap:12px;align-items:center;margin:16px 0}#status{min-height:24px}summary{cursor:pointer}
+@media(max-width:500px){header,main{padding:16px}.filters{display:grid;grid-template-columns:1fr}label{justify-content:space-between}input,select{width:65%}#posts{columns:1}}
+</style></head><body>
+<header><h1><b>FLOWMIRROR</b> · 真实数据素材库</h1><p>本地只读数据 · 研究者视角 · 不会启动实验或调用模型</p><a href="/community.html?mode=browse&run=warehouse_cn_300_30d_v1">进入扩大样本的社会回放 →</a></header>
+<main><div id="inventory"></div><p class="muted">缺少日期的素材仍完整保留，但不会被编造时间排入历史。SEC为披露文件，不是社交帖子；资产目录含未定时广告与文档。原图仅在本机显示。</p>
+<form id="filters" class="filters">
+<label>数据来源<select id="channel" aria-label="数据来源"><option value="xhs">小红书帖子</option><option value="sec_497">美国 SEC 披露</option><option value="assets">全部素材资产</option></select></label>
+<label>时间依据<select id="timing" aria-label="时间依据"><option value="dated">有日期</option><option value="undated">缺少日期</option><option value="all">全部记录</option></select></label>
+<label>开始<input type="date" id="start"></label><label>结束<input type="date" id="end"></label>
+<label>搜索<input id="query" placeholder="机构 / 标题 / 内容" maxlength="200"></label><button type="submit">应用筛选</button>
+</form><p id="status" role="status"></p><div class="pager"><button id="prev">上一页</button><span id="page"></span><button id="next">下一页</button></div><section id="posts" aria-label="真实素材"></section></main>
+<script type="module" src="corpus.js"></script></body></html>

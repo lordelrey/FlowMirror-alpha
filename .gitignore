@@ -16,6 +16,9 @@ data/funds/nav_cache.json
 !data/funds/nav_demo_2025q4.json
 *.bak_*
 runs/out/
+runs/browse_out/
+.playwright-cli/
+output/
 # Third-party benchmark series (qieman). Regenerate; never redistribute.
 data/market/
 

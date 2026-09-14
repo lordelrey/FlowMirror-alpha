@@ -14,6 +14,9 @@ This repository is source software, not a hosted trading service. Clone it to a 
 - Social-feed, memory, suitability, fund-accounting, and institutional-policy components.
 - JSON schemas, example configurations, tests, and a local replay viewer.
 - A small synthetic demo dataset. Generated run outputs and credentials stay outside version control.
+- A step-by-step social-feed sandbox with private agent views, public comments, and voluntary following.
+- Simulated order, fill, and settlement accounting, institution publication policies, and a macro market observer.
+- Optional read-only local data adapters and an offline temporal evaluation workbench.
 
 ## Install
 
@@ -47,6 +50,30 @@ python web/server.py --port 8765
 ```
 
 Open `http://127.0.0.1:8765/web/`. The server binds only to localhost. It can display the bundled sample, replay a completed local run, and launch supported local configurations.
+
+### Social and market observer
+
+```bash
+python web/community_server.py --port 8793
+```
+
+Open `http://127.0.0.1:8793/community.html` for the social feed or
+`http://127.0.0.1:8793/market.html` for the macro observer. This separate server is
+read-only: opening either page never launches an experiment or calls a model.
+Without saved runs, the community page offers a fictional, scripted demonstration;
+the market page requires a saved browsing run.
+
+To create a small offline example with institution publication, browsing, and
+simulated accounts:
+
+```bash
+python -m flowmirror.platform.browse_cli --marketing-demo --out runs/browse_out/marketing_demo
+python -m flowmirror.platform.browse_cli --replay --out runs/browse_out/marketing_demo
+```
+
+Select `marketing_demo` in the observer. It uses synthetic inputs and preset rules,
+not autonomous LLM behavior. See [Sandbox guide](docs/SANDBOX.md) for browsing,
+accounting, macro views, optional local data, and capability boundaries.
 
 ## Run with an LLM
 

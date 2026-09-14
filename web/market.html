@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLOWMIRROR · 市场观察台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23faf6f0'/%3E%3Cpath d='M4 20 L11 13 L16 18 L28 6' stroke='%23ed735b' stroke-width='3.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='28' cy='6' r='3' fill='%234d8178'/%3E%3C/svg%3E">
+<style>
+:root{--bg:#faf6f0;--ink:#303a37;--muted:#7c8884;--coral:#ed735b;--teal:#4d8178;--line:#e5dcd0;--card:#fffdf9}
+*{box-sizing:border-box}
+body{margin:0;font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{margin:0 0 4px;font-size:20px}
+header h1 .dot{color:var(--coral)}
+.note{color:var(--muted);font-size:12px;margin:2px 0 10px}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.controls label{font-size:12px;color:var(--muted)}
+select,input[type=search],button{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+button{cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--teal);color:#fff;border-color:var(--teal)}
+.btn-coral{background:var(--coral);color:#fff;border-color:var(--coral)}
+.chip{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:2px 8px;color:var(--muted)}
+a{color:var(--teal)}
+main{max-width:1280px;margin:0 auto;padding:14px 16px 60px;overflow-wrap:anywhere}
+section.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:14px 0}
+section.panel h2{margin:0 0 8px;font-size:16px;border-left:4px solid var(--coral);padding-left:8px}
+section.panel h3{font-size:14px;margin:14px 0 6px}
+.scroll{overflow-x:auto;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:640px}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:600}
+.pos{color:var(--coral)}.neg{color:var(--teal)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.metric-card{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--bg)}
+.metric-card .label{font-size:11px;color:var(--muted)}
+.metric-card .value{font-size:17px;font-weight:700;margin-top:2px}
+.muted{color:var(--muted);font-size:12px}
+.status{font-size:13px;color:var(--muted);margin-top:6px;min-height:18px}
+table.clickable tbody tr{cursor:pointer}
+table.clickable tbody tr:hover{background:#f4ede2}
+.selected-row{background:#f4ede2 !important}
+footer{color:var(--muted);font-size:12px;text-align:center;padding:16px}
+@media (max-width:640px){main{padding:8px 8px 40px}table{font-size:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>FLOWMIRROR · 市场观察台 <span class="dot">●</span></h1>
+  <p class="note">只读观察视图 · 数据说明：当前 run 支持的资产集合，不代表全市场；历史/合成行情，非实时；资金仅为模拟样本。行为来源：run/脚本/外部策略，非真实预测。</p>
+  <div class="controls">
+    <label for="run">运行</label><select id="run"></select>
+    <label for="phase">阶段</label><select id="phase"></select>
+    <button type="button" id="phase-prev">上一阶段</button>
+    <button type="button" id="phase-next">下一阶段</button>
+    <label for="market-filter">市场</label><select id="market-filter"></select>
+    <label for="currency-filter">币种</label><select id="currency-filter"></select>
+    <button type="button" id="reload" class="btn-primary">刷新（只读 GET）</button>
+    <a id="community-link" href="/community.html?mode=browse">← 返回社区运行</a>
+  </div>
+  <p class="status" id="status">正在初始化…</p>
+</header>
+<main>
+  <section class="panel" id="overview-panel">
+    <h2>运行概览</h2>
+    <div class="cards" id="overview"></div>
+    <div class="scroll"><table id="timeline"><thead><tr>
+      <th>阶段</th><th>时间</th><th>状态</th><th>已提交帧</th><th>市场组</th><th>币种</th><th>资金流</th><th>曝光帖</th><th>已曝光后打开</th><th>关注动作</th><th>网络边</th>
+    </tr></thead><tbody id="timeline-body"></tbody></table></div>
+    <p class="muted" id="overview-notice"></p>
+  </section>
+
+  <section class="panel" id="market-section">
+    <h2>市场广度</h2>
+    <div id="market-overview"></div>
+    <h3>样本资产等权阶段变动（非指数）</h3>
+    <div id="trend"></div>
+    <div class="scroll"><table id="group-table"><thead><tr>
+      <th>市场</th><th>币种</th><th>类型</th><th>覆盖</th><th>可比较</th><th>上涨</th><th>下跌</th><th>持平</th><th>缺失</th><th>均值%</th><th>中位数%</th><th>已更新</th><th>陈旧(&gt;24h)</th><th>合成</th>
+    </tr></thead><tbody id="group-body"></tbody></table></div>
+    <h3>报价明细</h3>
+    <div class="controls">
+      <input type="search" id="instrument-search" placeholder="搜索资产 ID…">
+      <span class="chip" id="quote-count"></span>
+      <button type="button" id="quote-more">再显示 50 条</button>
+      <button type="button" id="quote-reset" class="btn-coral">重置选择</button>
+    </div>
+    <div class="scroll"><table id="quote-table"><thead><tr>
+      <th>市场</th><th>资产</th><th>币种</th><th>类型</th><th>价格</th><th>前价</th><th>变动%</th><th>比较状态</th><th>来源</th><th>观测时间</th><th>可用时间</th><th>年龄(h)</th><th>操作</th>
+    </tr></thead><tbody id="quote-body"></tbody></table></div>
+  </section>
+
+  <section class="panel" id="finance-section">
+    <h2>资金与账户</h2>
+    <div id="finance-overview"></div>
+    <div class="scroll"><table id="currency-table"><thead><tr>
+      <th>币种</th><th>账户数</th><th>有效估值</th><th>亏损账户</th><th>亏损率</th><th>现金</th><th>可用</th><th>占用</th><th>应收</th><th>已知市值</th><th>权益</th><th>费用</th><th>收益min%</th><th>中位%</th><th>max%</th>
+    </tr></thead><tbody id="currency-body"></tbody></table></div>
+    <h3 id="account-title">按币种的全体账户（不区分市场筛选）</h3>
+    <div class="scroll"><table id="account-table"><thead><tr>
+      <th>agent</th><th>币种</th><th>现金</th><th>可用</th><th>占用</th><th>应收</th><th>已知市值</th><th>权益</th><th>费用</th><th>收益%</th><th>操作</th>
+    </tr></thead><tbody id="account-body"></tbody></table></div>
+    <button type="button" id="account-reset">清除账户选择</button>
+  </section>
+
+  <section class="panel" id="flow-section">
+    <h2>产品资金流</h2>
+    <div class="scroll"><table id="flow-table"><thead><tr>
+      <th>市场</th><th>资产</th><th>币种</th><th>提交</th><th>成交</th><th>结算</th><th>取消</th><th>拒绝</th><th>买入总额</th><th>卖出总额</th><th>费用</th><th>现金变动</th><th>净执行额</th>
+    </tr></thead><tbody id="flow-body"></tbody></table></div>
+    <p class="muted" id="flow-note"></p>
+    <h3 id="order-title">订单（本阶段事件）</h3>
+    <div class="controls">
+      <label><input type="checkbox" id="order-cumulative"> 显示累计（全部阶段）</label>
+      <button type="button" id="order-reset" class="btn-coral">清除产品筛选</button>
+    </div>
+    <div class="scroll"><table id="order-table"><thead><tr>
+      <th>agent</th><th>订单</th><th>市场</th><th>资产</th><th>方向</th><th>状态</th><th>提交时间</th><th>总额</th><th>费用</th><th>单位</th><th>帖子来源</th><th>阶段事件</th><th>下单前所见</th>
+    </tr></thead><tbody id="order-body"></tbody></table></div>
+  </section>
+
+  <section class="panel" id="social-section">
+    <h2>社交与曝光（仅动作前口径）</h2>
+    <div id="social-overview"></div>
+    <div class="scroll"><table id="post-table"><thead><tr>
+      <th>帖子</th><th>标题</th><th>市场</th><th>机构</th><th>曝光</th><th>已曝光后打开</th><th>打开率</th><th>接受/拒绝</th><th>样本</th>
+    </tr></thead><tbody id="post-body"></tbody></table></div>
+    <h3 id="graph-title">关注网络（全平台总图）</h3>
+    <div id="graph-metrics"></div>
+  </section>
+
+  <section class="panel" id="institution-section">
+    <h2>机构决策</h2>
+    <div id="institution-overview"></div>
+    <div class="scroll"><table id="decision-table"><thead><tr>
+      <th>机构</th><th>组织</th><th>市场</th><th>策略</th><th>政策类型</th><th>动作</th><th>状态</th><th>帖子</th><th>素材</th><th>反馈截至阶段</th><th>剩余发布次数</th><th>反馈明细</th>
+    </tr></thead><tbody id="decision-body"></tbody></table></div>
+  </section>
+</main>
+<footer>本页仅做只读浏览（GET），不启动运行、不执行交易、不做预测请求。</footer>
+<script type="module" src="/market.js"></script>
+</body>
+</html>
